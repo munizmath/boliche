@@ -8,9 +8,12 @@ const client = !isDemoMode && window.supabase
 
 const state = {
   players: [],
+  lanes: [],
   games: [],
   scores: [],
   profile: null,
+  profiles: [],
+  scoreChanges: [],
   session: null,
   recovering: /(?:^#|&)type=recovery(?:&|$)/.test(window.location.hash) || new URLSearchParams(window.location.search).get("type") === "recovery",
   activeGameId: null,
@@ -18,6 +21,10 @@ const state = {
   crop: null,
   image: null,
   imageFile: null,
+  imageUrl: null,
+  editingPlayerId: null,
+  editingLaneName: null,
+  editingGameId: null,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -69,24 +76,39 @@ function setModal(id, open) {
 
 async function loadData() {
   if (isDemoMode) {
-    state.players = []; state.games = []; state.scores = []; state.activeGameId = null;
+    state.players = []; state.lanes = []; state.games = []; state.scores = []; state.activeGameId = null;
     setConnection("Supabase não configurado", "error");
     $("demoBanner").hidden = false;
     $("demoBanner").innerHTML = "<strong>Supabase não configurado</strong><span>Configure a URL e a Publishable Key antes de usar o placar. Nenhum dado fictício será exibido.</span>";
     return;
   }
   setConnection("Sincronizando…", "muted");
-  const [playersResult, gamesResult, scoresResult] = await Promise.all([
+  const [playersResult, lanesResult, gamesResult, scoresResult, profilesResult, changesResult] = await Promise.all([
     client.from("players").select("id,nome,apelido_placar,pista").order("nome"),
+    client.from("lanes").select("name").order("name"),
     client.from("games").select("id,nome,status,created_at,updated_at").order("created_at", { ascending: false }),
     client.from("scores").select("id,game_id,player_id,pontos,finalizado,updated_at"),
+    isAdmin() ? client.rpc("list_registered_accounts") : Promise.resolve({ data: [] }),
+    isAdmin() ? client.from("score_changes").select("id,score_id,game_id,player_id,previous_points,new_points,previous_finalized,new_finalized,changed_at,actor_id").order("id", { ascending: false }).limit(100) : Promise.resolve({ data: [] }),
   ]);
-  const error = playersResult.error || gamesResult.error || scoresResult.error;
+  const error = playersResult.error || lanesResult.error || gamesResult.error || scoresResult.error || profilesResult.error || changesResult.error;
   if (error) throw error;
   state.players = playersResult.data || [];
+  state.lanes = lanesResult.data || [];
   state.games = gamesResult.data || [];
   state.scores = scoresResult.data || [];
-  state.activeGameId = state.games.find((game) => game.status === "partial")?.id || state.games[0]?.id || null;
+  state.profiles = isAdmin() ? (profilesResult.data || []) : [];
+  state.scoreChanges = isAdmin() ? (changesResult.data || []) : [];
+  if (isAdmin()) {
+    await Promise.all(state.profiles.map(async (profile) => {
+      if (!profile.foto_path) return;
+      const { data } = await client.storage.from("profile-photos").createSignedUrl(profile.foto_path, 300);
+      profile.photoUrl = data?.signedUrl || null;
+    }));
+  }
+  state.activeGameId = state.games.some((game) => game.id === state.activeGameId)
+    ? state.activeGameId
+    : (state.games.find((game) => game.status === "partial")?.id || state.games[0]?.id || null);
   const latest = [...state.scores, ...state.games].map((item) => item.updated_at || item.created_at).filter(Boolean).sort().at(-1);
   setUpdated(latest || new Date().toISOString());
   setConnection("Sincronizado", "success");
@@ -95,7 +117,7 @@ async function loadData() {
 async function loadProfile() {
   state.profile = null;
   if (!client || !state.session) return;
-  const { data, error } = await client.from("profiles").select("id,nome,foto_path,status").eq("id", state.session.user.id).maybeSingle();
+  const { data, error } = await client.from("profiles").select("id,nome,foto_path,status,player_id").eq("id", state.session.user.id).maybeSingle();
   if (error) {
     console.error(error);
     return;
@@ -170,6 +192,22 @@ async function submitRecovery(event) {
   }
 }
 
+let hasSubscribed = false;
+let refreshInFlight = false;
+async function refreshAfterReconnect() {
+  if (document.hidden || refreshInFlight || !client) return;
+  refreshInFlight = true;
+  try {
+    await loadData();
+    render();
+  } catch (error) {
+    console.error(error);
+    setConnection("Reconectando…", "warning");
+  } finally {
+    refreshInFlight = false;
+  }
+}
+
 function subscribeRealtime() {
   if (!client) return;
   client.channel("boliche-live")
@@ -177,7 +215,11 @@ function subscribeRealtime() {
     .on("postgres_changes", { event: "*", schema: "public", table: "games" }, refreshFromRealtime)
     .on("postgres_changes", { event: "*", schema: "public", table: "scores" }, refreshFromRealtime)
     .subscribe((status) => {
-      if (status === "SUBSCRIBED") setConnection("Ao vivo", "success");
+      if (status === "SUBSCRIBED") {
+        setConnection("Ao vivo", "success");
+        if (hasSubscribed) refreshAfterReconnect();
+        hasSubscribed = true;
+      }
       if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") setConnection("Reconectando…", "warning");
     });
 }
@@ -217,15 +259,22 @@ function render() {
   renderLeaderboard();
   renderCurrentGame();
   renderGames();
-  renderPlayerSelection();
-  renderPhotoOptions();
+  if (!$("gameModal").open) renderPlayerSelection();
+  if (!$("photoModal").open) renderPhotoOptions();
   if ($("playersModal").open) renderPlayers();
+  if ($("approvalsModal").open) renderApprovals();
+  if ($("historyModal").open) renderScoreHistory();
 }
 
 function renderLeaderboard() {
   const body = $("leaderboardBody");
   const finalGames = state.games.filter((game) => game.status === "final");
-  const totals = state.players.map((player) => {
+  const laneSelect = $("rankingLane");
+  const selectedLane = laneSelect.value;
+  const lanes = [...new Set(state.players.map((player) => player.pista).filter(Boolean))].sort((a, b) => a.localeCompare(b, "pt-BR", { numeric: true }));
+  laneSelect.innerHTML = `<option value="">Todas as pistas</option>${lanes.map((lane) => `<option value="${esc(lane)}">Pista ${esc(lane)}</option>`).join("")}`;
+  if (lanes.includes(selectedLane)) laneSelect.value = selectedLane;
+  const totals = (finalGames.length ? state.players : []).filter((player) => !laneSelect.value || player.pista === laneSelect.value).map((player) => {
     const points = state.scores.filter((score) => score.player_id === player.id && finalGames.some((game) => game.id === score.game_id) && score.finalizado).reduce((sum, score) => sum + Number(score.pontos || 0), 0);
     const current = state.scores.find((score) => score.game_id === state.activeGameId && score.player_id === player.id);
     return { player, points, current };
@@ -238,8 +287,9 @@ function renderLeaderboard() {
     previousPosition = position;
     const situation = item.current?.finalizado ? "Final" : (item.current ? "Parcial" : "—");
     const chipClass = situation === "Final" ? "status-chip status-chip--final" : "status-chip status-chip--partial";
-    return `<tr><td class="rank-cell">${position}</td><td><strong>${esc(item.player.nome)}</strong><small>${esc(item.player.apelido_placar || "sem apelido")}</small></td><td>${esc(item.player.pista || "—")}</td><td class="points-cell">${item.points.toLocaleString("pt-BR")}</td><td><span class="${chipClass}">${situation}</span></td></tr>`;
+    return `<tr><td class="rank-cell">${position}</td><td><button class="player-stats-link" type="button" data-stats-player="${esc(item.player.id)}">${esc(item.player.nome)}</button><small>${esc(item.player.apelido_placar || "sem apelido")}</small></td><td>${esc(item.player.pista || "—")}</td><td class="points-cell">${item.points.toLocaleString("pt-BR")}</td><td><span class="${chipClass}">${situation}</span></td></tr>`;
   }).join("");
+  body.querySelectorAll("[data-stats-player]").forEach((button) => button.addEventListener("click", () => openStatsModal(button.dataset.statsPlayer)));
   $("leaderboardEmpty").hidden = totals.length > 0;
   $("leaderboardMeta").textContent = finalGames.length ? `${finalGames.length} ${finalGames.length === 1 ? "partida finalizada" : "partidas finalizadas"}` : "Nenhuma partida finalizada";
 }
@@ -258,7 +308,46 @@ function renderCurrentGame() {
   $("currentGameTitle").textContent = game.nome;
   $("currentGameStatus").textContent = game.status === "final" ? "Final" : "Parcial";
   $("currentGameStatus").className = `status-pill status-pill--${game.status === "final" ? "success" : "warning"}`;
-  body.innerHTML = scores.length ? scores.map(({ score, player }) => `<div class="current-row"><div class="current-player"><strong>${esc(player.nome)}</strong><span>Pista ${esc(player.pista || "—")}</span></div><div class="current-score"><strong>${score.pontos == null ? "—" : Number(score.pontos).toLocaleString("pt-BR")}</strong><span class="status-chip ${score.finalizado ? "status-chip--final" : "status-chip--partial"}">${score.finalizado ? "Final" : "Pendente"}</span></div></div>`).join("") : `<div class="empty-state"><span>Partida sem participantes.</span></div>`;
+  const ranked = [...scores].sort((a, b) => (b.score.pontos ?? -1) - (a.score.pontos ?? -1) || a.player.nome.localeCompare(b.player.nome, "pt-BR"));
+  body.innerHTML = ranked.length ? ranked.map(({ score, player }) => {
+    const position = score.pontos == null ? "—" : `${ranked.findIndex((item) => item.score.pontos === score.pontos) + 1}º`;
+    return `<div class="current-row"><div class="current-player"><span class="provisional-rank">${position}</span><strong>${esc(player.nome)}</strong><span>Pista ${esc(player.pista || "—")}</span></div><div class="current-score"><strong>${score.pontos == null ? "—" : Number(score.pontos).toLocaleString("pt-BR")}</strong><span class="status-chip ${score.finalizado ? "status-chip--final" : "status-chip--partial"}">${score.finalizado ? "Final" : "Pendente"}</span>${isAdmin() ? `<button class="text-button" type="button" data-quick-score="${esc(player.id)}">Corrigir</button>${score.pontos != null ? `<button class="text-button text-button--danger" type="button" data-clear-score="${esc(player.id)}">Limpar</button>` : ""}` : ""}</div></div>`;
+  }).join("") : `<div class="empty-state"><span>Partida sem participantes.</span></div>`;
+  body.querySelectorAll("[data-quick-score]").forEach((button) => button.addEventListener("click", () => openQuickScore(button.dataset.quickScore)));
+  body.querySelectorAll("[data-clear-score]").forEach((button) => button.addEventListener("click", () => clearScore(button.dataset.clearScore)));
+}
+
+async function clearScore(playerId) {
+  const player = getPlayer(playerId);
+  if (!window.confirm(`Limpar os pontos de ${player?.nome || "este jogador"} nesta partida? O ranking será recalculado.`)) return;
+  const { error } = await client.rpc("clear_game_score", { p_game_id: state.activeGameId, p_player_id: playerId });
+  if (error) return showToast("Não foi possível limpar os pontos.", "error");
+  await loadData(); render(); showToast("Pontuação limpa; a partida voltou a parcial.", "success");
+}
+
+function openQuickScore(playerId) {
+  const player = getPlayer(playerId);
+  if (!player) return;
+  openPhotoModal();
+  $("photoGame").value = state.activeGameId;
+  renderPhotoOptions();
+  $("photoLane").value = player.pista;
+  updateReviewTable();
+  const row = [...$("reviewTable").querySelectorAll("[data-review-player]")].find((item) => item.dataset.reviewPlayer === playerId);
+  row?.querySelector(".review-score")?.focus();
+}
+
+function openStatsModal(playerId) {
+  const player = getPlayer(playerId);
+  if (!player) return;
+  const finalGames = state.games.filter((game) => game.status === "final").sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+  const results = finalGames.map((game) => ({ game, score: state.scores.find((score) => score.game_id === game.id && score.player_id === playerId) })).filter((item) => item.score?.finalizado && item.score.pontos != null);
+  const points = results.map((item) => Number(item.score.pontos));
+  const wins = results.filter(({ game, score }) => Number(score.pontos) === Math.max(...gameScores(game.id).filter((item) => item.pontos != null).map((item) => Number(item.pontos)))).length;
+  $("statsTitle").textContent = player.nome;
+  $("statsSummary").innerHTML = `<div><strong>${points.length ? Math.max(...points) : "—"}</strong><span>recorde</span></div><div><strong>${points.length ? (points.reduce((sum, value) => sum + value, 0) / points.length).toFixed(1).replace(".", ",") : "—"}</strong><span>média</span></div><div><strong>${wins}</strong><span>vitórias</span></div>`;
+  $("statsGames").innerHTML = results.length ? results.map(({ game, score }) => `<div class="history-row"><strong>${esc(game.nome)}</strong><span>${score.pontos} pontos</span></div>`).join("") : `<p class="empty-inline">Nenhuma partida finalizada para este jogador.</p>`;
+  setModal("statsModal", true);
 }
 
 function renderGames() {
@@ -267,9 +356,11 @@ function renderGames() {
     const scores = gameScores(game.id);
     const done = scores.filter((score) => score.finalizado && score.pontos != null).length;
     const total = scores.length;
-    return `<button class="game-card ${game.id === state.activeGameId ? "game-card--active" : ""}" type="button" data-game-id="${esc(game.id)}"><div class="game-card-top"><span class="eyebrow">${fmtDate(game.created_at)}</span><span class="status-pill status-pill--${game.status === "final" ? "success" : "warning"}">${game.status === "final" ? "Final" : "Parcial"}</span></div><h4>${esc(game.nome)}</h4><p>${done} de ${total} resultados confirmados</p><div class="game-progress"><span style="width:${total ? (done / total) * 100 : 0}%"></span></div></button>`;
+    return `<article class="game-card ${game.id === state.activeGameId ? "game-card--active" : ""}"><button class="game-card-select" type="button" data-game-id="${esc(game.id)}"><div class="game-card-top"><span class="eyebrow">${fmtDate(game.created_at)}</span><span class="status-pill status-pill--${game.status === "final" ? "success" : "warning"}">${game.status === "final" ? "Final" : "Parcial"}</span></div><h4>${esc(game.nome)}</h4><p>${done} de ${total} resultados confirmados</p><div class="game-progress"><span style="width:${total ? (done / total) * 100 : 0}%"></span></div></button>${isAdmin() ? `<div class="game-card-actions"><button class="text-button" type="button" data-edit-game="${esc(game.id)}">Editar</button><button class="text-button text-button--danger" type="button" data-delete-game="${esc(game.id)}">Excluir</button></div>` : ""}</article>`;
   }).join("") : `<div class="empty-state empty-state--wide"><strong>Nenhuma partida cadastrada</strong><span>O administrador pode abrir a primeira partida.</span></div>`;
   document.querySelectorAll("[data-game-id]").forEach((button) => button.addEventListener("click", () => { state.activeGameId = button.dataset.gameId; render(); }));
+  document.querySelectorAll("[data-edit-game]").forEach((button) => button.addEventListener("click", () => editGame(button.dataset.editGame)));
+  document.querySelectorAll("[data-delete-game]").forEach((button) => button.addEventListener("click", () => removeGame(button.dataset.deleteGame)));
 }
 
 function renderPlayerSelection() {
@@ -279,8 +370,73 @@ function renderPlayerSelection() {
 }
 
 function renderPlayers() {
-  $("playersList").innerHTML = state.players.length ? state.players.map((player) => `<div class="player-row"><div><strong>${esc(player.nome)}</strong><small>${esc(player.apelido_placar || "sem apelido")} · Pista ${esc(player.pista || "—")}</small></div><button class="text-button text-button--danger" type="button" data-delete-player="${esc(player.id)}">Remover</button></div>`).join("") : `<p class="empty-inline">Nenhum participante cadastrado.</p>`;
+  $("playersList").innerHTML = state.players.length ? state.players.map((player) => `<div class="player-row"><div><strong>${esc(player.nome)}</strong><small>${esc(player.apelido_placar || "sem apelido")} · Pista ${esc(player.pista || "—")}</small></div><div class="player-row-actions"><button class="text-button" type="button" data-edit-player="${esc(player.id)}">Editar</button><button class="text-button text-button--danger" type="button" data-delete-player="${esc(player.id)}">Remover</button></div></div>`).join("") : `<p class="empty-inline">Nenhum participante cadastrado.</p>`;
+  document.querySelectorAll("[data-edit-player]").forEach((button) => button.addEventListener("click", () => editPlayer(button.dataset.editPlayer)));
   document.querySelectorAll("[data-delete-player]").forEach((button) => button.addEventListener("click", () => removePlayer(button.dataset.deletePlayer)));
+  renderLanes();
+}
+
+function renderLanes() {
+  const laneSelect = $("playerLane");
+  const selected = laneSelect.value;
+  laneSelect.innerHTML = `<option value="">Selecione a pista</option>${state.lanes.map((lane) => `<option value="${esc(lane.name)}">${esc(lane.name)}</option>`).join("")}`;
+  if (state.lanes.some((lane) => lane.name === selected)) laneSelect.value = selected;
+  $("lanesList").innerHTML = state.lanes.length ? state.lanes.map((lane) => `<div class="lane-row"><strong>Pista ${esc(lane.name)}</strong><div class="player-row-actions"><button class="text-button" type="button" data-edit-lane="${esc(lane.name)}">Editar</button><button class="text-button text-button--danger" type="button" data-delete-lane="${esc(lane.name)}">Excluir</button></div></div>`).join("") : `<p class="empty-inline">Nenhuma pista cadastrada.</p>`;
+  $("lanesList").querySelectorAll("[data-edit-lane]").forEach((button) => button.addEventListener("click", () => editLane(button.dataset.editLane)));
+  $("lanesList").querySelectorAll("[data-delete-lane]").forEach((button) => button.addEventListener("click", () => removeLane(button.dataset.deleteLane)));
+}
+
+function editLane(name) {
+  state.editingLaneName = name;
+  $("laneName").value = name;
+  $("saveLaneButton").textContent = "Salvar pista";
+  $("cancelLaneEditButton").hidden = false;
+  $("laneName").focus();
+}
+
+function cancelLaneEdit() {
+  state.editingLaneName = null;
+  $("laneName").value = "";
+  $("saveLaneButton").textContent = "Adicionar pista";
+  $("cancelLaneEditButton").hidden = true;
+}
+
+async function saveLane() {
+  const name = $("laneName").value.trim();
+  if (!name || name.length > 20) return showToast("Informe uma pista com até 20 caracteres.", "error");
+  const editing = state.editingLaneName;
+  const query = editing ? client.from("lanes").update({ name }).eq("name", editing) : client.from("lanes").insert({ name });
+  const { error } = await query;
+  if (error) return showToast("Não foi possível salvar a pista. Confira se o nome já existe.", "error");
+  cancelLaneEdit(); await loadData(); render();
+  showToast(editing ? "Pista renomeada; jogadores atualizados." : "Pista adicionada.", "success");
+}
+
+async function removeLane(name) {
+  if (!window.confirm(`Excluir a pista ${name}? Realoque seus jogadores antes de excluir.`)) return;
+  const { error } = await client.from("lanes").delete().eq("name", name).select("name").single();
+  if (error) return showToast("A pista ainda tem jogadores. Realoque-os antes de excluir.", "error");
+  await loadData(); render(); showToast("Pista excluída.", "success");
+}
+
+function editPlayer(id) {
+  const player = getPlayer(id);
+  if (!player) return;
+  state.editingPlayerId = id;
+  $("playerName").value = player.nome;
+  $("playerNickname").value = player.apelido_placar;
+  $("playerLane").value = player.pista;
+  $("addPlayerButton").textContent = "Salvar";
+  $("cancelPlayerEditButton").hidden = false;
+  $("playerName").focus();
+}
+
+function cancelPlayerEdit() {
+  state.editingPlayerId = null;
+  ["playerName", "playerNickname", "playerLane"].forEach((id) => $(id).value = "");
+  $("addPlayerButton").textContent = "Adicionar";
+  $("cancelPlayerEditButton").hidden = true;
+  $("playerLane").value = state.lanes[0]?.name || "";
 }
 
 function renderPhotoOptions() {
@@ -289,15 +445,35 @@ function renderPhotoOptions() {
   const currentGameValue = gameSelect.value || state.activeGameId || state.games[0]?.id || "";
   gameSelect.innerHTML = state.games.map((game) => `<option value="${esc(game.id)}">${esc(game.nome)} · ${game.status === "final" ? "final" : "parcial"}</option>`).join("");
   if (state.games.some((game) => game.id === currentGameValue)) gameSelect.value = currentGameValue;
-  const lanes = [...new Set(state.players.map((player) => player.pista).filter(Boolean))].sort((a, b) => String(a).localeCompare(String(b), "pt-BR", { numeric: true }));
+  const linkedIds = new Set(gameScores(gameSelect.value).map((score) => score.player_id));
+  const lanes = [...new Set(state.players.filter((player) => linkedIds.has(player.id)).map((player) => player.pista).filter(Boolean))].sort((a, b) => String(a).localeCompare(String(b), "pt-BR", { numeric: true }));
   const currentLane = laneSelect.value || lanes[0] || "";
   laneSelect.innerHTML = lanes.map((lane) => `<option value="${esc(lane)}">Pista ${esc(lane)}</option>`).join("");
   if (lanes.includes(currentLane)) laneSelect.value = currentLane;
   updateReviewTable();
 }
 
-function playersOnLane(lane = $("photoLane").value) {
-  return state.players.filter((player) => String(player.pista) === String(lane));
+function playersOnLane(lane = $("photoLane").value, gameId = $("photoGame").value) {
+  const linkedIds = new Set(gameScores(gameId).map((score) => score.player_id));
+  return state.players.filter((player) => linkedIds.has(player.id) && String(player.pista) === String(lane));
+}
+
+function updatePhotoConfirmState() {
+  const rows = [...document.querySelectorAll("[data-review-player]")];
+  const values = rows.map((row) => row.querySelector(".review-score").value);
+  let hasChange = false;
+  rows.forEach((row) => {
+    const value = row.querySelector(".review-score").value;
+    const finalizado = row.querySelector(".review-final").checked;
+    const old = row.dataset.oldScore;
+    const oldFinal = row.dataset.oldFinal === "true";
+    const hint = row.querySelector(".review-score-wrap small");
+    hint.textContent = value === "" ? (old === "" ? "Sem pontuação" : `Atual: ${old}`) : `${old === "" ? "—" : old} → ${value}`;
+    if (value !== "" && (value !== old || finalizado !== oldFinal)) hasChange = true;
+  });
+  const valid = values.every((value) => value === "" || (/^\d+$/.test(value) && Number(value) <= 300));
+  $("confirmPhotoButton").disabled = !rows.length || !hasChange || !valid;
+  $("reviewPendingNote").hidden = !hasChange;
 }
 
 function updateReviewTable(suggestions = new Map()) {
@@ -310,10 +486,9 @@ function updateReviewTable(suggestions = new Map()) {
     const suggestion = suggestions.get(player.id);
     const value = suggestion?.value ?? (old?.pontos ?? "");
     const finalizado = suggestion ? false : Boolean(old?.finalizado);
-    const hint = suggestion?.hint || (old?.pontos != null ? `Atual: ${old.pontos}` : "Aguardando leitura");
-    return `<div class="review-row" data-review-player="${esc(player.id)}"><div class="review-player"><strong>${esc(player.nome)}</strong><small>${esc(player.apelido_placar || "sem apelido")} · pista ${esc(player.pista || "—")}</small></div><div class="review-score-wrap"><input class="review-score" type="number" min="0" max="300" step="1" inputmode="numeric" placeholder="—" value="${value === "" ? "" : esc(value)}" aria-label="Pontos de ${esc(player.nome)}" /><small>${esc(hint)}</small></div><label class="review-confirm"><input class="review-final" type="checkbox" ${finalizado ? "checked" : ""} /> confirmar</label></div>`;
+    return `<div class="review-row" data-review-player="${esc(player.id)}" data-old-score="${old?.pontos ?? ""}" data-old-final="${Boolean(old?.finalizado)}"><div class="review-player"><strong>${esc(player.nome)}</strong><small>${esc(player.apelido_placar || "sem apelido")} · pista ${esc(player.pista || "—")}</small></div><div class="review-score-wrap"><input class="review-score" type="number" min="0" max="300" step="1" inputmode="numeric" placeholder="—" value="${value === "" ? "" : esc(value)}" aria-label="Pontos de ${esc(player.nome)}" /><small></small></div><label class="review-confirm"><input class="review-final" type="checkbox" ${finalizado ? "checked" : ""} /> confirmar</label></div>`;
   }).join("") : `<div class="empty-state"><strong>Nenhum jogador nessa pista</strong><span>Cadastre o participante com o número da pista antes de importar.</span></div>`;
-  $("confirmPhotoButton").disabled = !rows.length;
+  updatePhotoConfirmState();
 }
 
 function openAuth() {
@@ -329,24 +504,30 @@ function openAuth() {
 async function signOut() {
   if (client) await client.auth.signOut();
   state.session = null;
+  state.profiles = [];
+  state.scoreChanges = [];
   state.recovering = false;
   sessionStorage.removeItem("boliche-recovery-user");
   setModal("recoveryModal", false);
+  ["approvalsModal", "historyModal", "playersModal", "gameModal", "photoModal"].forEach((id) => setModal(id, false));
   showToast("Sessão encerrada.", "info");
+  try { await loadData(); } catch (error) { console.error(error); }
   render();
 }
 
 async function submitAuth(event) {
   event.preventDefault();
   if (!client) return;
-  const { error } = await client.auth.signInWithPassword({ email: $("authEmail").value.trim(), password: $("authPassword").value });
+  const { data, error } = await client.auth.signInWithPassword({ email: $("authEmail").value.trim(), password: $("authPassword").value });
   if (error) {
     $("authError").textContent = "Não foi possível entrar. Confira o e-mail e a senha.";
     $("authError").hidden = false;
     return;
   }
+  state.session = data.session;
   setModal("authModal", false);
   await loadProfile();
+  try { await loadData(); } catch (loadError) { console.error(loadError); showToast("Sessão iniciada, mas a lista não atualizou. Recarregue a página.", "error"); }
   render();
   showProfileIfNeeded();
   showToast(isAdmin() ? "Sessão de administrador iniciada." : "Sessão iniciada.", "success");
@@ -397,7 +578,7 @@ async function submitProfile(event) {
     errorElement.hidden = false;
     return;
   }
-  if (file && (!file.type.startsWith("image/") || file.size > 5 * 1024 * 1024)) {
+  if (file && (!["image/jpeg", "image/png", "image/webp"].includes(file.type) || file.size > 5 * 1024 * 1024)) {
     errorElement.textContent = "Escolha uma imagem JPG, PNG ou WebP de até 5 MB.";
     errorElement.hidden = false;
     return;
@@ -414,7 +595,7 @@ async function submitProfile(event) {
     }
   }
   const payload = { id: state.session.user.id, nome, foto_path: fotoPath, status: state.profile?.status || "pending" };
-  const { data, error } = await client.from("profiles").upsert(payload).select("id,nome,foto_path,status").single();
+  const { data, error } = await client.from("profiles").upsert(payload).select("id,nome,foto_path,status,player_id").single();
   if (error) {
     if (file) await client.storage.from("profile-photos").remove([fotoPath]);
     errorElement.textContent = "Não foi possível salvar seu cadastro.";
@@ -424,7 +605,7 @@ async function submitProfile(event) {
   state.profile = data;
   setModal("profileModal", false);
   render();
-  showToast("Perfil salvo e enviado para aprovação.", "success");
+  showToast(data.status === "approved" ? "Perfil atualizado." : "Perfil salvo e enviado para aprovação.", "success");
 }
 
 async function addPlayer() {
@@ -434,21 +615,26 @@ async function addPlayer() {
   if (!nome || !apelido_placar || !pista) return showToast("Preencha nome, apelido e pista.", "error");
   const row = { nome, apelido_placar, pista };
   if (!client) return showToast("Supabase não configurado.", "error");
-  const { data, error } = await client.from("players").insert(row).select("id,nome,apelido_placar,pista").single();
-  if (error) return showToast("Não foi possível cadastrar o participante.", "error");
-  state.players.push(data);
-  ["playerName", "playerNickname", "playerLane"].forEach((id) => $(id).value = "");
+  const editing = Boolean(state.editingPlayerId);
+  const query = editing
+    ? client.from("players").update(row).eq("id", state.editingPlayerId)
+    : client.from("players").insert(row);
+  const { data, error } = await query.select("id,nome,apelido_placar,pista").single();
+  if (error) return showToast(editing ? "Não foi possível salvar o participante." : "Não foi possível cadastrar o participante.", "error");
+  if (editing) state.players = state.players.map((player) => player.id === data.id ? data : player);
+  else state.players.push(data);
+  cancelPlayerEdit();
   renderPlayers(); renderPlayerSelection(); renderPhotoOptions();
-  showToast(`${nome} foi cadastrado.`, "success");
+  showToast(editing ? `${nome} foi atualizado.` : `${nome} foi cadastrado.`, "success");
 }
 
 async function removePlayer(id) {
-  if (!window.confirm("Remover este participante? Pontuações já publicadas não serão apagadas.")) return;
+  const player = getPlayer(id);
+  if (!window.confirm(`Excluir ${player?.nome || "este jogador"}? Suas pontuações, alterações e posição no ranking serão removidas permanentemente.`)) return;
   if (!client) return showToast("Supabase não configurado.", "error");
-  const { error } = await client.from("players").delete().eq("id", id);
+  const { error } = await client.rpc("delete_player_cascade", { p_player_id: id });
   if (error) return showToast("Não foi possível remover o participante.", "error");
-  state.players = state.players.filter((player) => player.id !== id);
-  render();
+  await loadData(); render(); showToast("Jogador e pontuações excluídos.", "success");
 }
 
 async function createGame(event) {
@@ -457,6 +643,16 @@ async function createGame(event) {
   const playerIds = [...document.querySelectorAll("#playerSelection input:checked")].map((input) => input.value);
   if (!nome || !playerIds.length) return showToast("Informe um nome e selecione pelo menos um participante.", "error");
   if (!client) return showToast("Supabase não configurado.", "error");
+  if (state.editingGameId) {
+    const gameId = state.editingGameId;
+    const removedWithScores = gameScores(gameId).some((score) => !playerIds.includes(score.player_id) && score.pontos != null);
+    if (removedWithScores && !window.confirm("Remover jogadores desta partida apagará suas pontuações e o histórico de alterações. Continuar?")) return;
+    const { error } = await client.rpc("edit_game", { p_game_id: gameId, p_name: nome, p_player_ids: playerIds });
+    if (error) return showToast("Não foi possível salvar a partida.", "error");
+    state.editingGameId = null;
+    setModal("gameModal", false); await loadData(); render(); showToast("Partida atualizada.", "success");
+    return;
+  }
   const { data, error } = await client.from("games").insert({ nome, status: "partial" }).select("id,nome,status,created_at,updated_at").single();
   if (error) return showToast("Não foi possível abrir a partida.", "error");
   const { data: insertedScores, error: scoresError } = await client.from("scores").insert(playerIds.map((player_id) => ({ game_id: data.id, player_id, pontos: null, finalizado: false }))).select("id,game_id,player_id,pontos,finalizado,updated_at");
@@ -468,11 +664,132 @@ async function createGame(event) {
 }
 
 function openGameModal() {
+  state.editingGameId = null;
+  $("gameSubmitButton").textContent = "Abrir partida";
+  $("gameModalTitle").textContent = "Nova partida";
   $("gameName").value = `Partida ${state.games.length + 1}`;
   renderPlayerSelection(); setModal("gameModal", true);
 }
 
-function openPlayersModal() { renderPlayers(); setModal("playersModal", true); }
+function editGame(id) {
+  const game = getGame(id);
+  if (!game) return;
+  state.editingGameId = id;
+  $("gameModalTitle").textContent = "Editar partida";
+  $("gameSubmitButton").textContent = "Salvar partida";
+  $("gameName").value = game.nome;
+  renderPlayerSelection();
+  const linked = new Set(gameScores(id).map((score) => score.player_id));
+  $("playerSelection").querySelectorAll("input").forEach((input) => input.checked = linked.has(input.value));
+  setModal("gameModal", true);
+}
+
+async function removeGame(id) {
+  const game = getGame(id);
+  if (!window.confirm(`Excluir ${game?.nome || "esta partida"}? Todos os pontos e o histórico desta partida serão removidos permanentemente; o ranking será recalculado.`)) return;
+  const { error } = await client.from("games").delete().eq("id", id).select("id").single();
+  if (error) return showToast("Não foi possível excluir a partida.", "error");
+  await loadData(); render(); showToast("Partida e resultados excluídos.", "success");
+}
+
+function openPlayersModal() { cancelPlayerEdit(); cancelLaneEdit(); renderPlayers(); setModal("playersModal", true); }
+
+function renderApprovals() {
+  $("approvalsList").innerHTML = state.profiles.length ? state.profiles.map((profile) => {
+    const linked = state.profiles.filter((item) => item.id !== profile.id).map((item) => item.player_id).filter(Boolean);
+    const candidates = state.players.filter((player) => !linked.includes(player.id));
+    const exactMatches = candidates.filter((player) => normalize(player.nome) === normalize(profile.nome || ""));
+    const suggestedId = profile.player_id || (exactMatches.length === 1 ? exactMatches[0].id : null);
+    const options = candidates.map((player) => `<option value="${esc(player.id)}" ${player.id === suggestedId ? "selected" : ""}>${esc(player.nome)} · pista ${esc(player.pista)}</option>`).join("");
+    const name = profile.nome || "Sem nome";
+    const label = profile.is_admin_account ? "Administrador" : !profile.foto_path ? "Aguardando perfil com foto" : profile.status === "approved" ? "Aprovado" : profile.status === "rejected" ? "Recusado" : "Pendente";
+    const actions = profile.is_admin_account ? "" : `<div class="approval-actions">${profile.foto_path ? `<button class="button button--primary" type="button" data-approve="${esc(profile.id)}">Aprovar</button><button class="button button--quiet" type="button" data-reject="${esc(profile.id)}">Recusar</button><button class="text-button" type="button" data-edit-account="${esc(profile.id)}">Editar nome</button>` : ""}<button class="text-button text-button--danger" type="button" data-delete-account="${esc(profile.id)}">Excluir conta</button></div>`;
+    return `<div class="approval-row" data-profile-id="${esc(profile.id)}">${profile.photoUrl ? `<img src="${esc(profile.photoUrl)}" alt="Foto de ${esc(name)}" />` : `<span class="approval-no-photo">Sem foto</span>`}<div><strong>${esc(name)}</strong><small>${esc(profile.email || "Sem e-mail")} · ${label}</small></div><select aria-label="Jogador vinculado a ${esc(name)}" ${profile.foto_path && !profile.is_admin_account ? "" : "disabled"}><option value="">Selecione o jogador existente</option>${options}</select>${actions}</div>`;
+  }).join("") : `<p class="empty-inline">Nenhum cadastro recebido.</p>`;
+  $("approvalsList").querySelectorAll("[data-approve]").forEach((button) => button.addEventListener("click", () => setProfileApproval(button.dataset.approve, "approved")));
+  $("approvalsList").querySelectorAll("[data-reject]").forEach((button) => button.addEventListener("click", () => setProfileApproval(button.dataset.reject, "rejected")));
+  $("approvalsList").querySelectorAll("[data-edit-account]").forEach((button) => button.addEventListener("click", () => editAccountName(button.dataset.editAccount)));
+  $("approvalsList").querySelectorAll("[data-delete-account]").forEach((button) => button.addEventListener("click", () => deleteAccount(button.dataset.deleteAccount)));
+}
+
+async function setProfileApproval(id, status) {
+  const profile = state.profiles.find((item) => item.id === id);
+  if (!profile?.foto_path) return showToast("A conta precisa concluir o perfil com uma foto.", "error");
+  const row = [...$("approvalsList").querySelectorAll("[data-profile-id]")].find((item) => item.dataset.profileId === id);
+  const playerId = status === "approved" ? row?.querySelector("select")?.value : null;
+  if (status === "approved" && !playerId) return showToast("Selecione o jogador existente antes de aprovar.", "error");
+  const { error } = await client.from("profiles").update({ status, player_id: playerId }).eq("id", id);
+  if (error) return showToast("Não foi possível atualizar a aprovação.", "error");
+  await loadData(); render();
+  showToast(status === "approved" ? "Cadastro aprovado e vinculado ao jogador." : "Cadastro recusado.", "success");
+}
+
+async function editAccountName(id) {
+  const profile = state.profiles.find((item) => item.id === id);
+  if (!profile?.foto_path) return;
+  const name = window.prompt("Nome do cadastro", profile.nome || "")?.trim();
+  if (name == null) return;
+  if (!name || name.length > 80) return showToast("Informe um nome com até 80 caracteres.", "error");
+  const { error } = await client.from("profiles").update({ nome: name }).eq("id", id);
+  if (error) return showToast("Não foi possível atualizar o nome.", "error");
+  await loadData(); render(); showToast("Nome do cadastro atualizado.", "success");
+}
+
+async function deleteAccount(id) {
+  const account = state.profiles.find((item) => item.id === id);
+  if (!account || account.is_admin_account || id === state.session?.user?.id) return;
+  if (!window.confirm(`Excluir permanentemente a conta ${account.email || account.nome || id}? O acesso será removido; o jogador e seus pontos continuarão até serem excluídos separadamente.`)) return;
+  const bucket = client.storage.from("profile-photos");
+  for (;;) {
+    const { data, error } = await bucket.list(id, { limit: 1000 });
+    if (error) return showToast("Não foi possível listar as fotos da conta.", "error");
+    const files = (data || []).filter((item) => item.id).map((item) => `${id}/${item.name}`);
+    if (!files.length) break;
+    const { error: removeError } = await bucket.remove(files);
+    if (removeError) return showToast("Não foi possível remover as fotos. A conta foi mantida.", "error");
+  }
+  const { error } = await client.rpc("delete_registered_user", { p_user_id: id });
+  if (error) return showToast("Fotos removidas, mas a conta não pôde ser excluída. Tente novamente ou use o painel Auth.", "error");
+  await loadData(); render(); showToast("Conta excluída.", "success");
+}
+
+function openApprovalsModal() { renderApprovals(); setModal("approvalsModal", true); }
+
+function renderScoreHistory() {
+  $("scoreHistoryList").innerHTML = state.scoreChanges.length ? state.scoreChanges.map((change, index) => {
+    const player = getPlayer(change.player_id);
+    const game = getGame(change.game_id);
+    const actor = state.profiles.find((profile) => profile.id === change.actor_id)?.nome || (change.actor_id === state.session?.user?.id ? "Você" : "Administrador");
+    const canUndo = !state.scoreChanges.slice(0, index).some((newer) => newer.score_id === change.score_id);
+    return `<div class="history-row"><div><strong>${esc(player?.nome || "Jogador")}</strong><small>${esc(game?.nome || "Partida")} · ${fmtDate(change.changed_at)} · ${esc(actor)}</small><span>${change.previous_points ?? "—"} → ${change.new_points ?? "—"}${change.previous_finalized !== change.new_finalized ? ` · ${change.new_finalized ? "confirmado" : "pendente"}` : ""}</span></div>${canUndo ? `<button class="text-button" type="button" data-undo-change="${change.id}">Desfazer</button>` : ""}</div>`;
+  }).join("") : `<p class="empty-inline">Nenhuma alteração registrada.</p>`;
+  $("scoreHistoryList").querySelectorAll("[data-undo-change]").forEach((button) => button.addEventListener("click", () => undoScoreChange(Number(button.dataset.undoChange))));
+}
+
+async function undoScoreChange(id) {
+  if (!window.confirm("Desfazer esta alteração de pontuação?")) return;
+  const { error } = await client.rpc("undo_score_change", { p_change_id: id });
+  if (error) return showToast("Não foi possível desfazer: o resultado pode ter sido alterado depois.", "error");
+  await loadData(); render(); showToast("Alteração desfeita.", "success");
+}
+
+function openHistoryModal() { renderScoreHistory(); setModal("historyModal", true); }
+
+const shareUrl = "https://munizmath.github.io/boliche/";
+async function copyShareLink() {
+  try {
+    await navigator.clipboard.writeText(shareUrl);
+    showToast("Link do placar copiado.", "success");
+  } catch {
+    showToast("Abra o link exibido e copie o endereço do navegador.", "error");
+  }
+}
+
+async function shareScoreboard() {
+  if (!navigator.share) return copyShareLink();
+  try { await navigator.share({ title: "Boliche dos Amigos", url: shareUrl }); }
+  catch (error) { if (error.name !== "AbortError") showToast("Não foi possível compartilhar o link.", "error"); }
+}
 
 function openPhotoModal() {
   if (!state.games.length) return showToast("Abra uma partida antes de importar uma foto.", "error");
@@ -480,23 +797,31 @@ function openPhotoModal() {
 }
 
 function resetPhotoState() {
+  if (state.imageUrl) URL.revokeObjectURL(state.imageUrl);
+  state.imageUrl = null;
   state.crop = null; state.image = null; state.imageFile = null;
-  $("photoInput").value = ""; $("canvasPlaceholder").hidden = false; $("photoCanvas").hidden = true; $("runOcrButton").disabled = true; $("confirmPhotoButton").disabled = true; $("ocrStatus").textContent = "Nenhuma imagem selecionada."; updateReviewTable();
+  $("photoInput").value = ""; $("canvasPlaceholder").hidden = false; $("photoCanvas").hidden = true; $("runOcrButton").disabled = true; $("ocrStatus").textContent = "Foto opcional: você também pode preencher os pontos manualmente."; updateReviewTable();
 }
 
 function loadPhoto(event) {
   const file = event.target.files?.[0];
   if (!file) return;
+  if (state.imageUrl) URL.revokeObjectURL(state.imageUrl);
   state.imageFile = file;
   const image = new Image();
+  const imageUrl = URL.createObjectURL(file);
+  state.imageUrl = imageUrl;
   image.onload = () => {
+    if (state.imageUrl !== imageUrl) return;
+    URL.revokeObjectURL(imageUrl); state.imageUrl = null;
     state.image = image;
     const canvas = $("photoCanvas");
     const scale = Math.min(1, 900 / image.naturalWidth);
     canvas.width = Math.round(image.naturalWidth * scale); canvas.height = Math.round(image.naturalHeight * scale);
     canvas.hidden = false; $("canvasPlaceholder").hidden = true; drawCanvas(); $("runOcrButton").disabled = false; $("ocrStatus").textContent = "Imagem pronta. Recorte a região se quiser e leia as sugestões.";
   };
-  image.src = URL.createObjectURL(file);
+  image.onerror = () => { if (state.imageUrl !== imageUrl) return; URL.revokeObjectURL(imageUrl); state.imageUrl = null; $("ocrStatus").textContent = "Não foi possível abrir a foto. Preencha os pontos manualmente."; };
+  image.src = imageUrl;
 }
 
 function drawCanvas() {
@@ -511,8 +836,15 @@ function drawCanvas() {
 }
 
 function canvasPoint(event) {
-  const rect = $("photoCanvas").getBoundingClientRect();
-  return { x: Math.max(0, Math.min($("photoCanvas").width, event.clientX - rect.left)), y: Math.max(0, Math.min($("photoCanvas").height, event.clientY - rect.top)) };
+  const canvas = $("photoCanvas");
+  const rect = canvas.getBoundingClientRect();
+  const scale = Math.min(rect.width / canvas.width, rect.height / canvas.height);
+  const offsetX = (rect.width - canvas.width * scale) / 2;
+  const offsetY = (rect.height - canvas.height * scale) / 2;
+  return {
+    x: Math.max(0, Math.min(canvas.width, (event.clientX - rect.left - offsetX) / scale)),
+    y: Math.max(0, Math.min(canvas.height, (event.clientY - rect.top - offsetY) / scale)),
+  };
 }
 
 function startCrop(event) {
@@ -535,42 +867,35 @@ async function runOcr() {
     const suggestions = buildSuggestions(result.data.text || "");
     updateReviewTable(suggestions);
     $("ocrStatus").textContent = suggestions.size ? `OCR encontrou ${suggestions.size} sugestão(ões). Revise antes de confirmar.` : "OCR não encontrou associações confiáveis. Preencha a tabela manualmente.";
-    $("confirmPhotoButton").disabled = false;
+    updatePhotoConfirmState();
   } catch (error) {
-    console.error(error); $("ocrStatus").textContent = "Não foi possível ler a foto. A conferência manual continua disponível."; updateReviewTable(); $("confirmPhotoButton").disabled = false;
+    console.error(error); $("ocrStatus").textContent = "Não foi possível ler a foto. Preencha os pontos manualmente."; updatePhotoConfirmState();
   } finally { $("runOcrButton").disabled = false; }
 }
 
 function getOcrCanvas() {
   const source = document.createElement("canvas");
   const crop = state.crop && state.crop.width > 12 ? state.crop : { x: 0, y: 0, width: $("photoCanvas").width, height: $("photoCanvas").height };
-  source.width = Math.round(crop.width * state.image.naturalWidth / $("photoCanvas").width); source.height = Math.round(crop.height * state.image.naturalHeight / $("photoCanvas").height);
-  source.getContext("2d").drawImage(state.image, crop.x * state.image.naturalWidth / $("photoCanvas").width, crop.y * state.image.naturalHeight / $("photoCanvas").height, source.width, source.height, 0, 0, source.width, source.height);
+  const sourceWidth = crop.width * state.image.naturalWidth / $("photoCanvas").width;
+  const sourceHeight = crop.height * state.image.naturalHeight / $("photoCanvas").height;
+  const scale = Math.min(1, 1800 / sourceWidth, 1800 / sourceHeight);
+  source.width = Math.max(1, Math.round(sourceWidth * scale)); source.height = Math.max(1, Math.round(sourceHeight * scale));
+  source.getContext("2d").drawImage(state.image, crop.x * state.image.naturalWidth / $("photoCanvas").width, crop.y * state.image.naturalHeight / $("photoCanvas").height, sourceWidth, sourceHeight, 0, 0, source.width, source.height);
   return source;
 }
 
 function buildSuggestions(text) {
-  const suggestions = new Map(); const numbers = [...text.matchAll(/\b(?:[0-9]{1,3})\b/g)].map((match) => ({ value: Number(match[0]), index: match.index })).filter((item) => item.value <= 300);
-  const used = new Set();
-  playersOnLane().forEach((player, index) => {
-    const aliases = [player.nome, player.apelido_placar].filter(Boolean).map(normalize);
-    const textNormalized = normalize(text);
-    const aliasIndex = aliases.map((alias) => textNormalized.indexOf(alias)).find((position) => position >= 0);
-    const rowMatch = [...text.matchAll(/^.*$/gm)].find((match) => {
-      const line = match[0];
-      const normalizedLine = normalize(line);
-      return aliases.some((alias) => alias && normalizedLine.includes(alias));
-    });
-    const row = rowMatch?.[0] || "";
-    const rowOffset = rowMatch?.index || 0;
-    const rowNumbers = [...row.matchAll(/\b(?:[0-9]{1,3})\b/g)].map((match) => ({ value: Number(match[0]), index: rowOffset + match.index })).filter((item) => item.value <= 300);
-    let candidate = rowNumbers.filter((item) => !used.has(item.index)).sort((a, b) => b.value - a.value || b.index - a.index)[0];
-    if (!candidate && aliasIndex >= 0) {
-      const nextAliasIndex = playersOnLane().slice(index + 1).flatMap((nextPlayer) => [nextPlayer.nome, nextPlayer.apelido_placar].filter(Boolean).map((alias) => textNormalized.indexOf(normalize(alias))).filter((position) => position > aliasIndex)).sort((a, b) => a - b)[0] ?? text.length;
-      candidate = numbers.filter((item) => !used.has(item.index) && item.index >= aliasIndex && item.index < nextAliasIndex).sort((a, b) => b.value - a.value || b.index - a.index)[0];
-    }
-    if (!candidate || used.has(candidate.index)) return;
-    used.add(candidate.index); suggestions.set(player.id, { value: candidate.value, hint: "Sugestão OCR · confira" });
+  const suggestions = new Map();
+  const players = playersOnLane();
+  text.split(/\r?\n/).forEach((line) => {
+    const normalizedLine = normalize(line);
+    const matches = players.filter((player) => [player.nome, player.apelido_placar]
+      .filter(Boolean).some((alias) => normalizedLine.includes(normalize(alias))));
+    if (matches.length !== 1 || suggestions.has(matches[0].id)) return;
+    const values = [...line.matchAll(/\b\d{1,3}\b/g)]
+      .map((match) => Number(match[0])).filter((value) => value <= 300);
+    if (!values.length) return;
+    suggestions.set(matches[0].id, { value: values.at(-1), hint: "Último total da linha · confira" });
   });
   return suggestions;
 }
@@ -580,23 +905,19 @@ async function confirmPhotoUpdate(event) {
   const gameId = $("photoGame").value; const rows = [...document.querySelectorAll("[data-review-player]")];
   const updates = rows.map((row) => ({ player_id: row.dataset.reviewPlayer, pontos: row.querySelector(".review-score").value, finalizado: row.querySelector(".review-final").checked })).filter((row) => row.pontos !== "");
   if (!updates.length) return showToast("Preencha ao menos um total antes de confirmar.", "error");
-  const timestamp = new Date().toISOString();
+  if (updates.some((update) => !/^\d+$/.test(update.pontos) || Number(update.pontos) > 300)) return showToast("Use pontos inteiros entre 0 e 300.", "error");
   if (!client) return showToast("Supabase não configurado.", "error");
   const payload = updates.map((update) => ({ game_id: gameId, player_id: update.player_id, pontos: Number(update.pontos), finalizado: update.finalizado }));
-  const { data, error } = await client.from("scores").upsert(payload, { onConflict: "game_id,player_id" }).select("id,game_id,player_id,pontos,finalizado,updated_at");
-  if (error) return showToast("Não foi possível salvar os pontos. Confira sua permissão de administrador.", "error");
-  data.forEach((saved) => { const index = state.scores.findIndex((score) => score.game_id === saved.game_id && score.player_id === saved.player_id); if (index >= 0) state.scores[index] = saved; else state.scores.push(saved); });
-  await updateGameStatus(gameId);
-  state.activeGameId = gameId; setModal("photoModal", false); render(); showToast("Pontos confirmados e ranking atualizado.", "success");
-}
-
-async function updateGameStatus(gameId) {
-  const game = getGame(gameId); const scores = gameScores(gameId);
-  const final = scores.length > 0 && scores.every((score) => score.finalizado && score.pontos != null);
-  game.status = final ? "final" : "partial"; game.updated_at = new Date().toISOString();
-  if (!client) return;
-  const { error } = await client.from("games").update({ status: game.status }).eq("id", gameId);
-  if (error) console.error(error);
+  const { error } = await client.rpc("save_game_scores", { p_game_id: gameId, p_updates: payload });
+  if (error) return showToast("Não foi possível salvar os pontos: confira jogadores, partida e permissão.", "error");
+  state.activeGameId = gameId;
+  setModal("photoModal", false);
+  try {
+    await loadData(); render(); showToast("Pontos confirmados e ranking atualizado.", "success");
+  } catch (refreshError) {
+    console.error(refreshError);
+    showToast("Pontos salvos, mas a tela não atualizou. Recarregue a página.", "error");
+  }
 }
 
 function initTheme() {
@@ -607,12 +928,23 @@ function initTheme() {
 
 function bindEvents() {
   initTheme();
+  window.addEventListener("online", refreshAfterReconnect);
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) refreshAfterReconnect(); });
   $("recoveryForm").addEventListener("submit", submitRecovery);
   $("recoverySignOut").addEventListener("click", signOut);
   $("recoveryModal").addEventListener("cancel", (event) => event.preventDefault());
   $("authButton").addEventListener("click", openAuth); $("registerButton").addEventListener("click", openRegister); $("profileButton").addEventListener("click", openProfileModal); $("photoButton").addEventListener("click", openPhotoModal); $("newGameButton").addEventListener("click", openGameModal);
-  $("gameForm").addEventListener("submit", createGame); $("authForm").addEventListener("submit", submitAuth); $("registerForm").addEventListener("submit", submitRegister); $("profileForm").addEventListener("submit", submitProfile); $("profilePhoto").addEventListener("change", () => { const file = $("profilePhoto").files?.[0]; if (file) $("profilePhotoName").textContent = file.name; }); $("playersForm").addEventListener("click", (event) => { if (event.target.id === "addPlayerButton") addPlayer(); });
-  $("photoForm").addEventListener("submit", confirmPhotoUpdate); $("photoInput").addEventListener("change", loadPhoto); $("photoLane").addEventListener("change", () => updateReviewTable()); $("photoGame").addEventListener("change", () => updateReviewTable()); $("runOcrButton").addEventListener("click", runOcr); $("clearCropButton").addEventListener("click", () => { state.crop = null; drawCanvas(); });
+  $("gameForm").addEventListener("submit", createGame); $("authForm").addEventListener("submit", submitAuth); $("registerForm").addEventListener("submit", submitRegister); $("profileForm").addEventListener("submit", submitProfile); $("profilePhoto").addEventListener("change", () => { const file = $("profilePhoto").files?.[0]; if (file) $("profilePhotoName").textContent = file.name; }); $("playersForm").addEventListener("click", (event) => { if (event.target.id === "addPlayerButton") addPlayer(); }); $("cancelPlayerEditButton").addEventListener("click", cancelPlayerEdit);
+  $("currentGameSelect").addEventListener("click", () => $("historico").scrollIntoView({ behavior: "smooth", block: "start" }));
+  $("saveLaneButton").addEventListener("click", saveLane);
+  $("cancelLaneEditButton").addEventListener("click", cancelLaneEdit);
+  $("approvalsButton").addEventListener("click", openApprovalsModal);
+  $("historyButton").addEventListener("click", openHistoryModal);
+  $("shareButton").addEventListener("click", () => setModal("shareModal", true));
+  $("copyShareButton").addEventListener("click", copyShareLink);
+  $("nativeShareButton").addEventListener("click", shareScoreboard);
+  $("rankingLane").addEventListener("change", renderLeaderboard);
+  $("photoForm").addEventListener("submit", confirmPhotoUpdate); $("photoInput").addEventListener("change", loadPhoto); $("photoLane").addEventListener("change", () => updateReviewTable()); $("photoGame").addEventListener("change", renderPhotoOptions); $("reviewTable").addEventListener("input", updatePhotoConfirmState); $("runOcrButton").addEventListener("click", runOcr); $("clearCropButton").addEventListener("click", () => { state.crop = null; drawCanvas(); });
   const canvas = $("photoCanvas"); canvas.addEventListener("pointerdown", startCrop); canvas.addEventListener("pointermove", moveCrop); canvas.addEventListener("pointerup", endCrop); canvas.addEventListener("pointercancel", endCrop);
   document.addEventListener("keydown", (event) => { if (event.key === "Escape" && !state.recovering) document.querySelectorAll("dialog[open]").forEach((dialog) => dialog.close()); });
   $("authButton").insertAdjacentHTML("beforebegin", `<button id="playersButton" class="button button--quiet admin-only" type="button" hidden>Participantes</button>`); $("playersButton").addEventListener("click", openPlayersModal);
@@ -632,16 +964,26 @@ function bindEvents() {
 
 async function start() {
   bindEvents();
+  if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js').catch((error) => console.warn('PWA indisponível', error));
   if (client) {
     client.auth.onAuthStateChange((event, session) => {
       if (event === "PASSWORD_RECOVERY") state.recovering = true;
       if (event === "SIGNED_OUT") {
         state.recovering = false;
         sessionStorage.removeItem("boliche-recovery-user");
+        state.profiles = [];
+        state.scoreChanges = [];
+        ["approvalsModal", "historyModal", "playersModal", "gameModal", "photoModal"].forEach((id) => setModal(id, false));
       }
       state.session = session;
       applyAuthUi();
-      window.setTimeout(async () => { await loadProfile(); render(); showProfileIfNeeded(); }, 0);
+      window.setTimeout(async () => {
+        await loadProfile();
+        if (event === "TOKEN_REFRESHED") {
+          try { await loadData(); } catch (error) { console.error(error); }
+        }
+        render(); showProfileIfNeeded();
+      }, 0);
     });
     const { data } = await client.auth.getSession(); state.session = data.session;
     if (data.session?.user?.id === sessionStorage.getItem("boliche-recovery-user")) state.recovering = true;

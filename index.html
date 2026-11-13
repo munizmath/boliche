@@ -8,6 +8,7 @@
     <title>Boliche dos Amigos · Score Board</title>
     <link rel="icon" href="favicon.ico" type="image/x-icon" />
     <link rel="apple-touch-icon" href="apple-touch-icon.png" />
+    <link rel="manifest" href="manifest.webmanifest" />
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
@@ -49,8 +50,11 @@
         <div class="header-actions">
           <span id="connectionStatus" class="status-pill status-pill--muted">Conectando…</span>
           <button id="themeToggle" class="icon-button" type="button" title="Alternar tema" aria-label="Alternar tema">◐</button>
+          <button id="shareButton" class="button button--quiet" type="button">Compartilhar</button>
           <button id="registerButton" class="button button--quiet" type="button">Criar cadastro</button>
           <button id="profileButton" class="button button--quiet" type="button" hidden>Meu cadastro</button>
+          <button id="approvalsButton" class="button button--quiet admin-only" type="button" hidden>Aprovações</button>
+          <button id="historyButton" class="button button--quiet admin-only" type="button" hidden>Alterações</button>
           <button id="authButton" class="button button--quiet" type="button">Entrar</button>
           <button id="photoButton" class="button button--primary admin-only" type="button" hidden>Atualizar por foto</button>
           <button id="newGameButton" class="button button--primary admin-only" type="button" hidden>+ Nova partida</button>
@@ -84,7 +88,7 @@
               <p class="eyebrow">ranking geral</p>
               <h3>Classificação acumulada</h3>
             </div>
-            <span id="leaderboardMeta" class="section-meta">Nenhuma partida finalizada</span>
+            <div class="ranking-controls"><select id="rankingLane" aria-label="Filtrar ranking por pista"><option value="">Todas as pistas</option></select><span id="leaderboardMeta" class="section-meta">Nenhuma partida finalizada</span></div>
           </div>
           <div class="table-wrap">
             <table class="score-table">
@@ -104,7 +108,7 @@
         <article id="importacao" class="glass-card blueprint current-card">
           <div class="section-heading">
             <div>
-              <p class="eyebrow">acompanhamento ao vivo</p>
+              <p class="eyebrow">classificação provisória da partida · ao vivo</p>
               <h3 id="currentGameTitle">Nenhuma partida aberta</h3>
             </div>
             <span id="currentGameStatus" class="status-pill status-pill--muted">Aguardando</span>
@@ -189,12 +193,12 @@
       <form method="dialog" class="modal-card modal-card--wide" id="gameForm">
         <button class="modal-close" value="cancel" aria-label="Fechar">×</button>
         <p class="eyebrow">preparação</p>
-        <h2>Nova partida</h2>
+        <h2 id="gameModalTitle">Nova partida</h2>
         <label>Nome da partida<input id="gameName" type="text" maxlength="80" placeholder="Sexta à noite" required /></label>
         <div class="form-section-heading"><span>Participantes</span><small>Escolha a divisão real das pistas</small></div>
         <div id="playerSelection" class="selection-grid"></div>
         <p id="playerSelectionEmpty" class="empty-inline" hidden>Cadastre os participantes antes de abrir uma partida.</p>
-        <div class="modal-actions"><button class="button button--quiet" value="cancel">Cancelar</button><button class="button button--primary" type="submit">Abrir partida</button></div>
+        <div class="modal-actions"><button class="button button--quiet" value="cancel">Cancelar</button><button id="gameSubmitButton" class="button button--primary" type="submit">Abrir partida</button></div>
       </form>
     </dialog>
 
@@ -204,10 +208,56 @@
         <p class="eyebrow">cadastro</p>
         <h2>Participantes e pistas</h2>
         <p class="modal-copy">O apelido é exatamente como aparece no monitor da pista e ajuda a sugerir a associação na leitura da foto.</p>
-        <div class="player-add-row"><input id="playerName" type="text" placeholder="Nome da pessoa" /><input id="playerNickname" type="text" placeholder="Apelido no placar" /><input id="playerLane" type="text" inputmode="numeric" placeholder="Pista" /><button id="addPlayerButton" class="button button--primary" type="button">Adicionar</button></div>
+        <div class="form-section-heading"><span>Pistas</span><small>Renomear uma pista atualiza os jogadores</small></div>
+        <div class="lane-add-row"><input id="laneName" type="text" maxlength="20" placeholder="Ex.: 1 ou 2" aria-label="Nome da pista" /><button id="saveLaneButton" class="button button--quiet" type="button">Adicionar pista</button><button id="cancelLaneEditButton" class="button button--quiet" type="button" hidden>Cancelar</button></div>
+        <div id="lanesList" class="lanes-list"></div>
+        <div class="form-section-heading"><span>Jogadores</span><small>Escolha uma pista cadastrada</small></div>
+        <div class="player-add-row"><input id="playerName" type="text" placeholder="Nome da pessoa" /><input id="playerNickname" type="text" placeholder="Apelido no placar" /><select id="playerLane" aria-label="Pista do jogador"><option value="">Selecione a pista</option></select><button id="addPlayerButton" class="button button--primary" type="button">Adicionar</button><button id="cancelPlayerEditButton" class="button button--quiet" type="button" hidden>Cancelar</button></div>
         <div id="playersList" class="players-list"></div>
         <div class="modal-actions"><button class="button button--quiet" value="cancel">Fechar</button></div>
       </form>
+    </dialog>
+
+    <dialog id="approvalsModal" class="modal">
+      <div class="modal-card modal-card--wide">
+        <button class="modal-close" type="button" aria-label="Fechar">×</button>
+        <p class="eyebrow">cadastros</p>
+        <h2>Aprovar participantes</h2>
+        <p class="modal-copy">Confira o cadastro e vincule a pessoa ao jogador já existente. A aprovação não cria outro jogador.</p>
+        <div id="approvalsList" class="approvals-list"></div>
+      </div>
+    </dialog>
+
+    <dialog id="historyModal" class="modal">
+      <div class="modal-card modal-card--wide">
+        <button class="modal-close" type="button" aria-label="Fechar">×</button>
+        <p class="eyebrow">auditoria</p>
+        <h2>Alterações dos pontos</h2>
+        <p class="modal-copy">Veja a pontuação anterior e a nova. A alteração mais recente de cada jogador pode ser desfeita.</p>
+        <div id="scoreHistoryList" class="history-list"></div>
+      </div>
+    </dialog>
+
+    <dialog id="statsModal" class="modal">
+      <div class="modal-card">
+        <button class="modal-close" type="button" aria-label="Fechar">×</button>
+        <p class="eyebrow">estatísticas individuais</p>
+        <h2 id="statsTitle">Jogador</h2>
+        <div id="statsSummary" class="stats-summary"></div>
+        <div id="statsGames" class="history-list"></div>
+      </div>
+    </dialog>
+
+    <dialog id="shareModal" class="modal">
+      <div class="modal-card share-card">
+        <button class="modal-close" type="button" aria-label="Fechar">×</button>
+        <p class="eyebrow">convide os amigos</p>
+        <h2>Acompanhar o placar</h2>
+        <p class="modal-copy">Escaneie o QR Code ou compartilhe o link. O placar pode ser visto sem cadastro.</p>
+        <img class="share-qr" src="share-qr.png" alt="QR Code para abrir o placar do Boliche dos Amigos" width="220" height="220" />
+        <a class="share-link" href="https://munizmath.github.io/boliche/">munizmath.github.io/boliche</a>
+        <div class="modal-actions"><button id="copyShareButton" class="button button--quiet" type="button">Copiar link</button><button id="nativeShareButton" class="button button--primary" type="button">Compartilhar</button></div>
+      </div>
     </dialog>
 
     <dialog id="photoModal" class="modal">
@@ -215,7 +265,7 @@
         <button class="modal-close" value="cancel" aria-label="Fechar">×</button>
         <p class="eyebrow">importação assistida</p>
         <h2>Atualizar por foto</h2>
-        <p class="modal-copy">O OCR sugere o total final da coluna à direita. Os acumulados dos frames não devem ser somados. Nada é publicado até você revisar.</p>
+        <p class="modal-copy">A foto é opcional. Preencha os pontos manualmente ou use o OCR como sugestão. Confira sempre o total final da linha antes de salvar.</p>
         <div class="photo-config-grid">
           <label>Partida<select id="photoGame" required></select></label>
           <label>Pista<select id="photoLane" required></select></label>
@@ -231,6 +281,7 @@
           <div class="review-column">
             <div class="review-heading"><div><span class="eyebrow">conferência</span><h3>Pontos reconhecidos</h3></div><span id="reviewLaneLabel" class="section-meta">Selecione a pista</span></div>
             <div id="reviewTable" class="review-table"></div>
+            <p id="reviewPendingNote" class="review-note" hidden>Há alterações ainda não salvas neste formulário.</p>
             <p class="review-note">Use o total final da linha, não a soma dos acumulados por frame. Campo em branco continua pendente e não vira zero.</p>
           </div>
         </div>

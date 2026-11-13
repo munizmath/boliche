@@ -1,0 +1,15 @@
+{
+  "id": "/boliche/",
+  "name": "Boliche dos Amigos",
+  "short_name": "Boliche",
+  "description": "Placar e ranking compartilhado dos amigos",
+  "start_url": "/boliche/",
+  "scope": "/boliche/",
+  "display": "standalone",
+  "background_color": "#f6f4ef",
+  "theme_color": "#8b7765",
+  "icons": [
+    { "src": "pwa-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "pwa-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}
