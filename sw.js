@@ -1,6 +1,6 @@
-const CACHE_NAME = 'boliche-shell-v1';
+const CACHE_NAME = 'boliche-shell-v2';
 const SHELL = [
-  './', './index.html', './styles.css', './app.js', './supabase-config.js',
+  './', './index.html', './styles.css?v=20261113-2', './app.js?v=20261113-2', './supabase-config.js',
   './logo.png', './share-qr.png', './manifest.webmanifest',
   './pwa-192.png', './pwa-512.png',
 ];
@@ -18,7 +18,10 @@ self.addEventListener('fetch', (event) => {
   const url = new URL(request.url);
   if (request.method !== 'GET' || url.origin !== self.location.origin) return;
   event.respondWith(fetch(request).then((response) => {
-    if (response.ok && (request.mode === 'navigate' || SHELL.some((asset) => url.pathname.endsWith(asset.replace('./', '/'))))) {
+    if (response.ok && (request.mode === 'navigate' || SHELL.some((asset) => {
+      const shellUrl = new URL(asset, self.registration.scope);
+      return url.pathname === shellUrl.pathname && url.search === shellUrl.search;
+    }))) {
       const copy = response.clone();
       event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.put(request, copy)));
     }
