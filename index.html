@@ -13,15 +13,38 @@
   <body>
     <div id="toastContainer" class="toast-container" aria-live="polite"></div>
 
-    <main class="shell">
-      <header class="app-header">
-        <div class="brand">
+    <div class="app-shell">
+      <aside class="sidebar" aria-label="Navegação principal">
+        <div class="sidebar-brand">
           <div class="brand-mark"><img src="logo.png" alt="" /></div>
           <div>
-            <p class="eyebrow">encontro compartilhado</p>
-            <h1>Boliche dos Amigos</h1>
-            <p class="brand-subtitle">Score. Confirme. Repita.</p>
+            <strong>Boliche</strong>
+            <span>gestão de partidas</span>
           </div>
+        </div>
+        <nav class="sidebar-nav">
+          <p class="nav-group-label">Operação</p>
+          <button class="nav-link nav-link--active" type="button" data-scroll-to="partidas" aria-current="page"><span class="nav-icon">▦</span>Partidas</button>
+          <button class="nav-link admin-only" type="button" data-scroll-to="importacao" hidden><span class="nav-icon">◉</span>Atualizar por foto</button>
+          <p class="nav-group-label">Cadastros</p>
+          <button class="nav-link admin-only" type="button" data-scroll-to="participantes" hidden><span class="nav-icon">♙</span>Participantes</button>
+          <p class="nav-group-label">Resultados</p>
+          <button class="nav-link" type="button" data-scroll-to="historico"><span class="nav-icon">↺</span>Histórico</button>
+          <button class="nav-link" type="button" data-scroll-to="ranking"><span class="nav-icon">♜</span>Ranking</button>
+        </nav>
+        <div class="sidebar-footer">
+          <div class="operator-mark">OP</div>
+          <div><strong id="sidebarRole">Visitante</strong><span>acompanha o encontro</span></div>
+        </div>
+      </aside>
+
+      <div class="app-frame">
+    <main class="shell">
+      <header class="app-header">
+        <div class="page-title">
+          <p class="eyebrow">Operação</p>
+          <h1>Placar compartilhado</h1>
+          <p class="page-subtitle">Boliche dos Amigos · pontos confirmados em um só lugar</p>
         </div>
         <div class="header-actions">
           <span id="connectionStatus" class="status-pill status-pill--muted">Conectando…</span>
@@ -52,8 +75,8 @@
         </div>
       </section>
 
-      <section class="dashboard-grid">
-        <article class="glass-card leaderboard-card">
+      <section id="partidas" class="dashboard-grid">
+        <article id="ranking" class="glass-card blueprint leaderboard-card">
           <div class="section-heading">
             <div>
               <p class="eyebrow">ranking geral</p>
@@ -76,7 +99,7 @@
           </div>
         </article>
 
-        <article class="glass-card current-card">
+        <article id="importacao" class="glass-card blueprint current-card">
           <div class="section-heading">
             <div>
               <p class="eyebrow">acompanhamento ao vivo</p>
@@ -89,7 +112,7 @@
         </article>
       </section>
 
-      <section class="history-section">
+      <section id="historico" class="history-section">
         <div class="section-heading">
           <div>
             <p class="eyebrow">arquivo do encontro</p>
@@ -100,6 +123,10 @@
         <div id="gamesList" class="games-grid"></div>
       </section>
     </main>
+
+    <section id="participantes" class="admin-section-anchor" aria-label="Cadastro de participantes"></section>
+      </div>
+    </div>
 
     <footer class="app-footer">Boliche dos Amigos · pontos publicados somente após conferência</footer>
 

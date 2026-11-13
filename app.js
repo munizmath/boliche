@@ -132,6 +132,10 @@ function applyAuthUi() {
   });
   $("authButton").textContent = state.session ? "Sair" : (isDemoMode ? "Modo demo" : "Entrar");
   $("authButton").title = state.session?.user?.email || "Acesso do administrador";
+  const sidebarRole = $("sidebarRole");
+  if (sidebarRole) sidebarRole.textContent = state.session ? "Administrador" : (isDemoMode ? "Demonstração" : "Visitante");
+  const sidebarRoleNote = sidebarRole?.nextElementSibling;
+  if (sidebarRoleNote) sidebarRoleNote.textContent = state.session ? (state.session.user?.email || "acesso autorizado") : "acompanha o encontro";
 }
 
 function render() {
@@ -459,6 +463,17 @@ function bindEvents() {
   const canvas = $("photoCanvas"); canvas.addEventListener("pointerdown", startCrop); canvas.addEventListener("pointermove", moveCrop); canvas.addEventListener("pointerup", endCrop); canvas.addEventListener("pointercancel", endCrop);
   document.addEventListener("keydown", (event) => { if (event.key === "Escape") document.querySelectorAll("dialog[open]").forEach((dialog) => dialog.close()); });
   $("authButton").insertAdjacentHTML("beforebegin", `<button id="playersButton" class="button button--quiet admin-only" type="button" hidden>Participantes</button>`); $("playersButton").addEventListener("click", openPlayersModal);
+  document.querySelectorAll("[data-scroll-to]").forEach((button) => button.addEventListener("click", () => {
+    const target = button.dataset.scrollTo;
+    if (target === "importacao") return openPhotoModal();
+    if (target === "participantes") return openPlayersModal();
+    document.getElementById(target)?.scrollIntoView({ behavior: "smooth", block: "start" });
+    document.querySelectorAll(".nav-link").forEach((navLink) => {
+      const active = navLink === button;
+      navLink.classList.toggle("nav-link--active", active);
+      if (active) navLink.setAttribute("aria-current", "page"); else navLink.removeAttribute("aria-current");
+    });
+  }));
   document.querySelectorAll(".modal-close").forEach((button) => button.addEventListener("click", () => button.closest("dialog").close()));
 }
 
