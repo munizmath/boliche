@@ -450,7 +450,7 @@ async function updateGameStatus(gameId) {
 }
 
 function initTheme() {
-  const stored = localStorage.getItem("boliche-theme"); const dark = stored === "dark" || (!stored && window.matchMedia("(prefers-color-scheme: dark)").matches);
+  const stored = localStorage.getItem("boliche-theme"); const dark = stored === "dark";
   document.documentElement.classList.toggle("dark", dark); $("themeToggle").textContent = dark ? "☀" : "◐";
   $("themeToggle").addEventListener("click", () => { const next = !document.documentElement.classList.contains("dark"); document.documentElement.classList.toggle("dark", next); localStorage.setItem("boliche-theme", next ? "dark" : "light"); $("themeToggle").textContent = next ? "☀" : "◐"; });
 }
