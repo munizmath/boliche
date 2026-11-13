@@ -9,7 +9,7 @@
     <link rel="icon" href="favicon.ico" type="image/x-icon" />
     <link rel="apple-touch-icon" href="apple-touch-icon.png" />
     <link rel="manifest" href="manifest.webmanifest" />
-    <link rel="stylesheet" href="styles.css?v=20261113-3" />
+    <link rel="stylesheet" href="styles.css?v=20261113-4" />
   </head>
   <body>
     <div id="toastContainer" class="toast-container" aria-live="polite"></div>
@@ -165,13 +165,14 @@
     </dialog>
 
     <dialog id="profileModal" class="modal">
-      <form method="dialog" class="modal-card" id="profileForm">
+      <form method="dialog" class="modal-card" id="profileForm" novalidate>
         <button class="modal-close" value="cancel" aria-label="Fechar">×</button>
         <p class="eyebrow">meu cadastro</p>
         <h2>Concluir perfil</h2>
         <p class="modal-copy">Informe seu nome e adicione pelo menos uma foto. O perfil ficará pendente de aprovação do administrador.</p>
         <label>Nome<input id="profileName" type="text" maxlength="80" autocomplete="name" /></label>
-        <label class="upload-drop"><span class="upload-icon">⌁</span><strong>Escolher foto de perfil</strong><input id="profilePhoto" type="file" accept="image/*,.heic,.heif" /><small id="profilePhotoName">Fotos grandes serão reduzidas para envio</small></label>
+        <div id="profileCurrent" class="profile-current" hidden><img id="profileCurrentPhoto" alt="Foto atual do perfil" hidden /><span id="profileCurrentStatus"></span></div>
+        <div class="upload-drop"><span class="upload-icon">⌁</span><strong>Foto de perfil</strong><div class="profile-photo-actions"><label class="profile-photo-choice">Escolher da galeria<input id="profilePhoto" type="file" accept="image/*,.heic,.heif" /></label><label class="profile-photo-choice">Tirar foto<input id="profileCamera" type="file" accept="image/*" capture="user" /></label></div><small id="profilePhotoName">Fotos grandes serão reduzidas para envio</small></div>
         <p id="profileError" class="form-error" role="alert" hidden></p>
         <div class="modal-actions"><button id="profileSubmitButton" class="button button--primary" type="submit">Salvar perfil</button></div>
       </form>
@@ -261,14 +262,14 @@
     </dialog>
 
     <dialog id="photoModal" class="modal">
-      <form method="dialog" class="modal-card modal-card--xl" id="photoForm">
+      <form method="dialog" class="modal-card modal-card--xl" id="photoForm" novalidate>
         <button class="modal-close" value="cancel" aria-label="Fechar">×</button>
         <p class="eyebrow">importação assistida</p>
         <h2>Atualizar por foto</h2>
         <p class="modal-copy">A foto é opcional. Preencha os pontos manualmente ou use o OCR como sugestão. Confira sempre o total final da linha antes de salvar.</p>
         <div class="photo-config-grid">
-          <label>Partida<select id="photoGame" required></select></label>
-          <label>Pista<select id="photoLane" required></select></label>
+          <label>Partida<select id="photoGame"></select></label>
+          <label>Pista<select id="photoLane"></select></label>
         </div>
         <div class="photo-workspace">
           <div class="photo-column">
@@ -285,7 +286,9 @@
             <p class="review-note">Use o total final da linha, não a soma dos acumulados por frame. Campo em branco continua pendente e não vira zero.</p>
           </div>
         </div>
-        <div class="modal-actions"><button class="button button--quiet" value="cancel">Cancelar</button><button id="confirmPhotoButton" class="button button--primary" type="submit" disabled>Confirmar atualização</button></div>
+        <p id="photoConfirmHint" class="review-note">Preencha ao menos uma pontuação para confirmar a atualização.</p>
+        <p id="photoError" class="form-error" role="alert" hidden></p>
+        <div class="modal-actions"><button class="button button--quiet" value="cancel">Cancelar</button><button id="confirmPhotoButton" class="button button--primary" type="submit">Confirmar atualização</button></div>
       </form>
     </dialog>
 
@@ -303,6 +306,6 @@
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
     <script src="supabase-config.js"></script>
-    <script src="app.js?v=20261113-3"></script>
+    <script src="app.js?v=20261113-4"></script>
   </body>
 </html>

@@ -122,6 +122,10 @@ async function loadProfile() {
     console.error(error);
     return;
   }
+  if (data?.foto_path) {
+    const { data: signed } = await client.storage.from("profile-photos").createSignedUrl(data.foto_path, 300);
+    data.photoUrl = signed?.signedUrl || null;
+  }
   state.profile = data;
 }
 
@@ -129,7 +133,14 @@ function openProfileModal() {
   if (!state.session || state.recovering) return;
   $("profileName").value = state.profile?.nome || state.session.user.user_metadata?.nome || "";
   $("profilePhoto").value = "";
+  $("profileCamera").value = "";
   $("profilePhotoName").textContent = state.profile?.foto_path ? "Escolha outra foto para substituir a atual" : "Fotos grandes serão reduzidas para envio";
+  $("profileCurrent").hidden = !state.profile?.foto_path;
+  $("profileCurrentStatus").textContent = state.profile?.foto_path
+    ? `Foto salva no perfil · ${state.profile.status === "approved" ? "cadastro aprovado" : state.profile.status === "rejected" ? "cadastro recusado" : "aguardando aprovação"}`
+    : "";
+  $("profileCurrentPhoto").hidden = !state.profile?.photoUrl;
+  if (state.profile?.photoUrl) $("profileCurrentPhoto").src = state.profile.photoUrl;
   $("profileError").hidden = true;
   setModal("profileModal", true);
 }
@@ -471,7 +482,11 @@ function updatePhotoConfirmState() {
     if (value !== "" && (value !== old || finalizado !== oldFinal)) hasChange = true;
   });
   const valid = values.every((value) => value === "" || (/^\d+$/.test(value) && Number(value) <= 300));
-  $("confirmPhotoButton").disabled = !rows.length || !hasChange || !valid;
+  $("photoConfirmHint").textContent = !rows.length
+    ? "Nenhum jogador desta pista está vinculado à partida. Confira a pista e os participantes."
+    : !valid ? "Corrija as pontuações: use números inteiros de 0 a 300."
+    : !hasChange ? "Preencha ou altere ao menos uma pontuação na conferência. Selecionar a foto não publica pontos automaticamente."
+    : "Há pontuações prontas para salvar. Confira os totais antes de confirmar.";
   $("reviewPendingNote").hidden = !hasChange;
 }
 
@@ -503,12 +518,13 @@ function openAuth() {
 async function signOut() {
   if (client) await client.auth.signOut();
   state.session = null;
+  state.profile = null;
   state.profiles = [];
   state.scoreChanges = [];
   state.recovering = false;
   sessionStorage.removeItem("boliche-recovery-user");
   setModal("recoveryModal", false);
-  ["approvalsModal", "historyModal", "playersModal", "gameModal", "photoModal"].forEach((id) => setModal(id, false));
+  ["approvalsModal", "historyModal", "playersModal", "gameModal", "photoModal", "profileModal"].forEach((id) => setModal(id, false));
   showToast("Sessão encerrada.", "info");
   try { await loadData(); } catch (error) { console.error(error); }
   render();
@@ -602,10 +618,19 @@ async function prepareProfilePhoto(file) {
   }
 }
 
+function profilePhotoSelected(event) {
+  const file = event.target.files?.[0];
+  if (!file) return;
+  const otherId = event.target.id === "profileCamera" ? "profilePhoto" : "profileCamera";
+  $(otherId).value = "";
+  $("profilePhotoName").textContent = `${event.target.id === "profileCamera" ? "Foto capturada" : "Foto escolhida"}: ${file.name}`;
+  $("profileError").hidden = true;
+}
+
 async function submitProfile(event) {
   event.preventDefault();
   const errorElement = $("profileError");
-  const file = $("profilePhoto").files?.[0];
+  const file = $("profileCamera").files?.[0] || $("profilePhoto").files?.[0];
   const nome = $("profileName").value.trim();
   errorElement.hidden = true;
   if (!client || !state.session) {
@@ -629,6 +654,9 @@ async function submitProfile(event) {
   button.textContent = "Salvando…";
   let uploadedPath = null;
   try {
+    const { data: authData, error: authError } = await client.auth.getSession();
+    if (authError || !authData?.session) throw new Error("Sua sessão expirou. Entre novamente para salvar a foto.");
+    state.session = authData.session;
     let fotoPath = state.profile?.foto_path;
     if (file) {
       const prepared = await prepareProfilePhoto(file);
@@ -651,6 +679,10 @@ async function submitProfile(event) {
       throw new Error(`Não foi possível salvar o perfil: ${error.message || "tente novamente"}.`);
     }
     state.profile = data;
+    if (data.foto_path) {
+      const { data: signed } = await client.storage.from("profile-photos").createSignedUrl(data.foto_path, 300);
+      state.profile.photoUrl = signed?.signedUrl || null;
+    }
     setModal("profileModal", false);
     render();
     showToast(data.status === "approved" ? "Perfil atualizado." : "Perfil salvo e enviado para aprovação.", "success");
@@ -658,6 +690,7 @@ async function submitProfile(event) {
     console.error(error);
     errorElement.textContent = error.message || "Não foi possível salvar seu perfil. Tente novamente.";
     errorElement.hidden = false;
+    showToast(errorElement.textContent, "error");
   } finally {
     button.disabled = false;
     button.textContent = "Salvar perfil";
@@ -856,6 +889,7 @@ function resetPhotoState() {
   if (state.imageUrl) URL.revokeObjectURL(state.imageUrl);
   state.imageUrl = null;
   state.crop = null; state.image = null; state.imageFile = null;
+  $("photoError").hidden = true;
   $("photoInput").value = ""; $("canvasPlaceholder").hidden = false; $("photoCanvas").hidden = true; $("runOcrButton").disabled = true; $("ocrStatus").textContent = "Foto opcional: você também pode preencher os pontos manualmente."; updateReviewTable();
 }
 
@@ -916,7 +950,7 @@ function endCrop() { if (state.crop && (state.crop.width < 12 || state.crop.heig
 
 async function runOcr() {
   if (!state.image || !window.Tesseract) return showToast("O leitor de texto não está disponível. Preencha a tabela manualmente.", "error");
-  $("runOcrButton").disabled = true; $("confirmPhotoButton").disabled = true; $("ocrStatus").textContent = "Lendo a imagem… isso pode levar alguns segundos.";
+  $("runOcrButton").disabled = true; $("ocrStatus").textContent = "Lendo a imagem… isso pode levar alguns segundos.";
   try {
     const source = getOcrCanvas();
     const result = await Tesseract.recognize(source, "por+eng", { logger: (info) => { if (info.status === "recognizing text") $("ocrStatus").textContent = `Lendo a imagem… ${Math.round((info.progress || 0) * 100)}%`; } });
@@ -958,21 +992,51 @@ function buildSuggestions(text) {
 
 async function confirmPhotoUpdate(event) {
   event.preventDefault();
-  const gameId = $("photoGame").value; const rows = [...document.querySelectorAll("[data-review-player]")];
-  const updates = rows.map((row) => ({ player_id: row.dataset.reviewPlayer, pontos: row.querySelector(".review-score").value, finalizado: row.querySelector(".review-final").checked })).filter((row) => row.pontos !== "");
-  if (!updates.length) return showToast("Preencha ao menos um total antes de confirmar.", "error");
-  if (updates.some((update) => !/^\d+$/.test(update.pontos) || Number(update.pontos) > 300)) return showToast("Use pontos inteiros entre 0 e 300.", "error");
-  if (!client) return showToast("Supabase não configurado.", "error");
-  const payload = updates.map((update) => ({ game_id: gameId, player_id: update.player_id, pontos: Number(update.pontos), finalizado: update.finalizado }));
-  const { error } = await client.rpc("save_game_scores", { p_game_id: gameId, p_updates: payload });
-  if (error) return showToast("Não foi possível salvar os pontos: confira jogadores, partida e permissão.", "error");
-  state.activeGameId = gameId;
-  setModal("photoModal", false);
+  const errorElement = $("photoError");
+  errorElement.hidden = true;
+  const fail = (message) => { errorElement.textContent = message; errorElement.hidden = false; showToast(message, "error"); };
+  const gameId = $("photoGame").value;
+  const lane = $("photoLane").value;
+  if (!gameId || !lane) return fail("Selecione uma partida e uma pista com participantes.");
+  const rows = [...document.querySelectorAll("[data-review-player]")];
+  if (!rows.length) return fail("Nenhum jogador desta pista está vinculado à partida.");
+  const all = rows.map((row) => ({
+    player_id: row.dataset.reviewPlayer,
+    pontos: row.querySelector(".review-score").value.trim(),
+    finalizado: row.querySelector(".review-final").checked,
+    previous: row.dataset.oldScore,
+    previousFinal: row.dataset.oldFinal === "true",
+  }));
+  if (all.some((item) => item.pontos !== "" && (!/^\d+$/.test(item.pontos) || Number(item.pontos) > 300))) {
+    return fail("Use pontos inteiros entre 0 e 300.");
+  }
+  const updates = all.filter((item) => item.pontos !== "" && (item.pontos !== item.previous || item.finalizado !== item.previousFinal));
+  if (!updates.length) return fail("Preencha ou altere ao menos uma pontuação na tabela. A foto sozinha não publica resultados.");
+  if (!client) return fail("Supabase não configurado.");
+  const button = $("confirmPhotoButton");
+  button.disabled = true;
+  button.textContent = "Salvando…";
   try {
-    await loadData(); render(); showToast("Pontos confirmados e ranking atualizado.", "success");
-  } catch (refreshError) {
-    console.error(refreshError);
-    showToast("Pontos salvos, mas a tela não atualizou. Recarregue a página.", "error");
+    const { data: authData, error: authError } = await client.auth.getSession();
+    state.session = authData?.session || null;
+    if (authError || !isAdmin()) return fail("Sua sessão de administrador expirou. Entre novamente com a senha para salvar os pontos.");
+    const payload = updates.map((item) => ({ player_id: item.player_id, pontos: Number(item.pontos), finalizado: item.finalizado }));
+    const { error } = await client.rpc("save_game_scores", { p_game_id: gameId, p_updates: payload });
+    if (error) return fail(`Não foi possível salvar os pontos: ${error.message || "tente novamente"}.`);
+    state.activeGameId = gameId;
+    setModal("photoModal", false);
+    try {
+      await loadData(); render(); showToast("Pontos salvos. O ranking oficial muda quando a partida termina.", "success");
+    } catch (refreshError) {
+      console.error(refreshError);
+      showToast("Pontos salvos, mas a tela não atualizou. Recarregue a página.", "error");
+    }
+  } catch (error) {
+    console.error(error);
+    fail(error.message || "Não foi possível salvar. Verifique a conexão e tente novamente.");
+  } finally {
+    button.disabled = false;
+    button.textContent = "Confirmar atualização";
   }
 }
 
@@ -990,7 +1054,7 @@ function bindEvents() {
   $("recoverySignOut").addEventListener("click", signOut);
   $("recoveryModal").addEventListener("cancel", (event) => event.preventDefault());
   $("authButton").addEventListener("click", openAuth); $("registerButton").addEventListener("click", openRegister); $("profileButton").addEventListener("click", openProfileModal); $("photoButton").addEventListener("click", openPhotoModal); $("newGameButton").addEventListener("click", openGameModal);
-  $("gameForm").addEventListener("submit", createGame); $("authForm").addEventListener("submit", submitAuth); $("registerForm").addEventListener("submit", submitRegister); $("profileForm").addEventListener("submit", submitProfile); $("profilePhoto").addEventListener("change", () => { const file = $("profilePhoto").files?.[0]; if (file) $("profilePhotoName").textContent = file.name; }); $("playersForm").addEventListener("click", (event) => { if (event.target.id === "addPlayerButton") addPlayer(); }); $("cancelPlayerEditButton").addEventListener("click", cancelPlayerEdit);
+  $("gameForm").addEventListener("submit", createGame); $("authForm").addEventListener("submit", submitAuth); $("registerForm").addEventListener("submit", submitRegister); $("profileForm").addEventListener("submit", submitProfile); $("profilePhoto").addEventListener("change", profilePhotoSelected); $("profileCamera").addEventListener("change", profilePhotoSelected); $("playersForm").addEventListener("click", (event) => { if (event.target.id === "addPlayerButton") addPlayer(); }); $("cancelPlayerEditButton").addEventListener("click", cancelPlayerEdit);
   $("currentGameSelect").addEventListener("click", () => $("historico").scrollIntoView({ behavior: "smooth", block: "start" }));
   $("saveLaneButton").addEventListener("click", saveLane);
   $("cancelLaneEditButton").addEventListener("click", cancelLaneEdit);
@@ -1025,11 +1089,14 @@ async function start() {
     client.auth.onAuthStateChange((event, session) => {
       if (event === "PASSWORD_RECOVERY") state.recovering = true;
       if (event === "SIGNED_OUT") {
+        const interrupted = $("profileModal").open || $("photoModal").open;
         state.recovering = false;
         sessionStorage.removeItem("boliche-recovery-user");
+        state.profile = null;
         state.profiles = [];
         state.scoreChanges = [];
-        ["approvalsModal", "historyModal", "playersModal", "gameModal", "photoModal"].forEach((id) => setModal(id, false));
+        ["approvalsModal", "historyModal", "playersModal", "gameModal", "photoModal", "profileModal"].forEach((id) => setModal(id, false));
+        if (interrupted) showToast("Sua sessão terminou. Entre novamente para salvar.", "error");
       }
       state.session = session;
       applyAuthUi();

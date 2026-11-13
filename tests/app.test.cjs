@@ -43,7 +43,7 @@ test('OCR só sugere total da última coluna para jogadores vinculados à partid
   assert.equal(result.has('outro'), false);
 });
 
-test('conferência manual habilita salvar somente alteração válida', () => {
+test('conferência manual explica quando há alteração válida', () => {
   const app = loadApp();
   let value = '213';
   let checked = true;
@@ -54,17 +54,17 @@ test('conferência manual habilita salvar somente alteração válida', () => {
   };
   app.rows.push(row);
   app.updatePhotoConfirmState();
-  assert.equal(app.get('confirmPhotoButton').disabled, false);
+  assert.match(app.get('photoConfirmHint').textContent, /prontas para salvar/);
   assert.equal(hint.textContent, '— → 213');
   value = '301';
   app.updatePhotoConfirmState();
-  assert.equal(app.get('confirmPhotoButton').disabled, true);
+  assert.match(app.get('photoConfirmHint').textContent, /Corrija as pontuações/);
   value = '213'; row.dataset.oldScore = '213'; row.dataset.oldFinal = 'true';
   app.updatePhotoConfirmState();
-  assert.equal(app.get('confirmPhotoButton').disabled, true);
+  assert.match(app.get('photoConfirmHint').textContent, /Preencha ou altere/);
   checked = false;
   app.updatePhotoConfirmState();
-  assert.equal(app.get('confirmPhotoButton').disabled, false);
+  assert.match(app.get('photoConfirmHint').textContent, /prontas para salvar/);
 });
 
 test('recorte converte coordenadas CSS para resolução interna do canvas', () => {
@@ -78,14 +78,18 @@ test('recorte converte coordenadas CSS para resolução interna do canvas', () =
 
 test('importação usa RPC transacional e nunca cria vínculo de jogador', async () => {
   let call;
+  const payload = Buffer.from(JSON.stringify({ amr: [{ method: 'password' }] })).toString('base64url');
+  const session = { access_token: `a.${payload}.b`, user: { id: 'admin', app_metadata: { role: 'admin' } } };
   const client = {
+    auth: { getSession: async () => ({ data: { session }, error: null }) },
     rpc: async (name, payload) => { call = { name, payload }; return { error: new Error('simulated') }; },
     from: () => { throw new Error('importação não deve escrever diretamente nas tabelas'); },
   };
   const app = loadApp(client);
   app.get('photoGame').value = 'game-1';
+  app.get('photoLane').value = '1';
   app.rows.push({
-    dataset: { reviewPlayer: 'ana' },
+    dataset: { reviewPlayer: 'ana', oldScore: '', oldFinal: 'false' },
     querySelector: (selector) => selector === '.review-score' ? { value: '213' } : { checked: true },
   });
   await app.confirmPhotoUpdate({ preventDefault() {} });
@@ -135,7 +139,8 @@ for (const existing of [false, true]) {
       single: async () => ({ data: profile, error: null }),
     };
     const client = {
-      storage: { from: () => ({ upload: async (path, body, options) => { upload = { path, body, options }; return { error: null }; } }) },
+      auth: { getSession: async () => ({ data: { session: { user: { id: 'user-1' } } }, error: null }) },
+      storage: { from: () => ({ upload: async (path, body, options) => { upload = { path, body, options }; return { error: null }; }, createSignedUrl: async () => ({ data: { signedUrl: 'https://example.test/photo.jpg' } }) }) },
       from: () => ({
         insert: (payload) => { write = { method: 'insert', payload }; return query; },
         update: (payload) => { write = { method: 'update', payload }; return query; },
@@ -145,7 +150,7 @@ for (const existing of [false, true]) {
     app.state.session = { user: { id: 'user-1' } };
     if (existing) app.state.profile = { ...profile, foto_path: 'user-1/old.jpg' };
     const file = { name: 'foto.jpg', type: 'image/jpeg', size: 100 };
-    app.get('profilePhoto').files = [file];
+    app.get(existing ? 'profileCamera' : 'profilePhoto').files = [file];
     app.get('profileName').value = 'Matheus';
     await app.submitProfile({ preventDefault() {} });
     assert.equal(upload.path, 'user-1/photo-id.jpg');
@@ -186,4 +191,32 @@ test('foto grande do celular é reduzida para JPEG antes do upload', async () =>
   assert.equal(result.body, blob);
   assert.equal(result.contentType, 'image/jpeg');
   assert.equal(result.extension, 'jpg');
+});
+
+test('confirmar foto sem pontuação explica o que falta e não chama o banco', async () => {
+  const app = loadApp({ rpc: () => { throw new Error('não deve salvar'); } });
+  app.get('photoGame').value = 'game-1';
+  app.get('photoLane').value = '1';
+  app.rows.push({
+    dataset: { reviewPlayer: 'ana', oldScore: '', oldFinal: 'false' },
+    querySelector: (selector) => selector === '.review-score' ? { value: '' } : { checked: false },
+  });
+  await app.confirmPhotoUpdate({ preventDefault() {} });
+  assert.equal(app.get('photoError').hidden, false);
+  assert.match(app.get('photoError').textContent, /foto sozinha não publica/);
+});
+
+test('sessão expirada informa que é preciso entrar novamente antes do upload', async () => {
+  const client = {
+    auth: { getSession: async () => ({ data: { session: null }, error: new Error('refresh token invalid') }) },
+    storage: { from: () => { throw new Error('não deve enviar'); } },
+  };
+  const app = loadApp(client);
+  app.context.console = { ...console, error() {} };
+  app.state.session = { user: { id: 'user-1' } };
+  app.get('profilePhoto').files = [{ name: 'foto.jpg', type: 'image/jpeg', size: 100 }];
+  app.get('profileName').value = 'Matheus';
+  await app.submitProfile({ preventDefault() {} });
+  assert.equal(app.get('profileError').hidden, false);
+  assert.match(app.get('profileError').textContent, /sessão expirou/);
 });

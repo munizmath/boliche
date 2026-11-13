@@ -25,12 +25,12 @@ Abra `http://localhost:4173`. Sem uma publishable key preenchida, a interface pe
 
 As políticas permitem leitura pública das três tabelas e escrita apenas para usuários autenticados cujo `app_metadata.role` seja `admin` e cuja sessão tenha login com senha. A foto do placar é processada localmente com Tesseract.js e não é enviada ao Supabase.
 
-O cadastro público usa `auth.users` + `public.profiles`: qualquer pessoa pode criar a própria conta e concluir o perfil com uma foto obrigatória. O perfil começa como `pending`; somente o administrador pode aprovar e vincular a um jogador existente. As fotos ficam no bucket privado `profile-photos`, isoladas por usuário.
+O cadastro público usa `auth.users` + `public.profiles`: qualquer pessoa pode criar a própria conta e concluir o perfil com uma foto obrigatória. O perfil começa como `pending`; somente o administrador pode aprovar e vincular a um jogador existente. As fotos ficam no bucket privado `profile-photos`, isoladas por usuário. O formulário oferece câmera e galeria e mostra a foto já salva ao reabrir o cadastro.
 
 ## Regras de negócio implementadas
 
 - A pontuação é substituída por `(game_id, player_id)`, nunca somada em uma nova importação.
-- O OCR é sugestão: a tabela de conferência é editável e campos ilegíveis ficam pendentes.
+- O OCR é sugestão: a tabela de conferência é editável e campos ilegíveis ficam pendentes. Selecionar uma foto não publica pontos; é preciso preencher ou confirmar ao menos um total válido.
 - A associação usa participante e pista, não a posição na tela do monitor.
 - Uma partida só fica `final` quando todos os resultados vinculados têm pontos e foram confirmados.
 - O ranking acumulado soma somente partidas `final`.
