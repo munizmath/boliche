@@ -10,6 +10,7 @@ const state = {
   players: [],
   games: [],
   scores: [],
+  profile: null,
   session: null,
   activeGameId: null,
   lastUpdatedAt: null,
@@ -28,7 +29,8 @@ const fmtTime = (value) => value ? new Intl.DateTimeFormat("pt-BR", { hour: "2-d
 const getPlayer = (id) => state.players.find((player) => player.id === id);
 const getGame = (id) => state.games.find((game) => game.id === id);
 const gameScores = (gameId) => state.scores.filter((score) => score.game_id === gameId);
-const isAdmin = () => Boolean(state.session);
+const isAdmin = () => state.session?.user?.app_metadata?.role === "admin";
+const isAuthenticated = () => Boolean(state.session);
 
 function showToast(message, type = "info") {
   const toast = document.createElement("div");
@@ -80,6 +82,30 @@ async function loadData() {
   setConnection("Sincronizado", "success");
 }
 
+async function loadProfile() {
+  state.profile = null;
+  if (!client || !state.session) return;
+  const { data, error } = await client.from("profiles").select("id,nome,foto_path,status").eq("id", state.session.user.id).maybeSingle();
+  if (error) {
+    console.error(error);
+    return;
+  }
+  state.profile = data;
+}
+
+function openProfileModal() {
+  if (!state.session) return;
+  $("profileName").value = state.profile?.nome || state.session.user.user_metadata?.nome || "";
+  $("profilePhoto").value = "";
+  $("profilePhotoName").textContent = state.profile?.foto_path ? "Escolha outra foto para substituir a atual" : "JPG, PNG ou WebP · até 5 MB";
+  $("profileError").hidden = true;
+  setModal("profileModal", true);
+}
+
+function showProfileIfNeeded() {
+  if (state.session && !state.profile) window.setTimeout(openProfileModal, 0);
+}
+
 function subscribeRealtime() {
   if (!client) return;
   client.channel("boliche-live")
@@ -114,8 +140,10 @@ function applyAuthUi() {
   });
   $("authButton").textContent = state.session ? "Sair" : "Entrar";
   $("authButton").title = state.session?.user?.email || "Acesso do administrador";
+  $("registerButton").hidden = isAuthenticated();
+  $("profileButton").hidden = !isAuthenticated();
   const sidebarRole = $("sidebarRole");
-  if (sidebarRole) sidebarRole.textContent = state.session ? "Administrador" : "Visitante";
+  if (sidebarRole) sidebarRole.textContent = isAdmin() ? "Administrador" : (state.session ? "Participante" : "Visitante");
   const sidebarRoleNote = sidebarRole?.nextElementSibling;
   if (sidebarRoleNote) sidebarRoleNote.textContent = state.session ? (state.session.user?.email || "acesso autorizado") : "acompanha o encontro";
 }
@@ -251,7 +279,85 @@ async function submitAuth(event) {
     return;
   }
   setModal("authModal", false);
-  showToast("Sessão de administrador iniciada.", "success");
+  await loadProfile();
+  render();
+  showProfileIfNeeded();
+  showToast(isAdmin() ? "Sessão de administrador iniciada." : "Sessão iniciada.", "success");
+}
+
+function openRegister() {
+  if (!client) return showToast("Supabase não configurado.", "error");
+  $("registerError").hidden = true;
+  $("registerForm").reset();
+  setModal("registerModal", true);
+}
+
+async function submitRegister(event) {
+  event.preventDefault();
+  if (!client) return;
+  const nome = $("registerName").value.trim();
+  const email = $("registerEmail").value.trim();
+  const password = $("registerPassword").value;
+  const confirmation = $("registerPasswordConfirm").value;
+  if (password !== confirmation) {
+    $("registerError").textContent = "As senhas não conferem.";
+    $("registerError").hidden = false;
+    return;
+  }
+  const { data, error } = await client.auth.signUp({ email, password, options: { data: { nome } } });
+  if (error) {
+    $("registerError").textContent = error.message?.includes("rate limit") ? "O envio de e-mails do Supabase atingiu o limite. Aguarde ou configure SMTP próprio." : "Não foi possível criar a conta. Confira os dados e tente novamente.";
+    $("registerError").hidden = false;
+    return;
+  }
+  setModal("registerModal", false);
+  state.session = data.session;
+  await loadProfile();
+  render();
+  if (data.session) showProfileIfNeeded();
+  else showToast("Conta criada. Confirme o e-mail para concluir seu perfil com uma foto.", "success");
+}
+
+async function submitProfile(event) {
+  event.preventDefault();
+  if (!client || !state.session) return;
+  const errorElement = $("profileError");
+  const file = $("profilePhoto").files?.[0];
+  const nome = $("profileName").value.trim();
+  errorElement.hidden = true;
+  if (!file && !state.profile?.foto_path) {
+    errorElement.textContent = "Adicione pelo menos uma foto para concluir o cadastro.";
+    errorElement.hidden = false;
+    return;
+  }
+  if (file && (!file.type.startsWith("image/") || file.size > 5 * 1024 * 1024)) {
+    errorElement.textContent = "Escolha uma imagem JPG, PNG ou WebP de até 5 MB.";
+    errorElement.hidden = false;
+    return;
+  }
+  let fotoPath = state.profile?.foto_path;
+  if (file) {
+    const extension = (file.name.split(".").pop() || "jpg").toLowerCase().replace(/[^a-z0-9]/g, "") || "jpg";
+    fotoPath = `${state.session.user.id}/${crypto.randomUUID()}.${extension}`;
+    const { error: uploadError } = await client.storage.from("profile-photos").upload(fotoPath, file, { contentType: file.type, upsert: false });
+    if (uploadError) {
+      errorElement.textContent = "Não foi possível enviar a foto. Tente novamente.";
+      errorElement.hidden = false;
+      return;
+    }
+  }
+  const payload = { id: state.session.user.id, nome, foto_path: fotoPath, status: state.profile?.status || "pending" };
+  const { data, error } = await client.from("profiles").upsert(payload).select("id,nome,foto_path,status").single();
+  if (error) {
+    if (file) await client.storage.from("profile-photos").remove([fotoPath]);
+    errorElement.textContent = "Não foi possível salvar seu cadastro.";
+    errorElement.hidden = false;
+    return;
+  }
+  state.profile = data;
+  setModal("profileModal", false);
+  render();
+  showToast("Perfil salvo e enviado para aprovação.", "success");
 }
 
 async function addPlayer() {
@@ -422,8 +528,8 @@ function initTheme() {
 
 function bindEvents() {
   initTheme();
-  $("authButton").addEventListener("click", openAuth); $("photoButton").addEventListener("click", openPhotoModal); $("newGameButton").addEventListener("click", openGameModal);
-  $("gameForm").addEventListener("submit", createGame); $("authForm").addEventListener("submit", submitAuth); $("playersForm").addEventListener("click", (event) => { if (event.target.id === "addPlayerButton") addPlayer(); });
+  $("authButton").addEventListener("click", openAuth); $("registerButton").addEventListener("click", openRegister); $("profileButton").addEventListener("click", openProfileModal); $("photoButton").addEventListener("click", openPhotoModal); $("newGameButton").addEventListener("click", openGameModal);
+  $("gameForm").addEventListener("submit", createGame); $("authForm").addEventListener("submit", submitAuth); $("registerForm").addEventListener("submit", submitRegister); $("profileForm").addEventListener("submit", submitProfile); $("profilePhoto").addEventListener("change", () => { const file = $("profilePhoto").files?.[0]; if (file) $("profilePhotoName").textContent = file.name; }); $("playersForm").addEventListener("click", (event) => { if (event.target.id === "addPlayerButton") addPlayer(); });
   $("photoForm").addEventListener("submit", confirmPhotoUpdate); $("photoInput").addEventListener("change", loadPhoto); $("photoLane").addEventListener("change", () => updateReviewTable()); $("photoGame").addEventListener("change", () => updateReviewTable()); $("runOcrButton").addEventListener("click", runOcr); $("clearCropButton").addEventListener("click", () => { state.crop = null; drawCanvas(); });
   const canvas = $("photoCanvas"); canvas.addEventListener("pointerdown", startCrop); canvas.addEventListener("pointermove", moveCrop); canvas.addEventListener("pointerup", endCrop); canvas.addEventListener("pointercancel", endCrop);
   document.addEventListener("keydown", (event) => { if (event.key === "Escape") document.querySelectorAll("dialog[open]").forEach((dialog) => dialog.close()); });
@@ -446,9 +552,14 @@ async function start() {
   bindEvents();
   if (client) {
     const { data } = await client.auth.getSession(); state.session = data.session;
-    client.auth.onAuthStateChange((_event, session) => { state.session = session; applyAuthUi(); });
+    await loadProfile();
+    client.auth.onAuthStateChange((_event, session) => {
+      state.session = session;
+      applyAuthUi();
+      window.setTimeout(async () => { await loadProfile(); render(); showProfileIfNeeded(); }, 0);
+    });
   }
-  try { await loadData(); render(); subscribeRealtime(); } catch (error) { console.error(error); setConnection("Falha ao carregar", "error"); showToast("Não foi possível carregar o placar. Verifique o Supabase.", "error"); }
+  try { await loadData(); render(); showProfileIfNeeded(); subscribeRealtime(); } catch (error) { console.error(error); setConnection("Falha ao carregar", "error"); showToast("Não foi possível carregar o placar. Verifique o Supabase.", "error"); }
 }
 
 start();

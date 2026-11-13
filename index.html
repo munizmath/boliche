@@ -49,6 +49,8 @@
         <div class="header-actions">
           <span id="connectionStatus" class="status-pill status-pill--muted">Conectando…</span>
           <button id="themeToggle" class="icon-button" type="button" title="Alternar tema" aria-label="Alternar tema">◐</button>
+          <button id="registerButton" class="button button--quiet" type="button">Criar cadastro</button>
+          <button id="profileButton" class="button button--quiet" type="button" hidden>Meu cadastro</button>
           <button id="authButton" class="button button--quiet" type="button">Entrar</button>
           <button id="photoButton" class="button button--primary admin-only" type="button" hidden>Atualizar por foto</button>
           <button id="newGameButton" class="button button--primary admin-only" type="button" hidden>+ Nova partida</button>
@@ -133,13 +135,41 @@
     <dialog id="authModal" class="modal">
       <form method="dialog" class="modal-card" id="authForm">
         <button class="modal-close" value="cancel" aria-label="Fechar">×</button>
-        <p class="eyebrow">acesso restrito</p>
-        <h2>Entrar como administrador</h2>
-        <p class="modal-copy">Visitantes não precisam de conta. Use sua conta Supabase apenas para cadastrar e atualizar o placar.</p>
+        <p class="eyebrow">acesso ao sistema</p>
+        <h2>Entrar</h2>
+        <p class="modal-copy">Administradores atualizam o placar. Participantes acompanham seu cadastro e aguardam aprovação.</p>
         <label>E-mail<input id="authEmail" type="email" autocomplete="email" required /></label>
         <label>Senha<input id="authPassword" type="password" autocomplete="current-password" required /></label>
         <p id="authError" class="form-error" hidden></p>
         <button class="button button--primary button--wide" type="submit">Entrar</button>
+      </form>
+    </dialog>
+
+    <dialog id="registerModal" class="modal">
+      <form method="dialog" class="modal-card" id="registerForm">
+        <button class="modal-close" value="cancel" aria-label="Fechar">×</button>
+        <p class="eyebrow">novo participante</p>
+        <h2>Criar meu cadastro</h2>
+        <p class="modal-copy">Crie sua conta para concluir seu perfil com uma foto. O administrador aprova a entrada no placar depois.</p>
+        <label>Nome<input id="registerName" type="text" maxlength="80" autocomplete="name" required /></label>
+        <label>E-mail<input id="registerEmail" type="email" autocomplete="email" required /></label>
+        <label>Senha<input id="registerPassword" type="password" minlength="8" autocomplete="new-password" required /></label>
+        <label>Confirmar senha<input id="registerPasswordConfirm" type="password" minlength="8" autocomplete="new-password" required /></label>
+        <p id="registerError" class="form-error" hidden></p>
+        <div class="modal-actions"><button class="button button--quiet" value="cancel">Cancelar</button><button class="button button--primary" type="submit">Criar conta</button></div>
+      </form>
+    </dialog>
+
+    <dialog id="profileModal" class="modal">
+      <form method="dialog" class="modal-card" id="profileForm">
+        <button class="modal-close" value="cancel" aria-label="Fechar">×</button>
+        <p class="eyebrow">meu cadastro</p>
+        <h2>Concluir perfil</h2>
+        <p class="modal-copy">Informe seu nome e adicione pelo menos uma foto. O perfil ficará pendente de aprovação do administrador.</p>
+        <label>Nome<input id="profileName" type="text" maxlength="80" autocomplete="name" required /></label>
+        <label class="upload-drop"><input id="profilePhoto" type="file" accept="image/jpeg,image/png,image/webp" capture="user" required /><span class="upload-icon">⌁</span><strong>Adicionar foto de perfil</strong><small id="profilePhotoName">JPG, PNG ou WebP · até 5 MB</small></label>
+        <p id="profileError" class="form-error" hidden></p>
+        <div class="modal-actions"><button class="button button--primary" type="submit">Salvar perfil</button></div>
       </form>
     </dialog>
 
