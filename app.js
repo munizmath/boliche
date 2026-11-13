@@ -26,6 +26,7 @@ const state = {
   photoRotation: 0,
   photoContrast: 100,
   photoZoom: 100,
+  photoPanMode: false,
   previewBase: null,
   editingPlayerId: null,
   editingLaneName: null,
@@ -299,6 +300,10 @@ function officialTotals(lane = "") {
   }).sort((a, b) => b.points - a.points || a.player.nome.localeCompare(b.player.nome, "pt-BR"));
 }
 
+function officialPosition(totals, index) {
+  return totals.findIndex((item) => item.points === totals[index].points) + 1;
+}
+
 function renderLeaderboard() {
   const body = $("leaderboardBody");
   const finalGames = state.games.filter((game) => game.status === "final");
@@ -312,7 +317,7 @@ function renderLeaderboard() {
   podium.hidden = totals.length === 0;
   podium.innerHTML = totals.slice(0, 3).map((item, index) => {
     const photoUrl = state.playerPhotos.get(item.player.id);
-    return `<div class="podium-place podium-place--${index + 1}"><span class="podium-medal">${index + 1}º</span>${photoUrl ? `<img class="podium-avatar" src="${esc(photoUrl)}" alt="Foto de ${esc(item.player.nome)}" loading="lazy" />` : `<span class="podium-avatar podium-avatar--empty" aria-hidden="true">${esc(item.player.nome.slice(0, 1))}</span>`}<strong>${esc(item.player.nome)}</strong><small>${item.points.toLocaleString("pt-BR")} pontos</small></div>`;
+    return `<div class="podium-place podium-place--${index + 1}"><span class="podium-medal">${officialPosition(totals, index)}º</span>${photoUrl ? `<img class="podium-avatar" src="${esc(photoUrl)}" alt="Foto de ${esc(item.player.nome)}" loading="lazy" />` : `<span class="podium-avatar podium-avatar--empty" aria-hidden="true">${esc(item.player.nome.slice(0, 1))}</span>`}<strong>${esc(item.player.nome)}</strong><small>${item.points.toLocaleString("pt-BR")} pontos</small></div>`;
   }).join("");
   let previousPoints = null;
   let previousPosition = 0;
@@ -382,7 +387,9 @@ function openStatsModal(playerId) {
   const results = finalGames.map((game) => ({ game, score: state.scores.find((score) => score.game_id === game.id && score.player_id === playerId) })).filter((item) => item.score?.finalizado && item.score.pontos != null);
   const points = results.map((item) => Number(item.score.pontos));
   const wins = results.filter(({ game, score }) => Number(score.pontos) === Math.max(...gameScores(game.id).filter((item) => item.pontos != null).map((item) => Number(item.pontos)))).length;
-  const position = officialTotals().findIndex((item) => item.player.id === playerId) + 1;
+  const totals = officialTotals();
+  const playerIndex = totals.findIndex((item) => item.player.id === playerId);
+  const position = playerIndex < 0 ? 0 : officialPosition(totals, playerIndex);
   const photoUrl = state.playerPhotos.get(playerId);
   $("statsTitle").textContent = player.nome;
   $("statsHero").innerHTML = `${photoUrl ? `<img src="${esc(photoUrl)}" alt="Foto de ${esc(player.nome)}" />` : `<span class="stats-avatar-empty" aria-hidden="true">${esc(player.nome.slice(0, 1))}</span>`}<div><strong>${position ? `${position}º no ranking` : "Ainda sem posição oficial"}</strong><span>Pista ${esc(player.pista || "—")} · ${points.length} ${points.length === 1 ? "partida concluída" : "partidas concluídas"}</span></div>`;
@@ -937,12 +944,13 @@ async function shareResultCard() {
   context.fillStyle = "#2f312f"; context.font = "bold 62px Georgia"; context.fillText("Boliche dos Amigos", 80, 110);
   context.font = "28px Arial"; context.fillText("Classificação oficial do encontro", 80, 160);
   context.fillStyle = "#777a76"; context.font = "22px Arial";
-  context.fillText(`${finalGames.length} ${finalGames.length === 1 ? "partida finalizada" : "partidas finalizadas"} · ${new Intl.DateTimeFormat("pt-BR", { dateStyle: "long" }).format(new Date())}`, 80, 202);
+  const lastGameDate = finalGames.map((game) => game.created_at).filter(Boolean).sort().at(-1);
+  context.fillText(`${finalGames.length} ${finalGames.length === 1 ? "partida finalizada" : "partidas finalizadas"} · ${new Intl.DateTimeFormat("pt-BR", { dateStyle: "long" }).format(new Date(lastGameDate || Date.now()))}`, 80, 202);
   totals.slice(0, 3).forEach((item, index) => {
     const x = 80 + index * 315;
     context.fillStyle = index === 0 ? "#e9d5b8" : "#fbfaf7"; context.fillRect(x, 246, 295, 180);
     context.strokeStyle = "#d8d9d3"; context.strokeRect(x, 246, 295, 180);
-    context.fillStyle = "#805928"; context.font = "bold 44px Georgia"; context.fillText(`${index + 1}º`, x + 18, 302);
+    context.fillStyle = "#805928"; context.font = "bold 44px Georgia"; context.fillText(`${officialPosition(totals, index)}º`, x + 18, 302);
     context.fillStyle = "#2f312f"; context.font = "bold 24px Arial"; context.fillText(item.player.nome.slice(0, 19), x + 18, 350);
     context.font = "21px Arial"; context.fillText(`${item.points} pontos`, x + 18, 390);
   });
@@ -950,7 +958,7 @@ async function shareResultCard() {
   totals.forEach((item, index) => {
     const y = 520 + index * 72;
     context.fillStyle = index % 2 ? "#f1eee8" : "#fbfaf7"; context.fillRect(80, y - 37, 925, 62);
-    context.fillStyle = "#805928"; context.font = "bold 27px Georgia"; context.fillText(`${index + 1}º`, 100, y);
+    context.fillStyle = "#805928"; context.font = "bold 27px Georgia"; context.fillText(`${officialPosition(totals, index)}º`, 100, y);
     context.fillStyle = "#2f312f"; context.font = "bold 24px Arial"; context.fillText(item.player.nome.slice(0, 30), 180, y);
     context.font = "22px Arial"; context.textAlign = "right"; context.fillText(`${item.points} pontos`, 980, y); context.textAlign = "left";
   });
@@ -978,10 +986,11 @@ function resetPhotoState() {
   if (state.imageUrl) URL.revokeObjectURL(state.imageUrl);
   state.imageUrl = null;
   state.crop = null; state.image = null; state.imageFile = null; state.previewBase = null;
-  state.photoRotation = 0; state.photoContrast = 100; state.photoZoom = 100;
+  state.photoRotation = 0; state.photoContrast = 100; state.photoZoom = 100; state.photoPanMode = false;
   $("photoZoom").value = "100"; $("photoContrast").value = "100";
-  $("photoZoom").disabled = true; $("photoContrast").disabled = true; $("rotatePhotoButton").disabled = true;
+  $("photoZoom").disabled = true; $("photoContrast").disabled = true; $("rotatePhotoButton").disabled = true; $("photoPanButton").disabled = true;
   $("photoCanvas").style.width = "100%";
+  applyPhotoInteractionMode();
   $("photoError").hidden = true;
   $("photoInput").value = ""; $("canvasPlaceholder").hidden = false; $("photoCanvas").hidden = true; $("runOcrButton").disabled = true; $("ocrStatus").textContent = "Foto opcional: você também pode preencher os pontos manualmente."; updateReviewTable();
 }
@@ -1001,7 +1010,7 @@ function loadPhoto(event) {
     state.crop = null;
     updatePhotoPreview();
     $("photoCanvas").hidden = false; $("canvasPlaceholder").hidden = true;
-    $("runOcrButton").disabled = false; $("rotatePhotoButton").disabled = false;
+    $("runOcrButton").disabled = false; $("rotatePhotoButton").disabled = false; $("photoPanButton").disabled = false;
     $("photoZoom").disabled = false; $("photoContrast").disabled = false;
     $("ocrStatus").textContent = "Imagem pronta. Ajuste, recorte e leia as sugestões.";
   };
@@ -1035,6 +1044,13 @@ function updatePhotoPreview() {
   drawCanvas();
 }
 
+function applyPhotoInteractionMode() {
+  $("photoCanvas").style.touchAction = state.photoPanMode ? "pan-x pan-y" : "none";
+  $("photoPanButton").textContent = state.photoPanMode ? "Recortar imagem" : "Mover imagem";
+  $("photoPanButton").setAttribute("aria-pressed", String(state.photoPanMode));
+  $("photoToolsHint").textContent = state.photoPanMode ? "Deslize a imagem ampliada; toque em Recortar imagem para selecionar a área" : "Arraste sobre nomes e totais para recortar";
+}
+
 function drawCanvas() {
   const canvas = $("photoCanvas"); const context = canvas.getContext("2d");
   if (!state.previewBase) return;
@@ -1059,11 +1075,11 @@ function canvasPoint(event) {
 }
 
 function startCrop(event) {
-  if (!state.image) return;
+  if (!state.image || state.photoPanMode) return;
   const start = canvasPoint(event); state.crop = { x: start.x, y: start.y, width: 0, height: 0, startX: start.x, startY: start.y }; $("photoCanvas").setPointerCapture?.(event.pointerId);
 }
 function moveCrop(event) {
-  if (!state.crop?.startX && state.crop?.startX !== 0) return;
+  if (state.photoPanMode || (!state.crop?.startX && state.crop?.startX !== 0)) return;
   const point = canvasPoint(event); const startX = state.crop.startX; const startY = state.crop.startY;
   state.crop.x = Math.min(startX, point.x); state.crop.y = Math.min(startY, point.y); state.crop.width = Math.abs(point.x - startX); state.crop.height = Math.abs(point.y - startY); drawCanvas();
 }
@@ -1215,7 +1231,8 @@ function bindEvents() {
   $("rankingLane").addEventListener("change", renderLeaderboard);
   $("photoForm").addEventListener("submit", confirmPhotoUpdate); $("photoInput").addEventListener("change", loadPhoto); $("photoLane").addEventListener("change", () => updateReviewTable()); $("photoGame").addEventListener("change", renderPhotoOptions); $("reviewTable").addEventListener("input", updatePhotoConfirmState); $("runOcrButton").addEventListener("click", runOcr); $("clearCropButton").addEventListener("click", () => { state.crop = null; drawCanvas(); });
   $("rotatePhotoButton").addEventListener("click", () => { state.photoRotation = (state.photoRotation + 90) % 360; state.crop = null; updatePhotoPreview(); });
-  $("photoZoom").addEventListener("input", (event) => { state.photoZoom = Number(event.target.value); $("photoCanvas").style.width = `${state.photoZoom}%`; });
+  $("photoPanButton").addEventListener("click", () => { state.photoPanMode = !state.photoPanMode; applyPhotoInteractionMode(); });
+  $("photoZoom").addEventListener("input", (event) => { state.photoZoom = Number(event.target.value); $("photoCanvas").style.width = `${state.photoZoom}%`; state.photoPanMode = state.photoZoom > 100; applyPhotoInteractionMode(); });
   $("photoContrast").addEventListener("input", (event) => { state.photoContrast = Number(event.target.value); updatePhotoPreview(); });
   const canvas = $("photoCanvas"); canvas.addEventListener("pointerdown", startCrop); canvas.addEventListener("pointermove", moveCrop); canvas.addEventListener("pointerup", endCrop); canvas.addEventListener("pointercancel", endCrop);
   document.addEventListener("keydown", (event) => { if (event.key === "Escape" && !state.recovering) document.querySelectorAll("dialog[open]").forEach((dialog) => dialog.close()); });

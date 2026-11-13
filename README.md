@@ -39,7 +39,7 @@ O cadastro público usa `auth.users` + `public.profiles`: qualquer pessoa pode c
 - A navegação usa uma barra superior horizontal. No celular, os atalhos podem ser deslizados lateralmente.
 - O ranking oficial mostra um pódio. O perfil do jogador reúne foto, posição, recorde, média, vitórias, histórico e gráfico de evolução.
 - A opção de compartilhar pode gerar uma imagem PNG com o pódio e a classificação oficial; enquanto não houver partida finalizada, essa imagem não é gerada.
-- A foto do placar pode ser girada, ampliada e ter o contraste ajustado antes do recorte e da leitura OCR; os pontos continuam sujeitos à conferência.
+- A foto do placar pode ser girada, ampliada e ter o contraste ajustado antes do recorte e da leitura OCR. No celular, o botão alterna entre mover a imagem ampliada e recortar; os pontos continuam sujeitos à conferência.
 - Alterações em `players`, `games` e `scores` chegam aos visitantes por Supabase Realtime.
 - O painel da partida exibe uma classificação provisória, separada do ranking oficial. O administrador pode corrigir pontos pelo celular sem foto e consultar/desfazer a última alteração de cada resultado.
 - O botão Compartilhar mostra um QR Code estático para o endereço público do placar.

@@ -9,7 +9,7 @@
     <link rel="icon" href="favicon.ico" type="image/x-icon" />
     <link rel="apple-touch-icon" href="apple-touch-icon.png" />
     <link rel="manifest" href="manifest.webmanifest" />
-    <link rel="stylesheet" href="styles.css?v=20261113-7" />
+    <link rel="stylesheet" href="styles.css?v=20261113-8" />
   </head>
   <body>
     <div id="toastContainer" class="toast-container" aria-live="polite"></div>
@@ -278,8 +278,8 @@
           <div class="photo-column">
             <label class="upload-drop"><input id="photoInput" type="file" accept="image/*" capture="environment" /><span class="upload-icon">⌁</span><strong>Escolher foto do placar</strong><small>Toque para usar a câmera ou a galeria</small></label>
             <div class="canvas-frame"><canvas id="photoCanvas" aria-label="Prévia da foto; arraste para selecionar um recorte"></canvas><div id="canvasPlaceholder" class="canvas-placeholder">A prévia da foto aparece aqui</div></div>
-            <div class="photo-adjustments"><button id="rotatePhotoButton" class="button button--quiet" type="button" disabled>Girar 90°</button><label>Zoom <input id="photoZoom" type="range" min="100" max="200" step="25" value="100" disabled /></label><label>Contraste <input id="photoContrast" type="range" min="75" max="200" step="25" value="100" disabled /></label></div>
-            <div class="photo-tools"><span>Arraste sobre nomes e totais para recortar</span><button id="clearCropButton" class="text-button" type="button">Usar imagem inteira</button></div>
+            <div class="photo-adjustments"><button id="rotatePhotoButton" class="button button--quiet" type="button" disabled>Girar 90°</button><button id="photoPanButton" class="button button--quiet" type="button" disabled>Mover imagem</button><label>Zoom <input id="photoZoom" type="range" min="100" max="200" step="25" value="100" disabled /></label><label>Contraste <input id="photoContrast" type="range" min="75" max="200" step="25" value="100" disabled /></label></div>
+            <div class="photo-tools"><span id="photoToolsHint">Arraste sobre nomes e totais para recortar</span><button id="clearCropButton" class="text-button" type="button">Usar imagem inteira</button></div>
             <button id="runOcrButton" class="button button--quiet button--wide" type="button" disabled>Ler sugestões com OCR</button>
             <p id="ocrStatus" class="ocr-status" aria-live="polite">Nenhuma imagem selecionada.</p>
           </div>
@@ -310,6 +310,6 @@
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
     <script src="supabase-config.js"></script>
-    <script src="app.js?v=20261113-7"></script>
+    <script src="app.js?v=20261113-8"></script>
   </body>
 </html>

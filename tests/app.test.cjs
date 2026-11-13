@@ -8,7 +8,7 @@ function loadApp(client = null) {
   const elements = new Map();
   const rows = [];
   const get = (id) => {
-    if (!elements.has(id)) elements.set(id, { value: '', hidden: false, disabled: false, textContent: '', innerHTML: '', focus() {}, querySelectorAll: () => [] });
+    if (!elements.has(id)) elements.set(id, { value: '', hidden: false, disabled: false, textContent: '', innerHTML: '', style: {}, focus() {}, setAttribute() {}, querySelectorAll: () => [] });
     return elements.get(id);
   };
   const document = {
@@ -23,7 +23,7 @@ function loadApp(client = null) {
   });
   const source = fs.readFileSync(path.join(__dirname, '..', 'app.js'), 'utf8')
     .replace(/\nstart\(\);\s*$/, '\n');
-  vm.runInContext(`${source}\nrender = () => {};\nrefreshAfterReconnect = async () => {};\nglobalThis.testApp = { state, loadData, buildSuggestions, playersOnLane, updateReviewTable, updatePhotoConfirmState, drawOrientedPhoto, canvasPoint, renderLeaderboard, renderCurrentGame, shareResultCard, confirmPhotoUpdate, submitAuth, submitProfile, prepareProfilePhoto };`, context);
+  vm.runInContext(`${source}\nrender = () => {};\nrefreshAfterReconnect = async () => {};\nglobalThis.testApp = { state, loadData, buildSuggestions, playersOnLane, updateReviewTable, updatePhotoConfirmState, drawOrientedPhoto, applyPhotoInteractionMode, canvasPoint, renderLeaderboard, renderCurrentGame, shareResultCard, confirmPhotoUpdate, submitAuth, submitProfile, prepareProfilePhoto };`, context);
   return { ...context.testApp, get, rows, document, context };
 }
 
@@ -118,6 +118,18 @@ test('giro de 90 graus troca as dimensões e aplica contraste na leitura', () =>
   assert.deepEqual(operations.find(([name]) => name === 'drawImage'), ['drawImage', 'contrast(150%)']);
 });
 
+test('imagem ampliada pode alternar entre mover e recortar no celular', () => {
+  const app = loadApp();
+  app.state.photoPanMode = true;
+  app.applyPhotoInteractionMode();
+  assert.equal(app.get('photoCanvas').style.touchAction, 'pan-x pan-y');
+  assert.equal(app.get('photoPanButton').textContent, 'Recortar imagem');
+  app.state.photoPanMode = false;
+  app.applyPhotoInteractionMode();
+  assert.equal(app.get('photoCanvas').style.touchAction, 'none');
+  assert.equal(app.get('photoPanButton').textContent, 'Mover imagem');
+});
+
 test('importação usa RPC transacional e nunca cria vínculo de jogador', async () => {
   let call;
   const payload = Buffer.from(JSON.stringify({ amr: [{ method: 'password' }] })).toString('base64url');
@@ -200,6 +212,8 @@ test('visitante vê foto aprovada ao lado do jogador no ranking', async () => {
   ]);
   assert.match(app.get('leaderboardBody').innerHTML, /<img class="ranking-avatar"[^>]+alt="Foto de Matheus Muniz"/);
   assert.match(app.get('leaderboardBody').innerHTML, /213/);
+  assert.match(app.get('podium').innerHTML, /<span class="podium-medal">1º<\/span>/);
+  assert.match(app.get('podium').innerHTML, /Foto de Matheus Muniz/);
 });
 
 test('cartão do resultado inclui o vencedor e salva PNG da classificação final', async () => {
