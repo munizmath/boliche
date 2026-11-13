@@ -8,7 +8,7 @@ Score Board estático, em HTML/CSS/JavaScript puro, adaptado para importar fotos
 python3 -m http.server 4173
 ```
 
-Abra `http://localhost:4173`. Sem uma publishable key preenchida, a interface inicia em modo de demonstração para validar o layout e o fluxo. Esse modo não deve ser publicado.
+Abra `http://localhost:4173`. Sem uma publishable key preenchida, a interface permanece vazia e informa que o Supabase precisa ser configurado; nenhum jogador ou partida fictícia é criado.
 
 ## Configurar o Supabase
 

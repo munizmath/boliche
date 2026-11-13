@@ -28,7 +28,7 @@ const fmtTime = (value) => value ? new Intl.DateTimeFormat("pt-BR", { hour: "2-d
 const getPlayer = (id) => state.players.find((player) => player.id === id);
 const getGame = (id) => state.games.find((game) => game.id === id);
 const gameScores = (gameId) => state.scores.filter((score) => score.game_id === gameId);
-const isAdmin = () => isDemoMode || Boolean(state.session);
+const isAdmin = () => Boolean(state.session);
 
 function showToast(message, type = "info") {
   const toast = document.createElement("div");
@@ -55,30 +55,12 @@ function setModal(id, open) {
   else modal.close();
 }
 
-function seedDemoData() {
-  state.players = [
-    { id: "p-ana", nome: "Ana", apelido_placar: "ANA", pista: "1" },
-    { id: "p-bruno", nome: "Bruno", apelido_placar: "BRUNO", pista: "1" },
-    { id: "p-carol", nome: "Carol", apelido_placar: "CAROL", pista: "1" },
-    { id: "p-diego", nome: "Diego", apelido_placar: "DIEGO", pista: "1" },
-    { id: "p-elisa", nome: "Elisa", apelido_placar: "ELISA", pista: "2" },
-    { id: "p-felipe", nome: "Felipe", apelido_placar: "FELIPE", pista: "2" },
-    { id: "p-gabi", nome: "Gabi", apelido_placar: "GABI", pista: "2" },
-    { id: "p-hugo", nome: "Hugo", apelido_placar: "HUGO", pista: "2" },
-  ];
-  state.games = [{ id: "g-demo", nome: "Abertura da noite", status: "partial", created_at: new Date().toISOString(), updated_at: new Date().toISOString() }];
-  state.scores = state.players.map((player, index) => ({
-    id: `s-${player.id}`, game_id: "g-demo", player_id: player.id, pontos: index < 4 ? [75, 68, 59, 52][index] : null, finalizado: false, updated_at: new Date().toISOString(),
-  }));
-  state.activeGameId = "g-demo";
-  setUpdated();
-}
-
 async function loadData() {
   if (isDemoMode) {
-    seedDemoData();
-    setConnection("Demonstração", "warning");
+    state.players = []; state.games = []; state.scores = []; state.activeGameId = null;
+    setConnection("Supabase não configurado", "error");
     $("demoBanner").hidden = false;
+    $("demoBanner").innerHTML = "<strong>Supabase não configurado</strong><span>Configure a URL e a Publishable Key antes de usar o placar. Nenhum dado fictício será exibido.</span>";
     return;
   }
   setConnection("Sincronizando…", "muted");
@@ -130,10 +112,10 @@ function applyAuthUi() {
   document.querySelectorAll(".admin-only").forEach((element) => {
     element.hidden = !admin;
   });
-  $("authButton").textContent = state.session ? "Sair" : (isDemoMode ? "Modo demo" : "Entrar");
+  $("authButton").textContent = state.session ? "Sair" : "Entrar";
   $("authButton").title = state.session?.user?.email || "Acesso do administrador";
   const sidebarRole = $("sidebarRole");
-  if (sidebarRole) sidebarRole.textContent = state.session ? "Administrador" : (isDemoMode ? "Demonstração" : "Visitante");
+  if (sidebarRole) sidebarRole.textContent = state.session ? "Administrador" : "Visitante";
   const sidebarRoleNote = sidebarRole?.nextElementSibling;
   if (sidebarRoleNote) sidebarRoleNote.textContent = state.session ? (state.session.user?.email || "acesso autorizado") : "acompanha o encontro";
 }
@@ -245,7 +227,7 @@ function updateReviewTable(suggestions = new Map()) {
 function openAuth() {
   if (state.session) return signOut();
   if (isDemoMode) {
-    showToast("Modo demo: configure o Supabase para autenticar.", "info");
+    showToast("Configure o Supabase antes de autenticar.", "error");
     return;
   }
   $("authError").hidden = true;
@@ -278,13 +260,10 @@ async function addPlayer() {
   const pista = $("playerLane").value.trim();
   if (!nome || !apelido_placar || !pista) return showToast("Preencha nome, apelido e pista.", "error");
   const row = { nome, apelido_placar, pista };
-  if (isDemoMode) {
-    state.players.push({ id: `p-${Date.now()}`, ...row });
-  } else {
-    const { data, error } = await client.from("players").insert(row).select("id,nome,apelido_placar,pista").single();
-    if (error) return showToast("Não foi possível cadastrar o participante.", "error");
-    state.players.push(data);
-  }
+  if (!client) return showToast("Supabase não configurado.", "error");
+  const { data, error } = await client.from("players").insert(row).select("id,nome,apelido_placar,pista").single();
+  if (error) return showToast("Não foi possível cadastrar o participante.", "error");
+  state.players.push(data);
   ["playerName", "playerNickname", "playerLane"].forEach((id) => $(id).value = "");
   renderPlayers(); renderPlayerSelection(); renderPhotoOptions();
   showToast(`${nome} foi cadastrado.`, "success");
@@ -292,10 +271,9 @@ async function addPlayer() {
 
 async function removePlayer(id) {
   if (!window.confirm("Remover este participante? Pontuações já publicadas não serão apagadas.")) return;
-  if (!isDemoMode) {
-    const { error } = await client.from("players").delete().eq("id", id);
-    if (error) return showToast("Não foi possível remover o participante.", "error");
-  }
+  if (!client) return showToast("Supabase não configurado.", "error");
+  const { error } = await client.from("players").delete().eq("id", id);
+  if (error) return showToast("Não foi possível remover o participante.", "error");
   state.players = state.players.filter((player) => player.id !== id);
   render();
 }
@@ -305,19 +283,13 @@ async function createGame(event) {
   const nome = $("gameName").value.trim();
   const playerIds = [...document.querySelectorAll("#playerSelection input:checked")].map((input) => input.value);
   if (!nome || !playerIds.length) return showToast("Informe um nome e selecione pelo menos um participante.", "error");
-  const game = { id: isDemoMode ? `g-${Date.now()}` : undefined, nome, status: "partial" };
-  if (isDemoMode) {
-    game.created_at = new Date().toISOString(); game.updated_at = game.created_at;
-    state.games.unshift(game);
-    state.scores.push(...playerIds.map((player_id) => ({ id: `s-${Date.now()}-${player_id}`, game_id: game.id, player_id, pontos: null, finalizado: false, updated_at: game.created_at })));
-  } else {
-    const { data, error } = await client.from("games").insert({ nome, status: "partial" }).select("id,nome,status,created_at,updated_at").single();
-    if (error) return showToast("Não foi possível abrir a partida.", "error");
-    const { data: insertedScores, error: scoresError } = await client.from("scores").insert(playerIds.map((player_id) => ({ game_id: data.id, player_id, pontos: null, finalizado: false }))).select("id,game_id,player_id,pontos,finalizado,updated_at");
-    if (scoresError) { await client.from("games").delete().eq("id", data.id); return showToast("A partida foi desfeita porque os participantes não puderam ser vinculados.", "error"); }
-    state.games.unshift(data); state.scores.push(...insertedScores);
-    game.id = data.id;
-  }
+  if (!client) return showToast("Supabase não configurado.", "error");
+  const { data, error } = await client.from("games").insert({ nome, status: "partial" }).select("id,nome,status,created_at,updated_at").single();
+  if (error) return showToast("Não foi possível abrir a partida.", "error");
+  const { data: insertedScores, error: scoresError } = await client.from("scores").insert(playerIds.map((player_id) => ({ game_id: data.id, player_id, pontos: null, finalizado: false }))).select("id,game_id,player_id,pontos,finalizado,updated_at");
+  if (scoresError) { await client.from("games").delete().eq("id", data.id); return showToast("A partida foi desfeita porque os participantes não puderam ser vinculados.", "error"); }
+  state.games.unshift(data); state.scores.push(...insertedScores);
+  const game = data;
   state.activeGameId = game.id;
   setModal("gameModal", false); render(); showToast("Partida aberta.", "success");
 }
@@ -424,17 +396,11 @@ async function confirmPhotoUpdate(event) {
   const updates = rows.map((row) => ({ player_id: row.dataset.reviewPlayer, pontos: row.querySelector(".review-score").value, finalizado: row.querySelector(".review-final").checked })).filter((row) => row.pontos !== "");
   if (!updates.length) return showToast("Preencha ao menos um total antes de confirmar.", "error");
   const timestamp = new Date().toISOString();
-  if (isDemoMode) {
-    updates.forEach((update) => {
-      const existing = state.scores.find((score) => score.game_id === gameId && score.player_id === update.player_id);
-      if (existing) Object.assign(existing, { pontos: Number(update.pontos), finalizado: update.finalizado, updated_at: timestamp });
-    });
-  } else {
-    const payload = updates.map((update) => ({ game_id: gameId, player_id: update.player_id, pontos: Number(update.pontos), finalizado: update.finalizado }));
-    const { data, error } = await client.from("scores").upsert(payload, { onConflict: "game_id,player_id" }).select("id,game_id,player_id,pontos,finalizado,updated_at");
-    if (error) return showToast("Não foi possível salvar os pontos. Confira sua permissão de administrador.", "error");
-    data.forEach((saved) => { const index = state.scores.findIndex((score) => score.game_id === saved.game_id && score.player_id === saved.player_id); if (index >= 0) state.scores[index] = saved; else state.scores.push(saved); });
-  }
+  if (!client) return showToast("Supabase não configurado.", "error");
+  const payload = updates.map((update) => ({ game_id: gameId, player_id: update.player_id, pontos: Number(update.pontos), finalizado: update.finalizado }));
+  const { data, error } = await client.from("scores").upsert(payload, { onConflict: "game_id,player_id" }).select("id,game_id,player_id,pontos,finalizado,updated_at");
+  if (error) return showToast("Não foi possível salvar os pontos. Confira sua permissão de administrador.", "error");
+  data.forEach((saved) => { const index = state.scores.findIndex((score) => score.game_id === saved.game_id && score.player_id === saved.player_id); if (index >= 0) state.scores[index] = saved; else state.scores.push(saved); });
   await updateGameStatus(gameId);
   state.activeGameId = gameId; setModal("photoModal", false); render(); showToast("Pontos confirmados e ranking atualizado.", "success");
 }
@@ -443,10 +409,9 @@ async function updateGameStatus(gameId) {
   const game = getGame(gameId); const scores = gameScores(gameId);
   const final = scores.length > 0 && scores.every((score) => score.finalizado && score.pontos != null);
   game.status = final ? "final" : "partial"; game.updated_at = new Date().toISOString();
-  if (!isDemoMode) {
-    const { error } = await client.from("games").update({ status: game.status }).eq("id", gameId);
-    if (error) console.error(error);
-  }
+  if (!client) return;
+  const { error } = await client.from("games").update({ status: game.status }).eq("id", gameId);
+  if (error) console.error(error);
 }
 
 function initTheme() {
