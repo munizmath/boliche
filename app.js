@@ -489,7 +489,19 @@ function buildSuggestions(text) {
     const aliases = [player.nome, player.apelido_placar].filter(Boolean).map(normalize);
     const textNormalized = normalize(text);
     const aliasIndex = aliases.map((alias) => textNormalized.indexOf(alias)).find((position) => position >= 0);
-    let candidate = aliasIndex >= 0 ? numbers.find((item) => !used.has(item.index) && item.index >= aliasIndex) : numbers[index];
+    const rowMatch = [...text.matchAll(/^.*$/gm)].find((match) => {
+      const line = match[0];
+      const normalizedLine = normalize(line);
+      return aliases.some((alias) => alias && normalizedLine.includes(alias));
+    });
+    const row = rowMatch?.[0] || "";
+    const rowOffset = rowMatch?.index || 0;
+    const rowNumbers = [...row.matchAll(/\b(?:[0-9]{1,3})\b/g)].map((match) => ({ value: Number(match[0]), index: rowOffset + match.index })).filter((item) => item.value <= 300);
+    let candidate = rowNumbers.filter((item) => !used.has(item.index)).sort((a, b) => b.value - a.value || b.index - a.index)[0];
+    if (!candidate && aliasIndex >= 0) {
+      const nextAliasIndex = playersOnLane().slice(index + 1).flatMap((nextPlayer) => [nextPlayer.nome, nextPlayer.apelido_placar].filter(Boolean).map((alias) => textNormalized.indexOf(normalize(alias))).filter((position) => position > aliasIndex)).sort((a, b) => a - b)[0] ?? text.length;
+      candidate = numbers.filter((item) => !used.has(item.index) && item.index >= aliasIndex && item.index < nextAliasIndex).sort((a, b) => b.value - a.value || b.index - a.index)[0];
+    }
     if (!candidate || used.has(candidate.index)) return;
     used.add(candidate.index); suggestions.set(player.id, { value: candidate.value, hint: "Sugestão OCR · confira" });
   });

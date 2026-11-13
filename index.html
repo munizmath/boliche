@@ -203,7 +203,7 @@
         <button class="modal-close" value="cancel" aria-label="Fechar">×</button>
         <p class="eyebrow">importação assistida</p>
         <h2>Atualizar por foto</h2>
-        <p class="modal-copy">O OCR só sugere. Nada é publicado até você revisar jogador, pontos e situação.</p>
+        <p class="modal-copy">O OCR sugere o total final da coluna à direita. Os acumulados dos frames não devem ser somados. Nada é publicado até você revisar.</p>
         <div class="photo-config-grid">
           <label>Partida<select id="photoGame" required></select></label>
           <label>Pista<select id="photoLane" required></select></label>
@@ -219,7 +219,7 @@
           <div class="review-column">
             <div class="review-heading"><div><span class="eyebrow">conferência</span><h3>Pontos reconhecidos</h3></div><span id="reviewLaneLabel" class="section-meta">Selecione a pista</span></div>
             <div id="reviewTable" class="review-table"></div>
-            <p class="review-note">Campo em branco continua pendente e não vira zero. Reimportar uma foto substitui o total confirmado, sem somar.</p>
+            <p class="review-note">Use o total final da linha, não a soma dos acumulados por frame. Campo em branco continua pendente e não vira zero.</p>
           </div>
         </div>
         <div class="modal-actions"><button class="button button--quiet" value="cancel">Cancelar</button><button id="confirmPhotoButton" class="button button--primary" type="submit" disabled>Confirmar atualização</button></div>
