@@ -20,7 +20,7 @@ Abra `http://localhost:4173`. Sem uma publishable key preenchida, a interface pe
 6. Crie a conta do administrador em Authentication → Users.
 7. Marque o usuário com `app_metadata.role = "admin"` usando o SQL comentado no final de `schema.sql` (ou pelo fluxo administrativo equivalente). O frontend não confia em um campo editável pelo navegador.
 8. Copie a Project URL e a Publishable Key para [`supabase-config.js`](supabase-config.js). A URL e a publishable/anon key podem estar no navegador; nunca coloque `service_role` no repositório.
-9. No Storage, edite o bucket privado `profile-photos` e restrinja os tipos a JPEG, PNG e WebP e o tamanho a 5 MB. O navegador também valida esses limites, mas o bucket deve aplicá-los no servidor.
+9. No Storage, edite o bucket privado `profile-photos` e restrinja os tipos a JPEG, PNG e WebP e o tamanho a 5 MB. O navegador reduz fotos grandes e converte formatos que conseguir abrir para JPEG antes do envio; o bucket aplica os limites no servidor.
 10. Publique a pasta raiz na branch `main` pelo GitHub Pages.
 
 As políticas permitem leitura pública das três tabelas e escrita apenas para usuários autenticados cujo `app_metadata.role` seja `admin` e cuja sessão tenha login com senha. A foto do placar é processada localmente com Tesseract.js e não é enviada ao Supabase.

@@ -8,7 +8,7 @@ function loadApp(client = null) {
   const elements = new Map();
   const rows = [];
   const get = (id) => {
-    if (!elements.has(id)) elements.set(id, { value: '', hidden: false, disabled: false, textContent: '' });
+    if (!elements.has(id)) elements.set(id, { value: '', hidden: false, disabled: false, textContent: '', focus() {} });
     return elements.get(id);
   };
   const document = {
@@ -19,12 +19,12 @@ function loadApp(client = null) {
   get('toastContainer').append = () => {};
   const context = vm.createContext({
     window: { SUPABASE_CONFIG: client ? { url: 'https://example.test', publishableKey: 'test' } : {}, supabase: client ? { createClient: () => client } : null, location: { hash: '', search: '' }, setTimeout: () => {} },
-    document, URLSearchParams, Intl, atob, console,
+    document, URLSearchParams, Intl, atob, console, crypto: { randomUUID: () => 'photo-id' },
   });
   const source = fs.readFileSync(path.join(__dirname, '..', 'app.js'), 'utf8')
     .replace(/\nstart\(\);\s*$/, '\n');
-  vm.runInContext(`${source}\nrender = () => {};\nglobalThis.testApp = { state, buildSuggestions, playersOnLane, updatePhotoConfirmState, canvasPoint, renderLeaderboard, renderCurrentGame, confirmPhotoUpdate, submitAuth };`, context);
-  return { ...context.testApp, get, rows, document };
+  vm.runInContext(`${source}\nrender = () => {};\nglobalThis.testApp = { state, buildSuggestions, playersOnLane, updatePhotoConfirmState, canvasPoint, renderLeaderboard, renderCurrentGame, confirmPhotoUpdate, submitAuth, submitProfile, prepareProfilePhoto };`, context);
+  return { ...context.testApp, get, rows, document, context };
 }
 
 test('OCR só sugere total da última coluna para jogadores vinculados à partida e pista', () => {
@@ -122,4 +122,68 @@ test('login administrativo carrega cadastros antes de abrir aprovações', async
   assert.equal(app.state.profiles.length, 1);
   assert.ok(tables.includes('lanes'));
   assert.ok(tables.includes('score_changes'));
+});
+
+for (const existing of [false, true]) {
+  test(`${existing ? 'perfil aprovado troca' : 'primeiro perfil envia'} foto e salva cadastro`, async () => {
+    let upload;
+    let write;
+    const profile = { id: 'user-1', nome: 'Matheus', foto_path: 'user-1/photo-id.jpg', status: existing ? 'approved' : 'pending', player_id: existing ? 'player-1' : null };
+    const query = {
+      eq: () => query,
+      select: () => query,
+      single: async () => ({ data: profile, error: null }),
+    };
+    const client = {
+      storage: { from: () => ({ upload: async (path, body, options) => { upload = { path, body, options }; return { error: null }; } }) },
+      from: () => ({
+        insert: (payload) => { write = { method: 'insert', payload }; return query; },
+        update: (payload) => { write = { method: 'update', payload }; return query; },
+      }),
+    };
+    const app = loadApp(client);
+    app.state.session = { user: { id: 'user-1' } };
+    if (existing) app.state.profile = { ...profile, foto_path: 'user-1/old.jpg' };
+    const file = { name: 'foto.jpg', type: 'image/jpeg', size: 100 };
+    app.get('profilePhoto').files = [file];
+    app.get('profileName').value = 'Matheus';
+    await app.submitProfile({ preventDefault() {} });
+    assert.equal(upload.path, 'user-1/photo-id.jpg');
+    assert.equal(upload.body, file);
+    assert.equal(upload.options.contentType, 'image/jpeg');
+    assert.equal(write.method, existing ? 'update' : 'insert');
+    assert.equal(write.payload.status, undefined);
+    assert.equal(write.payload.foto_path, upload.path);
+    assert.equal(app.state.profile.status, profile.status);
+    assert.equal(app.get('profileSubmitButton').disabled, false);
+    assert.equal(app.get('profileError').hidden, true);
+  });
+}
+
+test('foto escolhida sem nome mostra orientação antes de tentar upload', async () => {
+  const app = loadApp({ storage: { from: () => { throw new Error('não deve enviar'); } } });
+  app.state.session = { user: { id: 'user-1' } };
+  app.get('profilePhoto').files = [{ name: 'foto.jpg', type: 'image/jpeg', size: 100 }];
+  await app.submitProfile({ preventDefault() {} });
+  assert.equal(app.get('profileError').hidden, false);
+  assert.match(app.get('profileError').textContent, /Informe seu nome/);
+});
+
+test('foto grande do celular é reduzida para JPEG antes do upload', async () => {
+  const app = loadApp();
+  const blob = { size: 180000, type: 'image/jpeg' };
+  app.context.URL = { createObjectURL: () => 'blob:test', revokeObjectURL() {} };
+  app.context.Image = class {
+    naturalWidth = 3200;
+    naturalHeight = 2400;
+    set src(_value) { this.onload(); }
+  };
+  app.document.createElement = () => ({
+    getContext: () => ({ fillRect() {}, drawImage() {} }),
+    toBlob: (callback) => callback(blob),
+  });
+  const result = await app.prepareProfilePhoto({ name: 'camera.heic', type: 'image/heic', size: 8 * 1024 * 1024 });
+  assert.equal(result.body, blob);
+  assert.equal(result.contentType, 'image/jpeg');
+  assert.equal(result.extension, 'jpg');
 });

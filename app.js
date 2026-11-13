@@ -129,8 +129,7 @@ function openProfileModal() {
   if (!state.session || state.recovering) return;
   $("profileName").value = state.profile?.nome || state.session.user.user_metadata?.nome || "";
   $("profilePhoto").value = "";
-  $("profilePhoto").required = !state.profile?.foto_path;
-  $("profilePhotoName").textContent = state.profile?.foto_path ? "Escolha outra foto para substituir a atual" : "JPG, PNG ou WebP · até 5 MB";
+  $("profilePhotoName").textContent = state.profile?.foto_path ? "Escolha outra foto para substituir a atual" : "Fotos grandes serão reduzidas para envio";
   $("profileError").hidden = true;
   setModal("profileModal", true);
 }
@@ -566,46 +565,103 @@ async function submitRegister(event) {
   else showToast("Conta criada. Confirme o e-mail para concluir seu perfil com uma foto.", "success");
 }
 
+async function prepareProfilePhoto(file) {
+  const extensions = { "image/jpeg": "jpg", "image/png": "png", "image/webp": "webp" };
+  const maxSize = 5 * 1024 * 1024;
+  if (extensions[file.type] && file.size <= maxSize) {
+    return { body: file, contentType: file.type, extension: extensions[file.type] };
+  }
+  if (!file.type.startsWith("image/") && !/\.(jpe?g|png|webp|heic|heif)$/i.test(file.name)) {
+    throw new Error("Escolha uma imagem JPG, PNG, WebP ou HEIC.");
+  }
+  const objectUrl = URL.createObjectURL(file);
+  try {
+    const image = new Image();
+    await new Promise((resolve, reject) => {
+      image.onload = resolve;
+      image.onerror = () => reject(new Error("Não foi possível abrir esta foto. Escolha uma imagem JPG, PNG ou WebP."));
+      image.src = objectUrl;
+    });
+    const maxDimension = 1600;
+    const scale = Math.min(1, maxDimension / Math.max(image.naturalWidth, image.naturalHeight));
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
+    canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
+    const context = canvas.getContext("2d");
+    if (!context) throw new Error("Não foi possível preparar a foto neste navegador.");
+    context.fillStyle = "#fff";
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    context.drawImage(image, 0, 0, canvas.width, canvas.height);
+    for (const quality of [0.85, 0.7, 0.55]) {
+      const body = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", quality));
+      if (body && body.size <= maxSize) return { body, contentType: "image/jpeg", extension: "jpg" };
+    }
+    throw new Error("A foto ainda está muito grande. Escolha outra imagem.");
+  } finally {
+    URL.revokeObjectURL(objectUrl);
+  }
+}
+
 async function submitProfile(event) {
   event.preventDefault();
-  if (!client || !state.session) return;
   const errorElement = $("profileError");
   const file = $("profilePhoto").files?.[0];
   const nome = $("profileName").value.trim();
   errorElement.hidden = true;
+  if (!client || !state.session) {
+    errorElement.textContent = "Sua sessão terminou. Entre novamente para salvar o perfil.";
+    errorElement.hidden = false;
+    return;
+  }
+  if (!nome) {
+    errorElement.textContent = "Informe seu nome antes de salvar o perfil.";
+    errorElement.hidden = false;
+    $("profileName").focus();
+    return;
+  }
   if (!file && !state.profile?.foto_path) {
     errorElement.textContent = "Adicione pelo menos uma foto para concluir o cadastro.";
     errorElement.hidden = false;
     return;
   }
-  if (file && (!["image/jpeg", "image/png", "image/webp"].includes(file.type) || file.size > 5 * 1024 * 1024)) {
-    errorElement.textContent = "Escolha uma imagem JPG, PNG ou WebP de até 5 MB.";
-    errorElement.hidden = false;
-    return;
-  }
-  let fotoPath = state.profile?.foto_path;
-  if (file) {
-    const extension = (file.name.split(".").pop() || "jpg").toLowerCase().replace(/[^a-z0-9]/g, "") || "jpg";
-    fotoPath = `${state.session.user.id}/${crypto.randomUUID()}.${extension}`;
-    const { error: uploadError } = await client.storage.from("profile-photos").upload(fotoPath, file, { contentType: file.type, upsert: false });
-    if (uploadError) {
-      errorElement.textContent = "Não foi possível enviar a foto. Tente novamente.";
-      errorElement.hidden = false;
-      return;
+  const button = $("profileSubmitButton");
+  button.disabled = true;
+  button.textContent = "Salvando…";
+  let uploadedPath = null;
+  try {
+    let fotoPath = state.profile?.foto_path;
+    if (file) {
+      const prepared = await prepareProfilePhoto(file);
+      const randomId = crypto.randomUUID?.() || Array.from(crypto.getRandomValues(new Uint8Array(16)), (part) => part.toString(16).padStart(2, "0")).join("");
+      fotoPath = `${state.session.user.id}/${randomId}.${prepared.extension}`;
+      button.textContent = "Enviando foto…";
+      const { error: uploadError } = await client.storage.from("profile-photos").upload(fotoPath, prepared.body, { contentType: prepared.contentType, upsert: false });
+      if (uploadError) throw new Error(`Não foi possível enviar a foto: ${uploadError.message || "verifique sua conexão e tente novamente"}.`);
+      uploadedPath = fotoPath;
     }
-  }
-  const payload = { id: state.session.user.id, nome, foto_path: fotoPath, status: state.profile?.status || "pending" };
-  const { data, error } = await client.from("profiles").upsert(payload).select("id,nome,foto_path,status,player_id").single();
-  if (error) {
-    if (file) await client.storage.from("profile-photos").remove([fotoPath]);
-    errorElement.textContent = "Não foi possível salvar seu cadastro.";
+    button.textContent = "Salvando perfil…";
+    const query = state.profile
+      ? client.from("profiles").update({ nome, foto_path: fotoPath }).eq("id", state.session.user.id)
+      : client.from("profiles").insert({ id: state.session.user.id, nome, foto_path: fotoPath });
+    const { data, error } = await query.select("id,nome,foto_path,status,player_id").single();
+    if (error) {
+      if (uploadedPath) {
+        try { await client.storage.from("profile-photos").remove([uploadedPath]); } catch (cleanupError) { console.warn(cleanupError); }
+      }
+      throw new Error(`Não foi possível salvar o perfil: ${error.message || "tente novamente"}.`);
+    }
+    state.profile = data;
+    setModal("profileModal", false);
+    render();
+    showToast(data.status === "approved" ? "Perfil atualizado." : "Perfil salvo e enviado para aprovação.", "success");
+  } catch (error) {
+    console.error(error);
+    errorElement.textContent = error.message || "Não foi possível salvar seu perfil. Tente novamente.";
     errorElement.hidden = false;
-    return;
+  } finally {
+    button.disabled = false;
+    button.textContent = "Salvar perfil";
   }
-  state.profile = data;
-  setModal("profileModal", false);
-  render();
-  showToast(data.status === "approved" ? "Perfil atualizado." : "Perfil salvo e enviado para aprovação.", "success");
 }
 
 async function addPlayer() {
