@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#8b7765" />
+    <meta name="description" content="Ranking compartilhado do Boliche dos Amigos." />
+    <title>Boliche dos Amigos · Score Board</title>
+    <link rel="icon" href="favicon.ico" type="image/x-icon" />
+    <link rel="apple-touch-icon" href="apple-touch-icon.png" />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div id="toastContainer" class="toast-container" aria-live="polite"></div>
+
+    <main class="shell">
+      <header class="app-header">
+        <div class="brand">
+          <div class="brand-mark"><img src="logo.png" alt="" /></div>
+          <div>
+            <p class="eyebrow">encontro compartilhado</p>
+            <h1>Boliche dos Amigos</h1>
+            <p class="brand-subtitle">Score. Confirme. Repita.</p>
+          </div>
+        </div>
+        <div class="header-actions">
+          <span id="connectionStatus" class="status-pill status-pill--muted">Conectando…</span>
+          <button id="themeToggle" class="icon-button" type="button" title="Alternar tema" aria-label="Alternar tema">◐</button>
+          <button id="authButton" class="button button--quiet" type="button">Entrar</button>
+          <button id="photoButton" class="button button--primary admin-only" type="button" hidden>Atualizar por foto</button>
+          <button id="newGameButton" class="button button--primary admin-only" type="button" hidden>+ Nova partida</button>
+        </div>
+      </header>
+
+      <section id="demoBanner" class="notice notice--info" hidden>
+        <strong>Modo de demonstração</strong>
+        <span>Configure o Project URL e a Publishable Key em <code>supabase-config.js</code> antes de compartilhar o link.</span>
+      </section>
+
+      <section class="intro-row">
+        <div>
+          <p class="eyebrow">placar único · duas pistas ou mais</p>
+          <h2>O ranking da noite, em um só lugar.</h2>
+          <p class="intro-copy">Visitantes acompanham. Só o administrador cadastra participantes e publica pontos confirmados.</p>
+        </div>
+        <div class="sync-card">
+          <span class="sync-dot" aria-hidden="true"></span>
+          <div>
+            <strong id="lastUpdated">Aguardando dados</strong>
+            <small>Atualiza automaticamente nos celulares conectados</small>
+          </div>
+        </div>
+      </section>
+
+      <section class="dashboard-grid">
+        <article class="glass-card leaderboard-card">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">ranking geral</p>
+              <h3>Classificação acumulada</h3>
+            </div>
+            <span id="leaderboardMeta" class="section-meta">Nenhuma partida finalizada</span>
+          </div>
+          <div class="table-wrap">
+            <table class="score-table">
+              <thead>
+                <tr><th>#</th><th>Jogador</th><th>Pista</th><th>Pontos</th><th>Situação</th></tr>
+              </thead>
+              <tbody id="leaderboardBody"></tbody>
+            </table>
+          </div>
+          <div id="leaderboardEmpty" class="empty-state" hidden>
+            <span class="empty-icon">◌</span>
+            <strong>O ranking começa aqui</strong>
+            <span>Quando a primeira partida for confirmada, o acumulado aparece para todos.</span>
+          </div>
+        </article>
+
+        <article class="glass-card current-card">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">acompanhamento ao vivo</p>
+              <h3 id="currentGameTitle">Nenhuma partida aberta</h3>
+            </div>
+            <span id="currentGameStatus" class="status-pill status-pill--muted">Aguardando</span>
+          </div>
+          <div id="currentGameBody" class="current-game-body"></div>
+          <button id="currentGameSelect" class="text-button admin-only" type="button" hidden>Selecionar outra partida</button>
+        </article>
+      </section>
+
+      <section class="history-section">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">arquivo do encontro</p>
+            <h3>Partidas</h3>
+          </div>
+          <span id="gameCount" class="section-meta">0 partidas</span>
+        </div>
+        <div id="gamesList" class="games-grid"></div>
+      </section>
+    </main>
+
+    <footer class="app-footer">Boliche dos Amigos · pontos publicados somente após conferência</footer>
+
+    <dialog id="authModal" class="modal">
+      <form method="dialog" class="modal-card" id="authForm">
+        <button class="modal-close" value="cancel" aria-label="Fechar">×</button>
+        <p class="eyebrow">acesso restrito</p>
+        <h2>Entrar como administrador</h2>
+        <p class="modal-copy">Visitantes não precisam de conta. Use sua conta Supabase apenas para cadastrar e atualizar o placar.</p>
+        <label>E-mail<input id="authEmail" type="email" autocomplete="email" required /></label>
+        <label>Senha<input id="authPassword" type="password" autocomplete="current-password" required /></label>
+        <p id="authError" class="form-error" hidden></p>
+        <button class="button button--primary button--wide" type="submit">Entrar</button>
+      </form>
+    </dialog>
+
+    <dialog id="gameModal" class="modal">
+      <form method="dialog" class="modal-card modal-card--wide" id="gameForm">
+        <button class="modal-close" value="cancel" aria-label="Fechar">×</button>
+        <p class="eyebrow">preparação</p>
+        <h2>Nova partida</h2>
+        <label>Nome da partida<input id="gameName" type="text" maxlength="80" placeholder="Sexta à noite" required /></label>
+        <div class="form-section-heading"><span>Participantes</span><small>Escolha a divisão real das pistas</small></div>
+        <div id="playerSelection" class="selection-grid"></div>
+        <p id="playerSelectionEmpty" class="empty-inline" hidden>Cadastre os participantes antes de abrir uma partida.</p>
+        <div class="modal-actions"><button class="button button--quiet" value="cancel">Cancelar</button><button class="button button--primary" type="submit">Abrir partida</button></div>
+      </form>
+    </dialog>
+
+    <dialog id="playersModal" class="modal">
+      <form method="dialog" class="modal-card modal-card--wide" id="playersForm">
+        <button class="modal-close" value="cancel" aria-label="Fechar">×</button>
+        <p class="eyebrow">cadastro</p>
+        <h2>Participantes e pistas</h2>
+        <p class="modal-copy">O apelido é exatamente como aparece no monitor da pista e ajuda a sugerir a associação na leitura da foto.</p>
+        <div class="player-add-row"><input id="playerName" type="text" placeholder="Nome da pessoa" /><input id="playerNickname" type="text" placeholder="Apelido no placar" /><input id="playerLane" type="text" inputmode="numeric" placeholder="Pista" /><button id="addPlayerButton" class="button button--primary" type="button">Adicionar</button></div>
+        <div id="playersList" class="players-list"></div>
+        <div class="modal-actions"><button class="button button--quiet" value="cancel">Fechar</button></div>
+      </form>
+    </dialog>
+
+    <dialog id="photoModal" class="modal">
+      <form method="dialog" class="modal-card modal-card--xl" id="photoForm">
+        <button class="modal-close" value="cancel" aria-label="Fechar">×</button>
+        <p class="eyebrow">importação assistida</p>
+        <h2>Atualizar por foto</h2>
+        <p class="modal-copy">O OCR só sugere. Nada é publicado até você revisar jogador, pontos e situação.</p>
+        <div class="photo-config-grid">
+          <label>Partida<select id="photoGame" required></select></label>
+          <label>Pista<select id="photoLane" required></select></label>
+        </div>
+        <div class="photo-workspace">
+          <div class="photo-column">
+            <label class="upload-drop"><input id="photoInput" type="file" accept="image/*" capture="environment" /><span class="upload-icon">⌁</span><strong>Escolher foto do placar</strong><small>Toque para usar a câmera ou a galeria</small></label>
+            <div class="canvas-frame"><canvas id="photoCanvas" aria-label="Prévia da foto; arraste para selecionar um recorte"></canvas><div id="canvasPlaceholder" class="canvas-placeholder">A prévia da foto aparece aqui</div></div>
+            <div class="photo-tools"><span>Arraste sobre nomes e totais para recortar</span><button id="clearCropButton" class="text-button" type="button">Usar imagem inteira</button></div>
+            <button id="runOcrButton" class="button button--quiet button--wide" type="button" disabled>Ler sugestões com OCR</button>
+            <p id="ocrStatus" class="ocr-status" aria-live="polite">Nenhuma imagem selecionada.</p>
+          </div>
+          <div class="review-column">
+            <div class="review-heading"><div><span class="eyebrow">conferência</span><h3>Pontos reconhecidos</h3></div><span id="reviewLaneLabel" class="section-meta">Selecione a pista</span></div>
+            <div id="reviewTable" class="review-table"></div>
+            <p class="review-note">Campo em branco continua pendente e não vira zero. Reimportar uma foto substitui o total confirmado, sem somar.</p>
+          </div>
+        </div>
+        <div class="modal-actions"><button class="button button--quiet" value="cancel">Cancelar</button><button id="confirmPhotoButton" class="button button--primary" type="submit" disabled>Confirmar atualização</button></div>
+      </form>
+    </dialog>
+
+    <dialog id="infoModal" class="modal">
+      <form method="dialog" class="modal-card">
+        <button class="modal-close" value="cancel" aria-label="Fechar">×</button>
+        <p class="eyebrow">como funciona</p>
+        <h2>Placar com conferência</h2>
+        <div class="info-list"><p><span>01</span><strong>Fotografe</strong><small>Selecione a partida, a pista e uma foto do monitor.</small></p><p><span>02</span><strong>Confira</strong><small>O reconhecimento sugere nomes e totais; você corrige tudo antes de salvar.</small></p><p><span>03</span><strong>Sincronize</strong><small>Os pontos confirmados vão para o ranking compartilhado nos celulares.</small></p></div>
+        <p class="modal-copy">A foto fica no aparelho. O banco recebe somente os resultados confirmados.</p>
+        <div class="modal-actions"><button class="button button--primary" value="cancel">Entendi</button></div>
+      </form>
+    </dialog>
+
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+    <script src="supabase-config.js"></script>
+    <script src="app.js"></script>
+  </body>
+</html>

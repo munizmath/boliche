@@ -1,0 +1,4 @@
+window.SUPABASE_CONFIG = {
+  url: "https://SEU-PROJECT-REF.supabase.co",
+  publishableKey: "SUA_PUBLISHABLE_KEY",
+};
