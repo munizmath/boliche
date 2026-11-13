@@ -258,6 +258,7 @@ function applyAuthUi() {
   $("authButton").title = state.session?.user?.email || "Acesso do administrador";
   $("registerButton").hidden = isAuthenticated();
   $("profileButton").hidden = !isAuthenticated() || state.recovering;
+  $("profileButton").textContent = state.profile?.foto_path ? "Meu cadastro ✓" : "Meu cadastro";
   const sidebarRole = $("sidebarRole");
   if (sidebarRole) sidebarRole.textContent = state.recovering ? "Recuperação de acesso" : (isAdmin() ? "Administrador" : (state.session ? "Participante" : "Visitante"));
   const sidebarRoleNote = sidebarRole?.nextElementSibling;
@@ -657,7 +658,13 @@ async function submitProfile(event) {
     const { data: authData, error: authError } = await client.auth.getSession();
     if (authError || !authData?.session) throw new Error("Sua sessão expirou. Entre novamente para salvar a foto.");
     state.session = authData.session;
-    let fotoPath = state.profile?.foto_path;
+    let currentProfile = state.profile;
+    if (!currentProfile) {
+      const { data: existing, error: readError } = await client.from("profiles").select("id,nome,foto_path,status,player_id").eq("id", state.session.user.id).maybeSingle();
+      if (readError) throw new Error(`Não foi possível conferir o cadastro: ${readError.message || "tente novamente"}.`);
+      currentProfile = existing;
+    }
+    let fotoPath = currentProfile?.foto_path;
     if (file) {
       const prepared = await prepareProfilePhoto(file);
       const randomId = crypto.randomUUID?.() || Array.from(crypto.getRandomValues(new Uint8Array(16)), (part) => part.toString(16).padStart(2, "0")).join("");
@@ -668,7 +675,7 @@ async function submitProfile(event) {
       uploadedPath = fotoPath;
     }
     button.textContent = "Salvando perfil…";
-    const query = state.profile
+    const query = currentProfile
       ? client.from("profiles").update({ nome, foto_path: fotoPath }).eq("id", state.session.user.id)
       : client.from("profiles").insert({ id: state.session.user.id, nome, foto_path: fotoPath });
     const { data, error } = await query.select("id,nome,foto_path,status,player_id").single();
@@ -680,8 +687,12 @@ async function submitProfile(event) {
     }
     state.profile = data;
     if (data.foto_path) {
-      const { data: signed } = await client.storage.from("profile-photos").createSignedUrl(data.foto_path, 300);
-      state.profile.photoUrl = signed?.signedUrl || null;
+      try {
+        const { data: signed } = await client.storage.from("profile-photos").createSignedUrl(data.foto_path, 300);
+        state.profile.photoUrl = signed?.signedUrl || null;
+      } catch (previewError) {
+        console.warn("Foto salva, mas a prévia não carregou.", previewError);
+      }
     }
     setModal("profileModal", false);
     render();

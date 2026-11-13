@@ -128,8 +128,8 @@ test('login administrativo carrega cadastros antes de abrir aprovações', async
   assert.ok(tables.includes('score_changes'));
 });
 
-for (const existing of [false, true]) {
-  test(`${existing ? 'perfil aprovado troca' : 'primeiro perfil envia'} foto e salva cadastro`, async () => {
+for (const existing of [false, true, 'stale']) {
+  test(`${existing === 'stale' ? 'perfil recarregado após renovação de sessão troca' : existing ? 'perfil aprovado troca' : 'primeiro perfil envia'} foto e salva cadastro`, async () => {
     let upload;
     let write;
     const profile = { id: 'user-1', nome: 'Matheus', foto_path: 'user-1/photo-id.jpg', status: existing ? 'approved' : 'pending', player_id: existing ? 'player-1' : null };
@@ -142,13 +142,14 @@ for (const existing of [false, true]) {
       auth: { getSession: async () => ({ data: { session: { user: { id: 'user-1' } } }, error: null }) },
       storage: { from: () => ({ upload: async (path, body, options) => { upload = { path, body, options }; return { error: null }; }, createSignedUrl: async () => ({ data: { signedUrl: 'https://example.test/photo.jpg' } }) }) },
       from: () => ({
+        select: () => ({ eq: () => ({ maybeSingle: async () => ({ data: existing === 'stale' ? { ...profile, foto_path: 'user-1/old.jpg' } : null, error: null }) }) }),
         insert: (payload) => { write = { method: 'insert', payload }; return query; },
         update: (payload) => { write = { method: 'update', payload }; return query; },
       }),
     };
     const app = loadApp(client);
     app.state.session = { user: { id: 'user-1' } };
-    if (existing) app.state.profile = { ...profile, foto_path: 'user-1/old.jpg' };
+    if (existing === true) app.state.profile = { ...profile, foto_path: 'user-1/old.jpg' };
     const file = { name: 'foto.jpg', type: 'image/jpeg', size: 100 };
     app.get(existing ? 'profileCamera' : 'profilePhoto').files = [file];
     app.get('profileName').value = 'Matheus';
