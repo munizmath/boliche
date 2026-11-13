@@ -18,11 +18,12 @@ Abra `http://localhost:4173`. Sem uma publishable key preenchida, a interface pe
 4. Execute [`hardening-p0.sql`](hardening-p0.sql) para bloquear autoaprovação, vincular perfis a jogadores existentes, salvar pontos em transação, sincronizar o status da partida e registrar alterações.
 5. Execute [`management.sql`](management.sql) para habilitar edição e exclusão administrativa de pistas, partidas, resultados, jogadores e contas.
 6. Execute [`public-ranking-photos.sql`](public-ranking-photos.sql) para exibir no ranking apenas fotos de perfis aprovados e vinculados, mantendo o bucket privado.
-7. Crie a conta do administrador em Authentication → Users.
-8. Marque o usuário com `app_metadata.role = "admin"` usando o SQL comentado no final de `schema.sql` (ou pelo fluxo administrativo equivalente). O frontend não confia em um campo editável pelo navegador. Se o administrador também jogar, aprove e vincule seu perfil ao jogador correspondente.
-9. Copie a Project URL e a Publishable Key para [`supabase-config.js`](supabase-config.js). A URL e a publishable/anon key podem estar no navegador; nunca coloque `service_role` no repositório.
-10. No Storage, edite o bucket privado `profile-photos` e restrinja os tipos a JPEG, PNG e WebP e o tamanho a 5 MB. O navegador reduz fotos grandes e converte formatos que conseguir abrir para JPEG antes do envio; o bucket aplica os limites no servidor.
-11. Publique a pasta raiz na branch `main` pelo GitHub Pages.
+7. Execute [`encounters.sql`](encounters.sql) e depois [`competition.sql`](competition.sql). A primeira migração reúne os dados existentes em um encontro inicial, registra a pista em cada pontuação e cria o encerramento; a segunda habilita equipes, torneio e palpites. Ensaie em transação com `ROLLBACK` no projeto antes da aplicação.
+8. Crie a conta do administrador em Authentication → Users.
+9. Marque o usuário com `app_metadata.role = "admin"` usando o SQL comentado no final de `schema.sql` (ou pelo fluxo administrativo equivalente). O frontend não confia em um campo editável pelo navegador. Se o administrador também jogar, aprove e vincule seu perfil ao jogador correspondente.
+10. Copie a Project URL e a Publishable Key para [`supabase-config.js`](supabase-config.js). A URL e a publishable/anon key podem estar no navegador; nunca coloque `service_role` no repositório.
+11. No Storage, edite o bucket privado `profile-photos` e restrinja os tipos a JPEG, PNG e WebP e o tamanho a 5 MB. O navegador reduz fotos grandes e converte formatos que conseguir abrir para JPEG antes do envio; o bucket aplica os limites no servidor.
+12. Publique a pasta raiz na branch `main` pelo GitHub Pages.
 
 As políticas permitem leitura pública de jogadores, partidas, pontos e perfis aprovados vinculados. A escrita do placar exige um usuário autenticado com `app_metadata.role = "admin"` e sessão de login com senha. A foto do placar é processada localmente com Tesseract.js e não é enviada ao Supabase.
 
@@ -45,6 +46,10 @@ O cadastro público usa `auth.users` + `public.profiles`: qualquer pessoa pode c
 - O botão Compartilhar mostra um QR Code estático para o endereço público do placar.
 - O manifesto e o service worker permitem instalar a interface como PWA. O cache cobre apenas arquivos do site; resultados e autenticação continuam exigindo conexão com o Supabase.
 - O administrador pode renomear ou remover pistas vazias, editar participantes e partidas, limpar pontuações e excluir partidas/jogadores. O ranking oficial é calculado a partir dos pontos das partidas finalizadas; correções e exclusões o recalculam. Excluir um jogador ou partida apaga seus resultados e registros de alteração.
+- Cada encontro tem participantes, partidas e ranking próprios. A pista fica gravada em cada resultado da partida; mudar a pista padrão do cadastro não altera o histórico. O administrador define a capacidade de cada pista, sorteia a distribuição de cada rodada e pode ajustá-la antes de salvar.
+- O ranking do encontro alterna entre pontos acumulados e média por partida concluída, mostra quantas partidas cada pessoa jogou e permite filtrar pela pista usada naquela partida. A partida atual exibe o progresso de confirmação em cada pista.
+- CSV e JSON exportam os participantes, partidas e pontos do encontro selecionado. O administrador pode encerrar o encontro quando todas as partidas estiverem finalizadas; a classificação fica congelada até a reabertura explícita. A exclusão do encontro exige reabertura e confirmação.
+- Equipes próprias do encontro têm classificação por soma ou média de seus integrantes. A chave eliminatória usa oito jogadores e até três partidas reais, uma por rodada; empates e resultados incompletos deixam o confronto pendente. Palpites de participantes aprovados são aceitos antes do primeiro ponto, com taxa de acertos após a finalização. Recordes históricos do grupo e modo telão completam a visualização.
 - A aba de aprovações permite editar o nome do perfil e excluir contas de Auth. A exclusão remove as fotos pelo Storage antes de chamar uma função protegida no banco; se a remoção da conta falhar depois das fotos, o painel avisa para tentar novamente. O e-mail e a senha são gerenciados pelo fluxo de autenticação.
 
 ## Verificação local
@@ -53,6 +58,8 @@ O cadastro público usa `auth.users` + `public.profiles`: qualquer pessoa pode c
 node tests/app.test.cjs
 ```
 
-Os testes cobrem associação do OCR somente a jogadores vinculados, conferência manual e escala do recorte. A migração SQL deve ser verificada no projeto Supabase antes de publicar o frontend.
+Os testes cobrem OCR, conferência, ranking isolado por encontro, pista histórica, chave eliminatória, perfil e importação transacional. As migrações SQL devem ser verificadas no projeto Supabase antes de publicar o frontend.
 
 Depois de aplicar `hardening-p0.sql`, execute [`tests/transaction-smoke.sql`](tests/transaction-smoke.sql) no SQL Editor. O teste finaliza e desfaz uma partida dentro de uma transação encerrada com `ROLLBACK`.
+
+Depois das migrações de encontros e competição, execute [`tests/encounter-smoke.sql`](tests/encounter-smoke.sql). Ele cria e remove um encontro de ensaio, testa pista por partida, equipe, finalização, bloqueio após encerramento e reabertura, tudo dentro de uma transação com `ROLLBACK`.

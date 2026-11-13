@@ -9,6 +9,12 @@ const client = !isDemoMode && window.supabase
 const state = {
   players: [],
   lanes: [],
+  encounters: [],
+  encounterPlayers: [],
+  teams: [],
+  teamPlayers: [],
+  brackets: [],
+  predictions: [],
   games: [],
   scores: [],
   profile: null,
@@ -18,6 +24,9 @@ const state = {
   session: null,
   recovering: /(?:^#|&)type=recovery(?:&|$)/.test(window.location.hash) || new URLSearchParams(window.location.search).get("type") === "recovery",
   activeGameId: null,
+  activeEncounterId: null,
+  editingEncounterId: null,
+  editingTeamId: null,
   lastUpdatedAt: null,
   crop: null,
   image: null,
@@ -40,9 +49,20 @@ const esc = (value = "") => String(value).replace(/[&<>"']/g, (char) => ({
 const normalize = (value = "") => value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim();
 const fmtDate = (value) => value ? new Intl.DateTimeFormat("pt-BR", { dateStyle: "short", timeStyle: "short" }).format(new Date(value)) : "—";
 const fmtTime = (value) => value ? new Intl.DateTimeFormat("pt-BR", { hour: "2-digit", minute: "2-digit" }).format(new Date(value)) : "—";
+const localIsoDate = () => {
+  const parts = Object.fromEntries(new Intl.DateTimeFormat("en-US", { timeZone: "America/Sao_Paulo", year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(new Date()).map((part) => [part.type, part.value]));
+  return `${parts.year}-${parts.month}-${parts.day}`;
+};
 const getPlayer = (id) => state.players.find((player) => player.id === id);
 const getGame = (id) => state.games.find((game) => game.id === id);
 const gameScores = (gameId) => state.scores.filter((score) => score.game_id === gameId);
+const activeEncounter = () => state.encounters.find((encounter) => encounter.id === state.activeEncounterId);
+const encounterGames = () => state.games.filter((game) => game.encounter_id === state.activeEncounterId);
+const encounterPlayerIds = () => new Set(state.encounterPlayers.filter((row) => row.encounter_id === state.activeEncounterId).map((row) => row.player_id));
+const encounterPlayers = () => state.players.filter((player) => encounterPlayerIds().has(player.id));
+const encounterOpen = () => activeEncounter()?.status === "open";
+const scoreLane = (score) => score?.pista || getPlayer(score?.player_id)?.pista || "";
+const gameLaneForPlayer = (gameId, playerId) => scoreLane(state.scores.find((score) => score.game_id === gameId && score.player_id === playerId));
 const isAdmin = () => {
   if (state.session?.user?.app_metadata?.role !== "admin") return false;
   try {
@@ -82,28 +102,40 @@ function setModal(id, open) {
 
 async function loadData() {
   if (isDemoMode) {
-    state.players = []; state.lanes = []; state.games = []; state.scores = []; state.playerPhotos = new Map(); state.activeGameId = null;
+    state.players = []; state.lanes = []; state.encounters = []; state.encounterPlayers = []; state.games = []; state.scores = []; state.playerPhotos = new Map(); state.activeGameId = null;
     setConnection("Supabase não configurado", "error");
     $("demoBanner").hidden = false;
     $("demoBanner").innerHTML = "<strong>Supabase não configurado</strong><span>Configure a URL e a Publishable Key antes de usar o placar. Nenhum dado fictício será exibido.</span>";
     return;
   }
   setConnection("Sincronizando…", "muted");
-  const [playersResult, lanesResult, gamesResult, scoresResult, profilesResult, changesResult, publicPhotosResult] = await Promise.all([
+  const [playersResult, lanesResult, encountersResult, rosterResult, gamesResult, scoresResult, teamsResult, teamPlayersResult, bracketsResult, predictionsResult, profilesResult, changesResult, publicPhotosResult] = await Promise.all([
     client.from("players").select("id,nome,apelido_placar,pista").order("nome"),
-    client.from("lanes").select("name").order("name"),
-    client.from("games").select("id,nome,status,created_at,updated_at").order("created_at", { ascending: false }),
-    client.from("scores").select("id,game_id,player_id,pontos,finalizado,updated_at"),
+    client.from("lanes").select("name,capacity").order("name"),
+    client.from("encounters").select("id,nome,data,status,closed_at,created_at").order("data", { ascending: false }),
+    client.from("encounter_players").select("encounter_id,player_id"),
+    client.from("games").select("id,nome,status,encounter_id,created_at,updated_at").order("created_at", { ascending: false }),
+    client.from("scores").select("id,game_id,player_id,pista,pontos,finalizado,updated_at"),
+    client.from("teams").select("id,encounter_id,name,metric"),
+    client.from("team_players").select("team_id,player_id"),
+    client.from("brackets").select("encounter_id,seeds,round_games"),
+    isAuthenticated() ? client.from("predictions").select("game_id,user_id,predicted_player_id,created_at") : Promise.resolve({ data: [] }),
     isAdmin() ? client.rpc("list_registered_accounts") : Promise.resolve({ data: [] }),
     isAdmin() ? client.from("score_changes").select("id,score_id,game_id,player_id,previous_points,new_points,previous_finalized,new_finalized,changed_at,actor_id").order("id", { ascending: false }).limit(100) : Promise.resolve({ data: [] }),
     client.from("profiles").select("player_id,foto_path").eq("status", "approved").not("player_id", "is", null),
   ]);
-  const error = playersResult.error || lanesResult.error || gamesResult.error || scoresResult.error || profilesResult.error || changesResult.error || publicPhotosResult.error;
+  const error = playersResult.error || lanesResult.error || encountersResult.error || rosterResult.error || gamesResult.error || scoresResult.error || teamsResult.error || teamPlayersResult.error || bracketsResult.error || predictionsResult.error || profilesResult.error || changesResult.error || publicPhotosResult.error;
   if (error) throw error;
   state.players = playersResult.data || [];
   state.lanes = lanesResult.data || [];
+  state.encounters = encountersResult.data || [];
+  state.encounterPlayers = rosterResult.data || [];
   state.games = gamesResult.data || [];
   state.scores = scoresResult.data || [];
+  state.teams = teamsResult.data || [];
+  state.teamPlayers = teamPlayersResult.data || [];
+  state.brackets = bracketsResult.data || [];
+  state.predictions = predictionsResult.data || [];
   state.profiles = isAdmin() ? (profilesResult.data || []) : [];
   state.scoreChanges = isAdmin() ? (changesResult.data || []) : [];
   const publicPhotos = publicPhotosResult.data || [];
@@ -120,9 +152,13 @@ async function loadData() {
       profile.photoUrl = data?.signedUrl || null;
     }));
   }
-  state.activeGameId = state.games.some((game) => game.id === state.activeGameId)
+  const requestedEncounterId = new URLSearchParams(window.location.search).get("encontro");
+  state.activeEncounterId = state.encounters.some((item) => item.id === state.activeEncounterId)
+    ? state.activeEncounterId
+    : state.encounters.find((item) => item.id === requestedEncounterId)?.id || state.encounters.find((item) => item.status === "open")?.id || state.encounters[0]?.id || null;
+  state.activeGameId = encounterGames().some((game) => game.id === state.activeGameId)
     ? state.activeGameId
-    : (state.games.find((game) => game.status === "partial")?.id || state.games[0]?.id || null);
+    : (encounterGames().find((game) => game.status === "partial")?.id || encounterGames()[0]?.id || null);
   const latest = [...state.scores, ...state.games].map((item) => item.updated_at || item.created_at).filter(Boolean).sort().at(-1);
   setUpdated(latest || new Date().toISOString());
   setConnection("Sincronizado", "success");
@@ -236,8 +272,13 @@ function subscribeRealtime() {
   if (!client) return;
   client.channel("boliche-live")
     .on("postgres_changes", { event: "*", schema: "public", table: "players" }, refreshFromRealtime)
+    .on("postgres_changes", { event: "*", schema: "public", table: "encounters" }, refreshFromRealtime)
+    .on("postgres_changes", { event: "*", schema: "public", table: "encounter_players" }, refreshFromRealtime)
     .on("postgres_changes", { event: "*", schema: "public", table: "games" }, refreshFromRealtime)
     .on("postgres_changes", { event: "*", schema: "public", table: "scores" }, refreshFromRealtime)
+    .on("postgres_changes", { event: "*", schema: "public", table: "teams" }, refreshFromRealtime)
+    .on("postgres_changes", { event: "*", schema: "public", table: "team_players" }, refreshFromRealtime)
+    .on("postgres_changes", { event: "*", schema: "public", table: "brackets" }, refreshFromRealtime)
     .subscribe((status) => {
       if (status === "SUBSCRIBED") {
         setConnection("Ao vivo", "success");
@@ -279,11 +320,293 @@ function applyAuthUi() {
   if (sidebarRoleNote) sidebarRoleNote.textContent = state.session ? (state.session.user?.email || "acesso autorizado") : "acompanha o encontro";
 }
 
+function renderEncounterBar() {
+  const selected = state.activeEncounterId;
+  $("encounterSelect").innerHTML = state.encounters.map((item) => `<option value="${esc(item.id)}">${esc(item.nome)} · ${esc(new Intl.DateTimeFormat("pt-BR", { timeZone: "UTC" }).format(new Date(`${item.data}T12:00:00Z`)))}</option>`).join("");
+  $("encounterSelect").value = selected || "";
+  $("encounterStatus").textContent = !activeEncounter() ? "Sem encontro" : activeEncounter().status === "closed" ? "Encerrado" : "Em andamento";
+  $("encounterStatus").className = `status-pill status-pill--${!activeEncounter() ? "muted" : encounterOpen() ? "warning" : "success"}`;
+  $("editEncounterButton").disabled = !encounterOpen();
+  $("closeEncounterButton").disabled = !activeEncounter();
+  $("closeEncounterButton").textContent = encounterOpen() ? "Encerrar encontro" : "Reabrir encontro";
+  $("deleteEncounterButton").disabled = !encounterOpen();
+  $("manageTeamsButton").disabled = !encounterOpen();
+  $("manageBracketButton").disabled = !encounterOpen();
+  if (document.body.classList.contains("tv-mode")) document.querySelector(".page-title h1").textContent = activeEncounter()?.nome || "Boliche dos Amigos";
+  $("newGameButton").disabled = !encounterOpen();
+  $("photoButton").disabled = !encounterOpen();
+  document.querySelector(".intro-row h2").textContent = activeEncounter() ? `O ranking de ${activeEncounter().nome}, em um só lugar.` : "O ranking do encontro, em um só lugar.";
+}
+
+function selectEncounter(id) {
+  if (!state.encounters.some((item) => item.id === id)) return;
+  state.activeEncounterId = id;
+  state.activeGameId = encounterGames().find((game) => game.status === "partial")?.id || encounterGames()[0]?.id || null;
+  const url = new URL(window.location.href);
+  url.searchParams.set("encontro", id);
+  window.history.replaceState(null, "", url);
+  render();
+}
+
+function openEncounterModal(editing = false) {
+  const encounter = editing ? activeEncounter() : null;
+  if (editing && !encounterOpen()) return showToast("Reabra o encontro para editá-lo.", "error");
+  state.editingEncounterId = encounter?.id || null;
+  $("encounterModalTitle").textContent = editing ? "Editar encontro" : "Novo encontro";
+  $("encounterName").value = encounter?.nome || "";
+  $("encounterDate").value = encounter?.data || localIsoDate();
+  const roster = new Set(state.encounterPlayers.filter((row) => row.encounter_id === encounter?.id).map((row) => row.player_id));
+  $("encounterPlayerSelection").innerHTML = state.players.map((player) => `<label class="selection-item"><input type="checkbox" value="${esc(player.id)}" ${!editing || roster.has(player.id) ? "checked" : ""} /><span><strong>${esc(player.nome)}</strong><small>${esc(player.apelido_placar || "sem apelido")}</small></span></label>`).join("");
+  $("encounterFormError").hidden = true;
+  setModal("encounterModal", true);
+}
+
+async function saveEncounter(event) {
+  event.preventDefault();
+  const name = $("encounterName").value.trim();
+  const date = $("encounterDate").value;
+  const ids = [...$("encounterPlayerSelection").querySelectorAll("input:checked")].map((input) => input.value);
+  const errorElement = $("encounterFormError");
+  if (!name || !date) { errorElement.textContent = "Informe o nome e a data."; errorElement.hidden = false; return; }
+  const editing = state.editingEncounterId;
+  const { data, error } = await client.rpc(editing ? "save_encounter" : "create_encounter", editing
+    ? { p_encounter_id: editing, p_name: name, p_date: date, p_player_ids: ids }
+    : { p_name: name, p_date: date, p_player_ids: ids });
+  if (error) { errorElement.textContent = error.message; errorElement.hidden = false; return; }
+  setModal("encounterModal", false);
+  await loadData();
+  selectEncounter(data.id);
+  showToast(editing ? "Encontro atualizado." : "Encontro criado.", "success");
+}
+
+async function toggleEncounterClosed() {
+  const encounter = activeEncounter();
+  if (!encounter) return;
+  const closing = encounter.status === "open";
+  if (!window.confirm(closing
+    ? `Encerrar ${encounter.nome}? A classificação ficará congelada até a reabertura explícita.`
+    : `Reabrir ${encounter.nome}? Pontuações e partidas poderão ser corrigidas novamente.`)) return;
+  const { error } = await client.rpc("set_encounter_closed", { p_encounter_id: encounter.id, p_closed: closing });
+  if (error) return showToast(error.message, "error");
+  await loadData(); render(); showToast(closing ? "Encontro encerrado." : "Encontro reaberto.", "success");
+}
+
+function downloadResults(format) {
+  const encounter = activeEncounter();
+  if (!encounter) return showToast("Nenhum encontro para exportar.", "error");
+  const games = encounterGames();
+  const ids = new Set(games.map((game) => game.id));
+  const scores = state.scores.filter((score) => ids.has(score.game_id));
+  const teams = state.teams.filter((team) => team.encounter_id === encounter.id);
+  const teamIds = new Set(teams.map((team) => team.id));
+  const data = { encounter, players: encounterPlayers(), games, scores, teams,
+    teamPlayers: state.teamPlayers.filter((row) => teamIds.has(row.team_id)),
+    bracket: state.brackets.find((row) => row.encounter_id === encounter.id) || null };
+  let content;
+  let mime;
+  if (format === "json") { content = JSON.stringify(data, null, 2); mime = "application/json"; }
+  else {
+    const quote = (value) => `"${String(value ?? "").replace(/"/g, '""')}"`;
+    const header = ["tipo", "encontro_id", "encontro", "data", "partida_id", "partida", "status_partida", "jogador_id", "jogador", "pista", "pontos", "confirmado"];
+    const prefix = [encounter.id, encounter.nome, encounter.data];
+    const rows = [
+      ...encounterPlayers().map((player) => ["jogador", ...prefix, "", "", "", player.id, player.nome, player.pista, "", ""]),
+      ...games.map((game) => ["partida", ...prefix, game.id, game.nome, game.status, "", "", "", "", ""]),
+      ...scores.map((score) => { const game = games.find((item) => item.id === score.game_id); return ["pontuacao", ...prefix, game?.id, game?.nome, game?.status, score.player_id, getPlayer(score.player_id)?.nome, scoreLane(score), score.pontos, score.finalizado]; }),
+    ];
+    content = [header, ...rows].map((row) => row.map(quote).join(",")).join("\r\n"); mime = "text/csv;charset=utf-8";
+  }
+  const url = URL.createObjectURL(new Blob([content], { type: mime }));
+  const link = document.createElement("a");
+  link.href = url; link.download = `boliche-${encounter.data}-${encounter.id.slice(0, 8)}.${format}`; link.click();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+async function deleteEncounter() {
+  const encounter = activeEncounter();
+  if (!encounter || !encounterOpen()) return showToast("Reabra o encontro antes de excluí-lo.", "error");
+  if (!window.confirm(`Excluir permanentemente ${encounter.nome}, suas partidas, pontuações, equipes, palpites e torneio?`)) return;
+  const { error } = await client.rpc("delete_encounter", { p_encounter_id: encounter.id });
+  if (error) return showToast(error.message, "error");
+  state.activeEncounterId = null;
+  await loadData(); render(); showToast("Encontro excluído.", "success");
+}
+
+function renderTeams() {
+  const teams = state.teams.filter((team) => team.encounter_id === state.activeEncounterId);
+  const totals = new Map(officialTotals().map((item) => [item.player.id, item.points]));
+  const ranked = teams.map((team) => {
+    const members = state.teamPlayers.filter((row) => row.team_id === team.id).map((row) => getPlayer(row.player_id)).filter(Boolean);
+    const sum = members.reduce((value, player) => value + (totals.get(player.id) || 0), 0);
+    return { team, members, value: team.metric === "average" ? sum / (members.length || 1) : sum };
+  }).sort((a, b) => b.value - a.value || a.team.name.localeCompare(b.team.name, "pt-BR"));
+  $("teamsList").innerHTML = ranked.length ? ranked.map(({ team, members, value }, index) => `<div class="extra-row"><strong>${index + 1}º ${esc(team.name)}</strong><span>${value.toFixed(team.metric === "average" ? 1 : 0).replace(".", ",")} ${team.metric === "average" ? "de média" : "pontos"}</span><small>${esc(members.map((player) => player.nome).join(", "))}</small></div>`).join("") : `<p class="empty-inline">Nenhuma equipe neste encontro.</p>`;
+}
+
+function bracketWinner(gameId, first, second) {
+  if (!gameId || !first || !second || getGame(gameId)?.status !== "final") return null;
+  const scores = [first, second].map((id) => state.scores.find((score) => score.game_id === gameId && score.player_id === id && score.finalizado && score.pontos != null));
+  if (scores.some((score) => !score) || scores[0].pontos === scores[1].pontos) return null;
+  return scores[0].pontos > scores[1].pontos ? first : second;
+}
+
+function bracketRounds(bracket) {
+  if (!bracket) return [];
+  let entrants = bracket.seeds;
+  return ["Quartas de final", "Semifinal", "Final"].map((name, round) => {
+    const gameId = bracket.round_games[round];
+    const matches = Array.from({ length: entrants.length / 2 }, (_, i) => ({ first: entrants[i * 2], second: entrants[i * 2 + 1], gameId }));
+    entrants = matches.map((match) => bracketWinner(match.gameId, match.first, match.second));
+    return { name, matches };
+  });
+}
+
+function renderBracket() {
+  const bracket = state.brackets.find((item) => item.encounter_id === state.activeEncounterId);
+  if (!bracket) { $("bracketBoard").innerHTML = `<p class="empty-inline">Chave ainda não criada.</p>`; return; }
+  const rounds = bracketRounds(bracket);
+  $("bracketBoard").innerHTML = rounds.map(({ name, matches }) => `<div class="bracket-round"><strong>${name}</strong>${matches.map(({ first, second, gameId }) => {
+    const winner = bracketWinner(gameId, first, second);
+    return `<div class="extra-row"><span>${esc(getPlayer(first)?.nome || "A definir")} × ${esc(getPlayer(second)?.nome || "A definir")}</span><small>${esc(getGame(gameId)?.nome || "Escolha uma partida")} · ${winner ? `avança ${esc(getPlayer(winner)?.nome)}` : "aguardando resultado"}</small></div>`;
+  }).join("")}</div>`).join("");
+}
+
+function renderRecords() {
+  const finalGames = state.games.filter((game) => game.status === "final");
+  const finalIds = new Set(finalGames.map((game) => game.id));
+  const scores = state.scores.filter((score) => finalIds.has(score.game_id) && score.finalizado && score.pontos != null);
+  const high = [...scores].sort((a, b) => b.pontos - a.pontos)[0];
+  const byEncounterPlayer = new Map();
+  scores.forEach((score) => {
+    const key = `${getGame(score.game_id)?.encounter_id}:${score.player_id}`;
+    if (!byEncounterPlayer.has(key)) byEncounterPlayer.set(key, []);
+    byEncounterPlayer.get(key).push(score);
+  });
+  const bestAverage = [...byEncounterPlayer.entries()].map(([key, items]) => ({ player: getPlayer(key.split(":")[1]), encounter: state.encounters.find((item) => item.id === key.split(":")[0]), average: items.reduce((sum, item) => sum + item.pontos, 0) / items.length })).sort((a, b) => b.average - a.average)[0];
+  const growth = [...byEncounterPlayer.values()].flatMap((items) => {
+    const ordered = [...items].sort((a, b) => new Date(getGame(a.game_id)?.created_at) - new Date(getGame(b.game_id)?.created_at));
+    return ordered.slice(1).map((score, index) => ({ score, diff: score.pontos - ordered[index].pontos }));
+  }).sort((a, b) => b.diff - a.diff)[0];
+  $("groupRecords").innerHTML = high ? `<div class="extra-row"><strong>Maior pontuação</strong><span>${high.pontos} · ${esc(getPlayer(high.player_id)?.nome)}</span></div><div class="extra-row"><strong>Melhor média em um encontro</strong><span>${bestAverage.average.toFixed(1).replace(".", ",")} · ${esc(bestAverage.player?.nome)}</span><small>${esc(bestAverage.encounter?.nome)}</small></div><div class="extra-row"><strong>Maior evolução</strong><span>${growth && growth.diff > 0 ? `+${growth.diff} · ${esc(getPlayer(growth.score.player_id)?.nome)}` : "Aguardando duas partidas"}</span></div>` : `<p class="empty-inline">Os recordes aparecerão após a primeira partida concluída.</p>`;
+}
+
+function renderPredictions() {
+  const panel = $("predictionsSection");
+  const game = getGame(state.activeGameId);
+  const userId = state.session?.user?.id;
+  const canPredict = Boolean(userId && state.profile?.status === "approved" && game && encounterOpen());
+  panel.hidden = !canPredict;
+  if (!canPredict) return;
+  const scores = gameScores(game.id);
+  const started = scores.some((score) => score.pontos != null);
+  const existing = state.predictions.find((prediction) => prediction.game_id === game.id && prediction.user_id === userId);
+  $("predictionHint").textContent = started ? "Os palpites desta partida estão encerrados." : `Quem vencerá ${game.nome}? Seu palpite pode mudar até o primeiro ponto.`;
+  $("predictionPlayer").innerHTML = `<option value="">Escolha um jogador</option>${scores.map((score) => `<option value="${esc(score.player_id)}">${esc(getPlayer(score.player_id)?.nome || "Jogador")}</option>`).join("")}`;
+  $("predictionPlayer").value = existing?.predicted_player_id || "";
+  $("predictionPlayer").disabled = started;
+  $("savePredictionButton").disabled = started;
+  const own = state.predictions.filter((item) => item.user_id === userId && getGame(item.game_id)?.encounter_id === state.activeEncounterId && getGame(item.game_id)?.status === "final");
+  const decided = own.filter((item) => {
+    const points = gameScores(item.game_id).filter((score) => score.finalizado && score.pontos != null);
+    return points.filter((score) => score.pontos === Math.max(...points.map((row) => row.pontos))).length === 1;
+  });
+  const hits = decided.filter((item) => {
+    const points = gameScores(item.game_id);
+    return points.some((score) => score.player_id === item.predicted_player_id && score.pontos === Math.max(...points.map((row) => row.pontos)));
+  }).length;
+  $("predictionAccuracy").textContent = decided.length ? `${hits}/${decided.length} palpites certos (${Math.round(100 * hits / decided.length)}%)` : "Nenhum palpite decidido";
+}
+
+function renderTeamEditor() {
+  const teams = state.teams.filter((team) => team.encounter_id === state.activeEncounterId);
+  $("teamEditorList").innerHTML = teams.map((team) => `<div class="extra-row"><strong>${esc(team.name)}</strong><small>${team.metric === "average" ? "Média" : "Soma"} · ${esc(state.teamPlayers.filter((row) => row.team_id === team.id).map((row) => getPlayer(row.player_id)?.nome).filter(Boolean).join(", "))}</small><div><button class="text-button" type="button" data-edit-team="${esc(team.id)}">Editar</button><button class="text-button text-button--danger" type="button" data-delete-team="${esc(team.id)}">Excluir</button></div></div>`).join("");
+  $("teamEditorList").querySelectorAll("[data-edit-team]").forEach((button) => button.addEventListener("click", () => editTeam(button.dataset.editTeam)));
+  $("teamEditorList").querySelectorAll("[data-delete-team]").forEach((button) => button.addEventListener("click", () => deleteTeam(button.dataset.deleteTeam)));
+}
+
+function openTeamsModal() {
+  if (!encounterOpen()) return showToast("Reabra o encontro para editar equipes.", "error");
+  state.editingTeamId = null;
+  $("teamForm").reset();
+  $("cancelTeamEdit").hidden = true;
+  $("teamPlayerSelection").innerHTML = encounterPlayers().map((player) => `<label class="selection-item"><input type="checkbox" value="${esc(player.id)}" /><span>${esc(player.nome)}</span></label>`).join("");
+  renderTeamEditor(); setModal("teamsModal", true);
+}
+
+function editTeam(id) {
+  const team = state.teams.find((item) => item.id === id);
+  if (!team) return;
+  state.editingTeamId = id;
+  $("teamName").value = team.name;
+  $("teamMetric").value = team.metric;
+  const members = new Set(state.teamPlayers.filter((row) => row.team_id === id).map((row) => row.player_id));
+  $("teamPlayerSelection").querySelectorAll("input").forEach((input) => { input.checked = members.has(input.value); });
+  $("cancelTeamEdit").hidden = false;
+}
+
+async function saveTeam(event) {
+  event.preventDefault();
+  const playerIds = [...$("teamPlayerSelection").querySelectorAll("input:checked")].map((input) => input.value);
+  if (!playerIds.length) { $("teamError").textContent = "Escolha pelo menos um jogador."; $("teamError").hidden = false; return; }
+  const { error } = await client.rpc("save_team", { p_team_id: state.editingTeamId, p_encounter_id: state.activeEncounterId, p_name: $("teamName").value.trim(), p_metric: $("teamMetric").value, p_player_ids: playerIds });
+  if (error) { $("teamError").textContent = error.message; $("teamError").hidden = false; return; }
+  await loadData(); render(); openTeamsModal(); showToast("Equipe salva.", "success");
+}
+
+async function deleteTeam(id) {
+  const team = state.teams.find((item) => item.id === id);
+  if (!team || !window.confirm(`Excluir a equipe ${team.name}?`)) return;
+  const { error } = await client.from("teams").delete().eq("id", id);
+  if (error) return showToast(error.message, "error");
+  await loadData(); render(); renderTeamEditor(); showToast("Equipe excluída.", "success");
+}
+
+function openBracketModal() {
+  if (!encounterOpen()) return showToast("Reabra o encontro para editar o torneio.", "error");
+  const bracket = state.brackets.find((item) => item.encounter_id === state.activeEncounterId);
+  const selected = new Set(bracket?.seeds || []);
+  const players = [...(bracket?.seeds || []).map(getPlayer).filter(Boolean), ...encounterPlayers().filter((player) => !selected.has(player.id))];
+  $("bracketPlayerSelection").innerHTML = players.map((player) => `<label class="selection-item"><input type="checkbox" value="${esc(player.id)}" ${selected.has(player.id) ? "checked" : ""} /><span>${esc(player.nome)}</span></label>`).join("");
+  const options = `<option value="">Escolha a partida</option>${encounterGames().map((game) => `<option value="${esc(game.id)}">${esc(game.nome)} · ${game.status === "final" ? "final" : "parcial"}</option>`).join("")}`;
+  [0, 1, 2].forEach((round) => { $(`bracketGame${round}`).innerHTML = options; $(`bracketGame${round}`).value = bracket?.round_games[round] || ""; });
+  $("deleteBracketButton").hidden = !bracket;
+  $("bracketError").hidden = true;
+  setModal("bracketModal", true);
+}
+
+async function saveBracket(event) {
+  event.preventDefault();
+  const seeds = [...$("bracketPlayerSelection").querySelectorAll("input:checked")].map((input) => input.value);
+  if (seeds.length !== 8) { $("bracketError").textContent = "Escolha exatamente oito jogadores."; $("bracketError").hidden = false; return; }
+  const games = [0, 1, 2].map((round) => $(`bracketGame${round}`).value || null);
+  if (new Set(games.filter(Boolean)).size !== games.filter(Boolean).length) { $("bracketError").textContent = "Escolha partidas diferentes para cada rodada."; $("bracketError").hidden = false; return; }
+  const { error } = await client.rpc("save_bracket", { p_encounter_id: state.activeEncounterId, p_seeds: seeds, p_round_games: games });
+  if (error) { $("bracketError").textContent = error.message; $("bracketError").hidden = false; return; }
+  setModal("bracketModal", false); await loadData(); render(); showToast("Chave salva.", "success");
+}
+
+async function deleteBracket() {
+  if (!window.confirm("Excluir a chave eliminatória deste encontro?")) return;
+  const { error } = await client.from("brackets").delete().eq("encounter_id", state.activeEncounterId);
+  if (error) return showToast(error.message, "error");
+  setModal("bracketModal", false); await loadData(); render(); showToast("Chave excluída.", "success");
+}
+
+async function savePrediction() {
+  const playerId = $("predictionPlayer").value;
+  if (!playerId) return showToast("Escolha quem você acha que vai vencer.", "error");
+  const { error } = await client.from("predictions").upsert({ game_id: state.activeGameId, user_id: state.session.user.id, predicted_player_id: playerId }, { onConflict: "game_id,user_id" });
+  if (error) return showToast(error.message, "error");
+  await loadData(); render(); showToast("Palpite salvo.", "success");
+}
+
 function render() {
   applyAuthUi();
   renderLeaderboard();
+  renderEncounterBar();
   renderCurrentGame();
   renderGames();
+  renderTeams(); renderBracket(); renderRecords(); renderPredictions();
   if (!$("gameModal").open) renderPlayerSelection();
   if (!$("photoModal").open) renderPhotoOptions();
   if ($("playersModal").open) renderPlayers();
@@ -292,43 +615,52 @@ function render() {
 }
 
 function officialTotals(lane = "") {
-  const finalGames = state.games.filter((game) => game.status === "final");
-  return (finalGames.length ? state.players : []).filter((player) => !lane || player.pista === lane).map((player) => {
-    const points = state.scores.filter((score) => score.player_id === player.id && finalGames.some((game) => game.id === score.game_id) && score.finalizado).reduce((sum, score) => sum + Number(score.pontos || 0), 0);
+  const finalGameIds = new Set(encounterGames().filter((game) => game.status === "final").map((game) => game.id));
+  const metric = $("rankingMetric")?.value || "total";
+  return (finalGameIds.size ? encounterPlayers() : []).map((player) => {
+    const results = state.scores.filter((score) => score.player_id === player.id && finalGameIds.has(score.game_id) && score.finalizado && score.pontos != null && (!lane || scoreLane(score) === lane));
+    const points = results.reduce((sum, score) => sum + Number(score.pontos), 0);
+    const gamesPlayed = results.length;
     const current = state.scores.find((score) => score.game_id === state.activeGameId && score.player_id === player.id);
-    return { player, points, current };
-  }).sort((a, b) => b.points - a.points || a.player.nome.localeCompare(b.player.nome, "pt-BR"));
+    return { player, points, gamesPlayed, average: gamesPlayed ? points / gamesPlayed : 0, current, lane: results.at(-1)?.pista || current?.pista || player.pista };
+  }).filter((item) => item.gamesPlayed > 0).sort((a, b) => (metric === "average" ? b.average - a.average : b.points - a.points) || b.points - a.points || a.player.nome.localeCompare(b.player.nome, "pt-BR"));
 }
 
 function officialPosition(totals, index) {
-  return totals.findIndex((item) => item.points === totals[index].points) + 1;
+  const metric = $("rankingMetric")?.value || "total";
+  return totals.findIndex((item) => (metric === "average" ? item.average : item.points) === (metric === "average" ? totals[index].average : totals[index].points)) + 1;
 }
 
 function renderLeaderboard() {
   const body = $("leaderboardBody");
-  const finalGames = state.games.filter((game) => game.status === "final");
+  const finalGames = encounterGames().filter((game) => game.status === "final");
   const laneSelect = $("rankingLane");
   const selectedLane = laneSelect.value;
-  const lanes = [...new Set(state.players.map((player) => player.pista).filter(Boolean))].sort((a, b) => a.localeCompare(b, "pt-BR", { numeric: true }));
+  const gameIds = new Set(encounterGames().map((game) => game.id));
+  const lanes = [...new Set(state.scores.filter((score) => gameIds.has(score.game_id)).map(scoreLane).filter(Boolean))].sort((a, b) => a.localeCompare(b, "pt-BR", { numeric: true }));
   laneSelect.innerHTML = `<option value="">Todas as pistas</option>${lanes.map((lane) => `<option value="${esc(lane)}">Pista ${esc(lane)}</option>`).join("")}`;
   if (lanes.includes(selectedLane)) laneSelect.value = selectedLane;
   const totals = officialTotals(laneSelect.value);
+  const metric = $("rankingMetric").value;
+  $("rankingValueHeader").textContent = metric === "average" ? "Média" : "Pontos";
+  $("rankingTitle").textContent = metric === "average" ? "Classificação por média" : "Classificação acumulada";
   const podium = $("podium");
   podium.hidden = totals.length === 0;
   podium.innerHTML = totals.slice(0, 3).map((item, index) => {
     const photoUrl = state.playerPhotos.get(item.player.id);
-    return `<div class="podium-place podium-place--${index + 1}"><span class="podium-medal">${officialPosition(totals, index)}º</span>${photoUrl ? `<img class="podium-avatar" src="${esc(photoUrl)}" alt="Foto de ${esc(item.player.nome)}" loading="lazy" />` : `<span class="podium-avatar podium-avatar--empty" aria-hidden="true">${esc(item.player.nome.slice(0, 1))}</span>`}<strong>${esc(item.player.nome)}</strong><small>${item.points.toLocaleString("pt-BR")} pontos</small></div>`;
+    return `<div class="podium-place podium-place--${index + 1}"><span class="podium-medal">${officialPosition(totals, index)}º</span>${photoUrl ? `<img class="podium-avatar" src="${esc(photoUrl)}" alt="Foto de ${esc(item.player.nome)}" loading="lazy" />` : `<span class="podium-avatar podium-avatar--empty" aria-hidden="true">${esc(item.player.nome.slice(0, 1))}</span>`}<strong>${metric === "average" ? item.average.toFixed(1).replace(".", ",") + " média" : item.points.toLocaleString("pt-BR") + " pontos"}</small></div>`;
   }).join("");
   let previousPoints = null;
   let previousPosition = 0;
   body.innerHTML = totals.map((item, index) => {
-    const position = item.points === previousPoints ? previousPosition : index + 1;
-    previousPoints = item.points;
+    const rankingValue = metric === "average" ? item.average : item.points;
+    const position = rankingValue === previousPoints ? previousPosition : index + 1;
+    previousPoints = rankingValue;
     previousPosition = position;
     const situation = item.current?.finalizado ? "Final" : (item.current ? "Parcial" : "—");
     const chipClass = situation === "Final" ? "status-chip status-chip--final" : "status-chip status-chip--partial";
     const photoUrl = state.playerPhotos.get(item.player.id);
-    return `<tr><td class="rank-cell">${position}</td><td><div class="ranking-player">${photoUrl ? `<img class="ranking-avatar" src="${esc(photoUrl)}" alt="Foto de ${esc(item.player.nome)}" loading="lazy" />` : ""}<span><button class="player-stats-link" type="button" data-stats-player="${esc(item.player.id)}">${esc(item.player.nome)}</button><small>${esc(item.player.apelido_placar || "sem apelido")}</small></span></div></td><td>${esc(item.player.pista || "—")}</td><td class="points-cell">${item.points.toLocaleString("pt-BR")}</td><td><span class="${chipClass}">${situation}</span></td></tr>`;
+    return `<tr><td class="rank-cell">${position}</td><td><div class="ranking-player">${photoUrl ? `<img class="ranking-avatar" src="${esc(photoUrl)}" alt="Foto de ${esc(item.player.nome)}" loading="lazy" />` : ""}<span><button class="player-stats-link" type="button" data-stats-player="${esc(item.player.id)}">${esc(item.player.nome)}</button><small>${esc(item.player.apelido_placar || "sem apelido")}</small></span></div></td><td>${esc(item.lane || "—")}</td><td>${item.gamesPlayed}</td><td class="points-cell">${metric === "average" ? item.average.toFixed(1).replace(".", ",") : item.points.toLocaleString("pt-BR")}</td><td><span class="${chipClass}">${situation}</span></td></tr>`;
   }).join("");
   body.querySelectorAll("[data-stats-player]").forEach((button) => button.addEventListener("click", () => openStatsModal(button.dataset.statsPlayer)));
   $("leaderboardEmpty").hidden = totals.length > 0;
@@ -343,9 +675,10 @@ function renderCurrentGame() {
     $("currentGameStatus").textContent = "Aguardando";
     $("currentGameStatus").className = "status-pill status-pill--muted";
     body.innerHTML = `<div class="empty-state"><span class="empty-icon">⌁</span><strong>Abra uma partida para começar</strong><span>Os participantes e as pistas ficam vinculados a ela.</span></div>`;
+    $("laneProgress").innerHTML = "";
     return;
   }
-  const scores = gameScores(game.id).map((score) => ({ score, player: getPlayer(score.player_id) })).filter((item) => item.player).sort((a, b) => String(a.player.pista).localeCompare(String(b.player.pista)) || a.player.nome.localeCompare(b.player.nome, "pt-BR"));
+  const scores = gameScores(game.id).map((score) => ({ score, player: getPlayer(score.player_id) })).filter((item) => item.player).sort((a, b) => String(scoreLane(a.score)).localeCompare(String(scoreLane(b.score))) || a.player.nome.localeCompare(b.player.nome, "pt-BR"));
   $("currentGameTitle").textContent = game.nome;
   $("currentGameStatus").textContent = game.status === "final" ? "Final" : "Parcial";
   $("currentGameStatus").className = `status-pill status-pill--${game.status === "final" ? "success" : "warning"}`;
@@ -353,11 +686,16 @@ function renderCurrentGame() {
   body.innerHTML = ranked.length ? ranked.map(({ score, player }) => {
     const position = score.pontos == null ? "—" : `${ranked.findIndex((item) => item.score.pontos === score.pontos) + 1}º`;
     const photoUrl = state.playerPhotos.get(player.id);
-    return `<div class="current-row"><div class="current-player${photoUrl ? " current-player--with-photo" : ""}"><span class="provisional-rank">${position}</span>${photoUrl ? `<img class="ranking-avatar" src="${esc(photoUrl)}" alt="Foto de ${esc(player.nome)}" loading="lazy" />` : ""}<button class="player-stats-link current-stats-link" type="button" data-stats-player="${esc(player.id)}">${esc(player.nome)}</button><span>Pista ${esc(player.pista || "—")}</span></div><div class="current-score"><strong>${score.pontos == null ? "—" : Number(score.pontos).toLocaleString("pt-BR")}</strong><span class="status-chip ${score.finalizado ? "status-chip--final" : "status-chip--partial"}">${score.finalizado ? "Final" : "Pendente"}</span>${isAdmin() ? `<button class="text-button" type="button" data-quick-score="${esc(player.id)}">Corrigir</button>${score.pontos != null ? `<button class="text-button text-button--danger" type="button" data-clear-score="${esc(player.id)}">Limpar</button>` : ""}` : ""}</div></div>`;
+    return `<div class="current-row"><div class="current-player${photoUrl ? " current-player--with-photo" : ""}"><span class="provisional-rank">${position}</span>${photoUrl ? `<img class="ranking-avatar" src="${esc(photoUrl)}" alt="Foto de ${esc(player.nome)}" loading="lazy" />` : ""}<button class="player-stats-link current-stats-link" type="button" data-stats-player="${esc(player.id)}">${esc(player.nome)}</button><span>Pista ${esc(scoreLane(score) || "—")}</span></div><div class="current-score"><strong>${score.pontos == null ? "—" : Number(score.pontos).toLocaleString("pt-BR")}</strong><span class="status-chip ${score.finalizado ? "status-chip--final" : "status-chip--partial"}">${score.finalizado ? "Final" : "Pendente"}</span>${isAdmin() && encounterOpen() ? `<button class="text-button" type="button" data-quick-score="${esc(player.id)}">Corrigir</button>${score.pontos != null ? `<button class="text-button text-button--danger" type="button" data-clear-score="${esc(player.id)}">Limpar</button>` : ""}` : ""}</div></div>`;
   }).join("") : `<div class="empty-state"><span>Partida sem participantes.</span></div>`;
   body.querySelectorAll("[data-stats-player]").forEach((button) => button.addEventListener("click", () => openStatsModal(button.dataset.statsPlayer)));
   body.querySelectorAll("[data-quick-score]").forEach((button) => button.addEventListener("click", () => openQuickScore(button.dataset.quickScore)));
   body.querySelectorAll("[data-clear-score]").forEach((button) => button.addEventListener("click", () => clearScore(button.dataset.clearScore)));
+  $("laneProgress").innerHTML = [...new Set(scores.map(({ score }) => scoreLane(score)))].map((lane) => {
+    const laneScores = scores.filter(({ score }) => scoreLane(score) === lane);
+    const confirmed = laneScores.filter(({ score }) => score.finalizado && score.pontos != null).length;
+    return `<span class="status-pill status-pill--${confirmed === laneScores.length ? "success" : "warning"}">Pista ${esc(lane)}: ${confirmed}/${laneScores.length} confirmados</span>`;
+  }).join("");
 }
 
 async function clearScore(playerId) {
@@ -374,7 +712,7 @@ function openQuickScore(playerId) {
   openPhotoModal();
   $("photoGame").value = state.activeGameId;
   renderPhotoOptions();
-  $("photoLane").value = player.pista;
+  $("photoLane").value = gameLaneForPlayer(state.activeGameId, playerId);
   updateReviewTable();
   const row = [...$("reviewTable").querySelectorAll("[data-review-player]")].find((item) => item.dataset.reviewPlayer === playerId);
   row?.querySelector(".review-score")?.focus();
@@ -383,7 +721,7 @@ function openQuickScore(playerId) {
 function openStatsModal(playerId) {
   const player = getPlayer(playerId);
   if (!player) return;
-  const finalGames = state.games.filter((game) => game.status === "final").sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+  const finalGames = encounterGames().filter((game) => game.status === "final").sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
   const results = finalGames.map((game) => ({ game, score: state.scores.find((score) => score.game_id === game.id && score.player_id === playerId) })).filter((item) => item.score?.finalizado && item.score.pontos != null);
   const points = results.map((item) => Number(item.score.pontos));
   const wins = results.filter(({ game, score }) => Number(score.pontos) === Math.max(...gameScores(game.id).filter((item) => item.pontos != null).map((item) => Number(item.pontos)))).length;
@@ -392,7 +730,7 @@ function openStatsModal(playerId) {
   const position = playerIndex < 0 ? 0 : officialPosition(totals, playerIndex);
   const photoUrl = state.playerPhotos.get(playerId);
   $("statsTitle").textContent = player.nome;
-  $("statsHero").innerHTML = `${photoUrl ? `<img src="${esc(photoUrl)}" alt="Foto de ${esc(player.nome)}" />` : `<span class="stats-avatar-empty" aria-hidden="true">${esc(player.nome.slice(0, 1))}</span>`}<div><strong>${position ? `${position}º no ranking` : "Ainda sem posição oficial"}</strong><span>Pista ${esc(player.pista || "—")} · ${points.length} ${points.length === 1 ? "partida concluída" : "partidas concluídas"}</span></div>`;
+  $("statsHero").innerHTML = `${photoUrl ? `<img src="${esc(photoUrl)}" alt="Foto de ${esc(player.nome)}" />` : `<span class="stats-avatar-empty" aria-hidden="true">${esc(player.nome.slice(0, 1))}</span>`}<div><strong>${position ? `${position}º no ranking` : "Ainda sem posição oficial"}</strong><span>${points.length} ${points.length === 1 ? "partida concluída" : "partidas concluídas"} neste encontro</span></div>`;
   $("statsSummary").innerHTML = `<div><strong>${points.length ? Math.max(...points) : "—"}</strong><span>recorde</span></div><div><strong>${points.length ? (points.reduce((sum, value) => sum + value, 0) / points.length).toFixed(1).replace(".", ",") : "—"}</strong><span>média</span></div><div><strong>${wins}</strong><span>vitórias</span></div>`;
   const coords = points.map((value, index) => `${points.length === 1 ? 240 : 20 + index * 440 / (points.length - 1)},${115 - value * .3}`);
   $("statsEvolution").innerHTML = points.length ? `<strong>Evolução por partida</strong><svg viewBox="0 0 480 140" role="img" aria-label="Pontuações: ${points.join(", ")}"><line x1="20" y1="115" x2="460" y2="115" stroke="currentColor" opacity=".25" /><polyline points="${coords.join(" ")}" fill="none" stroke="var(--color-accent)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" />${coords.map((point) => `<circle cx="${point.split(",")[0]}" cy="${point.split(",")[1]}" r="5" fill="var(--color-accent)" />`).join("")}</svg>` : "";
@@ -401,12 +739,13 @@ function openStatsModal(playerId) {
 }
 
 function renderGames() {
-  $("gameCount").textContent = `${state.games.length} ${state.games.length === 1 ? "partida" : "partidas"}`;
-  $("gamesList").innerHTML = state.games.length ? state.games.map((game) => {
+  const games = encounterGames();
+  $("gameCount").textContent = `${games.length} ${games.length === 1 ? "partida" : "partidas"}`;
+  $("gamesList").innerHTML = games.length ? games.map((game) => {
     const scores = gameScores(game.id);
     const done = scores.filter((score) => score.finalizado && score.pontos != null).length;
     const total = scores.length;
-    return `<article class="game-card ${game.id === state.activeGameId ? "game-card--active" : ""}"><button class="game-card-select" type="button" data-game-id="${esc(game.id)}"><div class="game-card-top"><span class="eyebrow">${fmtDate(game.created_at)}</span><span class="status-pill status-pill--${game.status === "final" ? "success" : "warning"}">${game.status === "final" ? "Final" : "Parcial"}</span></div><h4>${esc(game.nome)}</h4><p>${done} de ${total} resultados confirmados</p><div class="game-progress"><span style="width:${total ? (done / total) * 100 : 0}%"></span></div></button>${isAdmin() ? `<div class="game-card-actions"><button class="text-button" type="button" data-edit-game="${esc(game.id)}">Editar</button><button class="text-button text-button--danger" type="button" data-delete-game="${esc(game.id)}">Excluir</button></div>` : ""}</article>`;
+    return `<article class="game-card ${game.id === state.activeGameId ? "game-card--active" : ""}"><button class="game-card-select" type="button" data-game-id="${esc(game.id)}"><div class="game-card-top"><span class="eyebrow">${fmtDate(game.created_at)}</span><span class="status-pill status-pill--${game.status === "final" ? "success" : "warning"}">${game.status === "final" ? "Final" : "Parcial"}</span></div><h4>${esc(game.nome)}</h4><p>${done} de ${total} resultados confirmados</p><div class="game-progress"><span style="width:${total ? (done / total) * 100 : 0}%"></span></div></button>${isAdmin() && encounterOpen() ? `<div class="game-card-actions"><button class="text-button" type="button" data-edit-game="${esc(game.id)}">Editar</button><button class="text-button text-button--danger" type="button" data-delete-game="${esc(game.id)}">Excluir</button></div>` : ""}</article>`;
   }).join("") : `<div class="empty-state empty-state--wide"><strong>Nenhuma partida cadastrada</strong><span>O administrador pode abrir a primeira partida.</span></div>`;
   document.querySelectorAll("[data-game-id]").forEach((button) => button.addEventListener("click", () => { state.activeGameId = button.dataset.gameId; render(); }));
   document.querySelectorAll("[data-edit-game]").forEach((button) => button.addEventListener("click", () => editGame(button.dataset.editGame)));
@@ -415,8 +754,9 @@ function renderGames() {
 
 function renderPlayerSelection() {
   const container = $("playerSelection");
-  container.innerHTML = state.players.map((player) => `<label class="selection-item"><input type="checkbox" value="${esc(player.id)}" checked /><span><strong>${esc(player.nome)}</strong><small>Pista ${esc(player.pista || "—")} · ${esc(player.apelido_placar || "sem apelido")}</small></span></label>`).join("");
-  $("playerSelectionEmpty").hidden = state.players.length > 0;
+  const players = encounterPlayers();
+  container.innerHTML = players.map((player) => `<label class="selection-item"><input class="game-player-check" type="checkbox" value="${esc(player.id)}" checked /><span><strong>${esc(player.nome)}</strong><small>${esc(player.apelido_placar || "sem apelido")}</small></span><select class="game-player-lane" data-player-lane="${esc(player.id)}" aria-label="Pista de ${esc(player.nome)}">${state.lanes.map((lane) => `<option value="${esc(lane.name)}" ${lane.name === player.pista ? "selected" : ""}>Pista ${esc(lane.name)}</option>`).join("")}</select></label>`).join("");
+  $("playerSelectionEmpty").hidden = players.length > 0;
 }
 
 function renderPlayers() {
@@ -431,7 +771,7 @@ function renderLanes() {
   const selected = laneSelect.value;
   laneSelect.innerHTML = `<option value="">Selecione a pista</option>${state.lanes.map((lane) => `<option value="${esc(lane.name)}">${esc(lane.name)}</option>`).join("")}`;
   if (state.lanes.some((lane) => lane.name === selected)) laneSelect.value = selected;
-  $("lanesList").innerHTML = state.lanes.length ? state.lanes.map((lane) => `<div class="lane-row"><strong>Pista ${esc(lane.name)}</strong><div class="player-row-actions"><button class="text-button" type="button" data-edit-lane="${esc(lane.name)}">Editar</button><button class="text-button text-button--danger" type="button" data-delete-lane="${esc(lane.name)}">Excluir</button></div></div>`).join("") : `<p class="empty-inline">Nenhuma pista cadastrada.</p>`;
+  $("lanesList").innerHTML = state.lanes.length ? state.lanes.map((lane) => `<div class="lane-row"><strong>Pista ${esc(lane.name)} · até ${lane.capacity} jogadores</strong><div class="player-row-actions"><button class="text-button" type="button" data-edit-lane="${esc(lane.name)}">Editar</button><button class="text-button text-button--danger" type="button" data-delete-lane="${esc(lane.name)}">Excluir</button></div></div>`).join("") : `<p class="empty-inline">Nenhuma pista cadastrada.</p>`;
   $("lanesList").querySelectorAll("[data-edit-lane]").forEach((button) => button.addEventListener("click", () => editLane(button.dataset.editLane)));
   $("lanesList").querySelectorAll("[data-delete-lane]").forEach((button) => button.addEventListener("click", () => removeLane(button.dataset.deleteLane)));
 }
@@ -439,6 +779,7 @@ function renderLanes() {
 function editLane(name) {
   state.editingLaneName = name;
   $("laneName").value = name;
+  $("laneCapacity").value = state.lanes.find((lane) => lane.name === name)?.capacity || 4;
   $("saveLaneButton").textContent = "Salvar pista";
   $("cancelLaneEditButton").hidden = false;
   $("laneName").focus();
@@ -447,6 +788,7 @@ function editLane(name) {
 function cancelLaneEdit() {
   state.editingLaneName = null;
   $("laneName").value = "";
+  $("laneCapacity").value = "4";
   $("saveLaneButton").textContent = "Adicionar pista";
   $("cancelLaneEditButton").hidden = true;
 }
@@ -454,12 +796,14 @@ function cancelLaneEdit() {
 async function saveLane() {
   const name = $("laneName").value.trim();
   if (!name || name.length > 20) return showToast("Informe uma pista com até 20 caracteres.", "error");
+  const capacity = Number($("laneCapacity").value);
+  if (!Number.isInteger(capacity) || capacity < 1 || capacity > 20) return showToast("A capacidade deve ser de 1 a 20 jogadores.", "error");
   const editing = state.editingLaneName;
-  const query = editing ? client.from("lanes").update({ name }).eq("name", editing) : client.from("lanes").insert({ name });
+  const query = editing ? client.from("lanes").update({ name, capacity }).eq("name", editing) : client.from("lanes").insert({ name, capacity });
   const { error } = await query;
   if (error) return showToast("Não foi possível salvar a pista. Confira se o nome já existe.", "error");
   cancelLaneEdit(); await loadData(); render();
-  showToast(editing ? "Pista renomeada; jogadores atualizados." : "Pista adicionada.", "success");
+  showToast(editing ? "Pista atualizada." : "Pista adicionada.", "success");
 }
 
 async function removeLane(name) {
@@ -492,11 +836,11 @@ function cancelPlayerEdit() {
 function renderPhotoOptions() {
   const gameSelect = $("photoGame");
   const laneSelect = $("photoLane");
-  const currentGameValue = gameSelect.value || state.activeGameId || state.games[0]?.id || "";
-  gameSelect.innerHTML = state.games.map((game) => `<option value="${esc(game.id)}">${esc(game.nome)} · ${game.status === "final" ? "final" : "parcial"}</option>`).join("");
-  if (state.games.some((game) => game.id === currentGameValue)) gameSelect.value = currentGameValue;
-  const linkedIds = new Set(gameScores(gameSelect.value).map((score) => score.player_id));
-  const lanes = [...new Set(state.players.filter((player) => linkedIds.has(player.id)).map((player) => player.pista).filter(Boolean))].sort((a, b) => String(a).localeCompare(String(b), "pt-BR", { numeric: true }));
+  const games = encounterGames();
+  const currentGameValue = gameSelect.value || state.activeGameId || games[0]?.id || "";
+  gameSelect.innerHTML = games.map((game) => `<option value="${esc(game.id)}">${esc(game.nome)} · ${game.status === "final" ? "final" : "parcial"}</option>`).join("");
+  if (games.some((game) => game.id === currentGameValue)) gameSelect.value = currentGameValue;
+  const lanes = [...new Set(gameScores(gameSelect.value).map(scoreLane).filter(Boolean))].sort((a, b) => String(a).localeCompare(String(b), "pt-BR", { numeric: true }));
   const currentLane = laneSelect.value || lanes[0] || "";
   laneSelect.innerHTML = lanes.map((lane) => `<option value="${esc(lane)}">Pista ${esc(lane)}</option>`).join("");
   if (lanes.includes(currentLane)) laneSelect.value = currentLane;
@@ -504,8 +848,8 @@ function renderPhotoOptions() {
 }
 
 function playersOnLane(lane = $("photoLane").value, gameId = $("photoGame").value) {
-  const linkedIds = new Set(gameScores(gameId).map((score) => score.player_id));
-  return state.players.filter((player) => linkedIds.has(player.id) && String(player.pista) === String(lane));
+  const linkedIds = new Set(gameScores(gameId).filter((score) => String(scoreLane(score)) === String(lane)).map((score) => score.player_id));
+  return state.players.filter((player) => linkedIds.has(player.id));
 }
 
 function updatePhotoConfirmState() {
@@ -540,7 +884,7 @@ function updateReviewTable(suggestions = new Map()) {
     const suggestion = suggestions.get(player.id);
     const value = suggestion?.value ?? (old?.pontos ?? "");
     const finalizado = Boolean(old?.finalizado) && (!suggestion || Number(suggestion.value) === Number(old.pontos));
-    return `<div class="review-row" data-review-player="${esc(player.id)}" data-old-score="${old?.pontos ?? ""}" data-old-final="${Boolean(old?.finalizado)}"><div class="review-player"><strong>${esc(player.nome)}</strong><small>${esc(player.apelido_placar || "sem apelido")} · pista ${esc(player.pista || "—")}${suggestion ? ` · ${esc(suggestion.hint)}` : ""}</small></div><div class="review-score-wrap"><input class="review-score" type="number" min="0" max="300" step="1" inputmode="numeric" placeholder="—" value="${value === "" ? "" : esc(value)}" aria-label="Pontos de ${esc(player.nome)}" /><small></small></div><label class="review-confirm"><input class="review-final" type="checkbox" ${finalizado ? "checked" : ""} /> confirmar</label></div>`;
+    return `<div class="review-row" data-review-player="${esc(player.id)}" data-old-score="${old?.pontos ?? ""}" data-old-final="${Boolean(old?.finalizado)}"><div class="review-player"><strong>${esc(player.nome)}</strong><small>${esc(player.apelido_placar || "sem apelido")} · pista ${esc(scoreLane(old) || "—")}${suggestion ? ` · ${esc(suggestion.hint)}` : ""}</small></div><div class="review-score-wrap"><input class="review-score" type="number" min="0" max="300" step="1" inputmode="numeric" placeholder="—" value="${value === "" ? "" : esc(value)}" aria-label="Pontos de ${esc(player.nome)}" /><small></small></div><label class="review-confirm"><input class="review-final" type="checkbox" ${finalizado ? "checked" : ""} /> confirmar</label></div>`;
   }).join("") : `<div class="empty-state"><strong>Nenhum jogador nessa pista</strong><span>Cadastre o participante com o número da pista antes de importar.</span></div>`;
   updatePhotoConfirmState();
 }
@@ -782,32 +1126,43 @@ async function createGame(event) {
   const nome = $("gameName").value.trim();
   const playerIds = [...document.querySelectorAll("#playerSelection input:checked")].map((input) => input.value);
   if (!nome || !playerIds.length) return showToast("Informe um nome e selecione pelo menos um participante.", "error");
+  if (!encounterOpen()) return showToast("Reabra o encontro para alterar partidas.", "error");
   if (!client) return showToast("Supabase não configurado.", "error");
+  const assignments = playerIds.map((player_id) => ({ player_id, pista: $("playerSelection").querySelector(`[data-player-lane="${player_id}"]`)?.value || "" }));
+  if (assignments.some((item) => !item.pista)) return showToast("Escolha a pista de cada participante.", "error");
+  const overCapacity = state.lanes.find((lane) => assignments.filter((item) => item.pista === lane.name).length > lane.capacity);
+  if (overCapacity) return showToast(`A pista ${overCapacity.name} aceita até ${overCapacity.capacity} jogadores.`, "error");
   if (state.editingGameId) {
     const gameId = state.editingGameId;
     const removedWithScores = gameScores(gameId).some((score) => !playerIds.includes(score.player_id) && score.pontos != null);
     if (removedWithScores && !window.confirm("Remover jogadores desta partida apagará suas pontuações e o histórico de alterações. Continuar?")) return;
-    const { error } = await client.rpc("edit_game", { p_game_id: gameId, p_name: nome, p_player_ids: playerIds });
-    if (error) return showToast("Não foi possível salvar a partida.", "error");
+    const { error } = await client.rpc("edit_encounter_game", { p_game_id: gameId, p_name: nome, p_assignments: assignments });
+    if (error) return showToast(`Não foi possível salvar a partida: ${error.message}`, "error");
     state.editingGameId = null;
     setModal("gameModal", false); await loadData(); render(); showToast("Partida atualizada.", "success");
     return;
   }
-  const { data, error } = await client.from("games").insert({ nome, status: "partial" }).select("id,nome,status,created_at,updated_at").single();
-  if (error) return showToast("Não foi possível abrir a partida.", "error");
-  const { data: insertedScores, error: scoresError } = await client.from("scores").insert(playerIds.map((player_id) => ({ game_id: data.id, player_id, pontos: null, finalizado: false }))).select("id,game_id,player_id,pontos,finalizado,updated_at");
-  if (scoresError) { await client.from("games").delete().eq("id", data.id); return showToast("A partida foi desfeita porque os participantes não puderam ser vinculados.", "error"); }
-  state.games.unshift(data); state.scores.push(...insertedScores);
-  const game = data;
-  state.activeGameId = game.id;
-  setModal("gameModal", false); render(); showToast("Partida aberta.", "success");
+  const { data, error } = await client.rpc("create_encounter_game", { p_encounter_id: state.activeEncounterId, p_name: nome, p_assignments: assignments });
+  if (error) return showToast(`Não foi possível abrir a partida: ${error.message}`, "error");
+  state.activeGameId = data.id;
+  setModal("gameModal", false); await loadData(); render(); showToast("Partida aberta.", "success");
+}
+
+function drawLanes() {
+  const checked = [...$("playerSelection").querySelectorAll(".game-player-check:checked")];
+  const slots = state.lanes.flatMap((lane) => Array(lane.capacity).fill(lane.name));
+  if (checked.length > slots.length) return showToast("Cadastre pistas ou aumente a capacidade antes de sortear.", "error");
+  for (let i = slots.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [slots[i], slots[j]] = [slots[j], slots[i]]; }
+  checked.forEach((input, index) => { $("playerSelection").querySelector(`[data-player-lane="${input.value}"]`).value = slots[index]; });
+  showToast("Pistas sorteadas para esta partida. Confira antes de salvar.", "success");
 }
 
 function openGameModal() {
+  if (!encounterOpen()) return showToast("Reabra o encontro para criar partidas.", "error");
   state.editingGameId = null;
   $("gameSubmitButton").textContent = "Abrir partida";
   $("gameModalTitle").textContent = "Nova partida";
-  $("gameName").value = `Partida ${state.games.length + 1}`;
+  $("gameName").value = `Partida ${encounterGames().length + 1}`;
   renderPlayerSelection(); setModal("gameModal", true);
 }
 
@@ -821,6 +1176,7 @@ function editGame(id) {
   renderPlayerSelection();
   const linked = new Set(gameScores(id).map((score) => score.player_id));
   $("playerSelection").querySelectorAll("input").forEach((input) => input.checked = linked.has(input.value));
+  gameScores(id).forEach((score) => { const select = $("playerSelection").querySelector(`[data-player-lane="${score.player_id}"]`); if (select) select.value = scoreLane(score); });
   setModal("gameModal", true);
 }
 
@@ -896,11 +1252,13 @@ async function deleteAccount(id) {
 function openApprovalsModal() { renderApprovals(); setModal("approvalsModal", true); }
 
 function renderScoreHistory() {
-  $("scoreHistoryList").innerHTML = state.scoreChanges.length ? state.scoreChanges.map((change, index) => {
+  const gameIds = new Set(encounterGames().map((game) => game.id));
+  const changes = state.scoreChanges.filter((change) => gameIds.has(change.game_id));
+  $("scoreHistoryList").innerHTML = changes.length ? changes.map((change, index) => {
     const player = getPlayer(change.player_id);
     const game = getGame(change.game_id);
     const actor = state.profiles.find((profile) => profile.id === change.actor_id)?.nome || (change.actor_id === state.session?.user?.id ? "Você" : "Administrador");
-    const canUndo = !state.scoreChanges.slice(0, index).some((newer) => newer.score_id === change.score_id);
+    const canUndo = encounterOpen() && !changes.slice(0, index).some((newer) => newer.score_id === change.score_id);
     return `<div class="history-row"><div><strong>${esc(player?.nome || "Jogador")}</strong><small>${esc(game?.nome || "Partida")} · ${fmtDate(change.changed_at)} · ${esc(actor)}</small><span>${change.previous_points ?? "—"} → ${change.new_points ?? "—"}${change.previous_finalized !== change.new_finalized ? ` · ${change.new_finalized ? "confirmado" : "pendente"}` : ""}</span></div>${canUndo ? `<button class="text-button" type="button" data-undo-change="${change.id}">Desfazer</button>` : ""}</div>`;
   }).join("") : `<p class="empty-inline">Nenhuma alteração registrada.</p>`;
   $("scoreHistoryList").querySelectorAll("[data-undo-change]").forEach((button) => button.addEventListener("click", () => undoScoreChange(Number(button.dataset.undoChange))));
@@ -915,10 +1273,16 @@ async function undoScoreChange(id) {
 
 function openHistoryModal() { renderScoreHistory(); setModal("historyModal", true); }
 
-const shareUrl = "https://munizmath.github.io/boliche/";
+const shareUrl = () => `${window.location.origin}${window.location.pathname}${state.activeEncounterId ? `?encontro=${encodeURIComponent(state.activeEncounterId)}` : ""}`;
+function openShareModal() {
+  const link = $("shareModal").querySelector(".share-link");
+  link.href = shareUrl();
+  link.textContent = activeEncounter() ? `Link de ${activeEncounter().nome}` : "Link do placar";
+  setModal("shareModal", true);
+}
 async function copyShareLink() {
   try {
-    await navigator.clipboard.writeText(shareUrl);
+    await navigator.clipboard.writeText(shareUrl());
     showToast("Link do placar copiado.", "success");
   } catch {
     showToast("Abra o link exibido e copie o endereço do navegador.", "error");
@@ -927,13 +1291,13 @@ async function copyShareLink() {
 
 async function shareScoreboard() {
   if (!navigator.share) return copyShareLink();
-  try { await navigator.share({ title: "Boliche dos Amigos", url: shareUrl }); }
+  try { await navigator.share({ title: "Boliche dos Amigos", url: shareUrl() }); }
   catch (error) { if (error.name !== "AbortError") showToast("Não foi possível compartilhar o link.", "error"); }
 }
 
 async function shareResultCard() {
   const totals = officialTotals();
-  const finalGames = state.games.filter((game) => game.status === "final");
+  const finalGames = encounterGames().filter((game) => game.status === "final");
   if (!totals.length) return showToast("Finalize uma partida para gerar a imagem do resultado.", "error");
   const canvas = document.createElement("canvas");
   canvas.width = 1080;
@@ -978,7 +1342,8 @@ async function shareResultCard() {
 }
 
 function openPhotoModal() {
-  if (!state.games.length) return showToast("Abra uma partida antes de importar uma foto.", "error");
+  if (!encounterOpen()) return showToast("Reabra o encontro para atualizar os pontos.", "error");
+  if (!encounterGames().length) return showToast("Abra uma partida antes de importar uma foto.", "error");
   resetPhotoState(); renderPhotoOptions(); setModal("photoModal", true);
 }
 
@@ -1211,6 +1576,30 @@ function initTheme() {
 
 function bindEvents() {
   initTheme();
+  $("encounterSelect").addEventListener("change", (event) => selectEncounter(event.target.value));
+  $("newEncounterButton").addEventListener("click", () => openEncounterModal(false));
+  $("editEncounterButton").addEventListener("click", () => openEncounterModal(true));
+  $("closeEncounterButton").addEventListener("click", toggleEncounterClosed);
+  $("deleteEncounterButton").addEventListener("click", deleteEncounter);
+  $("encounterForm").addEventListener("submit", saveEncounter);
+  $("exportCsvButton").addEventListener("click", () => downloadResults("csv"));
+  $("exportJsonButton").addEventListener("click", () => downloadResults("json"));
+  $("drawLanesButton").addEventListener("click", drawLanes);
+  $("manageTeamsButton").addEventListener("click", openTeamsModal);
+  $("teamForm").addEventListener("submit", saveTeam);
+  $("cancelTeamEdit").addEventListener("click", openTeamsModal);
+  $("manageBracketButton").addEventListener("click", openBracketModal);
+  $("bracketForm").addEventListener("submit", saveBracket);
+  $("deleteBracketButton").addEventListener("click", deleteBracket);
+  $("shuffleBracketButton").addEventListener("click", () => {
+    const grid = $("bracketPlayerSelection");
+    const selected = [...grid.querySelectorAll("input:checked")].map((input) => input.closest("label"));
+    for (let i = selected.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [selected[i], selected[j]] = [selected[j], selected[i]]; }
+    selected.forEach((label) => grid.append(label));
+  });
+  $("savePredictionButton").addEventListener("click", savePrediction);
+  $("tvModeButton").addEventListener("click", () => { const tv = document.body.classList.toggle("tv-mode"); $("tvModeButton").textContent = tv ? "Sair do telão" : "Modo telão"; document.querySelector(".page-title h1").textContent = tv ? activeEncounter()?.nome || "Boliche dos Amigos" : "Placar compartilhado"; });
+  document.querySelectorAll("[data-close-modal]").forEach((button) => button.addEventListener("click", () => button.closest("dialog").close()));
   window.addEventListener("online", refreshAfterReconnect);
   document.addEventListener("visibilitychange", () => { if (!document.hidden) refreshAfterReconnect(); });
   if (client) window.setInterval(refreshAfterReconnect, 240000);
@@ -1224,11 +1613,12 @@ function bindEvents() {
   $("cancelLaneEditButton").addEventListener("click", cancelLaneEdit);
   $("approvalsButton").addEventListener("click", openApprovalsModal);
   $("historyButton").addEventListener("click", openHistoryModal);
-  $("shareButton").addEventListener("click", () => setModal("shareModal", true));
+  $("shareButton").addEventListener("click", openShareModal);
   $("copyShareButton").addEventListener("click", copyShareLink);
   $("nativeShareButton").addEventListener("click", shareScoreboard);
   $("shareResultButton").addEventListener("click", shareResultCard);
   $("rankingLane").addEventListener("change", renderLeaderboard);
+  $("rankingMetric").addEventListener("change", renderLeaderboard);
   $("photoForm").addEventListener("submit", confirmPhotoUpdate); $("photoInput").addEventListener("change", loadPhoto); $("photoLane").addEventListener("change", () => updateReviewTable()); $("photoGame").addEventListener("change", renderPhotoOptions); $("reviewTable").addEventListener("input", updatePhotoConfirmState); $("runOcrButton").addEventListener("click", runOcr); $("clearCropButton").addEventListener("click", () => { state.crop = null; drawCanvas(); });
   $("rotatePhotoButton").addEventListener("click", () => { state.photoRotation = (state.photoRotation + 90) % 360; state.crop = null; updatePhotoPreview(); });
   $("photoPanButton").addEventListener("click", () => { state.photoPanMode = !state.photoPanMode; applyPhotoInteractionMode(); });

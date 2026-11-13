@@ -9,7 +9,7 @@
     <link rel="icon" href="favicon.ico" type="image/x-icon" />
     <link rel="apple-touch-icon" href="apple-touch-icon.png" />
     <link rel="manifest" href="manifest.webmanifest" />
-    <link rel="stylesheet" href="styles.css?v=20261113-8" />
+    <link rel="stylesheet" href="styles.css?v=20261113-9" />
   </head>
   <body>
     <div id="toastContainer" class="toast-container" aria-live="polite"></div>
@@ -61,6 +61,18 @@
         </div>
       </header>
 
+      <section class="encounter-bar" aria-label="Encontro atual">
+        <label>Encontro <select id="encounterSelect" aria-label="Selecionar encontro"></select></label>
+        <span id="encounterStatus" class="status-pill status-pill--muted"></span>
+        <button id="newEncounterButton" class="button button--quiet admin-only" type="button" hidden>+ Encontro</button>
+        <button id="editEncounterButton" class="button button--quiet admin-only" type="button" hidden>Editar encontro</button>
+        <button id="deleteEncounterButton" class="button button--quiet admin-only" type="button" hidden>Excluir encontro</button>
+        <button id="closeEncounterButton" class="button button--quiet admin-only" type="button" hidden>Encerrar encontro</button>
+        <button id="exportCsvButton" class="button button--quiet" type="button">CSV</button>
+        <button id="exportJsonButton" class="button button--quiet" type="button">JSON</button>
+        <button id="tvModeButton" class="button button--quiet" type="button">Modo telão</button>
+      </section>
+
       <section id="demoBanner" class="notice notice--info" hidden>
         <strong>Modo de demonstração</strong>
         <span>Configure o Project URL e a Publishable Key em <code>supabase-config.js</code> antes de compartilhar o link.</span>
@@ -86,15 +98,15 @@
           <div class="section-heading">
             <div>
               <p class="eyebrow">ranking geral</p>
-              <h3>Classificação acumulada</h3>
+              <h3 id="rankingTitle">Classificação acumulada</h3>
             </div>
-            <div class="ranking-controls"><select id="rankingLane" aria-label="Filtrar ranking por pista"><option value="">Todas as pistas</option></select><span id="leaderboardMeta" class="section-meta">Nenhuma partida finalizada</span></div>
+            <div class="ranking-controls"><select id="rankingMetric" aria-label="Critério do ranking"><option value="total">Pontos acumulados</option><option value="average">Média por partida</option></select><select id="rankingLane" aria-label="Filtrar ranking por pista"><option value="">Todas as pistas</option></select><span id="leaderboardMeta" class="section-meta">Nenhuma partida finalizada</span></div>
           </div>
           <div id="podium" class="podium" aria-label="Pódio da classificação" hidden></div>
           <div class="table-wrap">
             <table class="score-table">
               <thead>
-                <tr><th>#</th><th>Jogador</th><th>Pista</th><th>Pontos</th><th>Situação</th></tr>
+                <tr><th>#</th><th>Jogador</th><th>Pista</th><th>Partidas</th><th id="rankingValueHeader">Pontos</th><th>Situação</th></tr>
               </thead>
               <tbody id="leaderboardBody"></tbody>
             </table>
@@ -115,6 +127,7 @@
             <span id="currentGameStatus" class="status-pill status-pill--muted">Aguardando</span>
           </div>
           <div id="currentGameBody" class="current-game-body"></div>
+          <div id="laneProgress" class="lane-progress"></div>
           <button id="currentGameSelect" class="text-button admin-only" type="button" hidden>Selecionar outra partida</button>
         </article>
       </section>
@@ -129,6 +142,14 @@
         </div>
         <div id="gamesList" class="games-grid"></div>
       </section>
+
+      <section class="extras-grid" aria-label="Competição e recordes">
+        <article class="glass-card blueprint"><div class="section-heading"><div><p class="eyebrow">competição</p><h3>Equipes</h3></div><button id="manageTeamsButton" class="button button--quiet admin-only" type="button" hidden>Gerenciar</button></div><div id="teamsList" class="extras-list"></div></article>
+        <article class="glass-card blueprint"><div class="section-heading"><div><p class="eyebrow">oito jogadores</p><h3>Torneio eliminatório</h3></div><button id="manageBracketButton" class="button button--quiet admin-only" type="button" hidden>Configurar</button></div><div id="bracketBoard" class="extras-list"></div></article>
+        <article class="glass-card blueprint"><div class="section-heading"><div><p class="eyebrow">histórico do grupo</p><h3>Recordes</h3></div></div><div id="groupRecords" class="extras-list"></div></article>
+      </section>
+
+      <section id="predictionsSection" class="prediction-panel glass-card blueprint" hidden><div><p class="eyebrow">antes do jogo</p><h3>Seu palpite</h3><p id="predictionHint" class="intro-copy"></p></div><select id="predictionPlayer" aria-label="Quem vencerá a partida"></select><button id="savePredictionButton" class="button button--primary" type="button">Salvar palpite</button><span id="predictionAccuracy" class="section-meta"></span></section>
     </main>
 
     <section id="participantes" class="admin-section-anchor" aria-label="Cadastro de participantes"></section>
@@ -199,19 +220,37 @@
         <label>Nome da partida<input id="gameName" type="text" maxlength="80" placeholder="Sexta à noite" required /></label>
         <div class="form-section-heading"><span>Participantes</span><small>Escolha a divisão real das pistas</small></div>
         <div id="playerSelection" class="selection-grid"></div>
+        <div class="modal-actions"><button id="drawLanesButton" class="button button--quiet" type="button">Sortear pistas</button><small>Respeita a capacidade de cada pista; você pode ajustar depois.</small></div>
         <p id="playerSelectionEmpty" class="empty-inline" hidden>Cadastre os participantes antes de abrir uma partida.</p>
         <div class="modal-actions"><button class="button button--quiet" value="cancel">Cancelar</button><button id="gameSubmitButton" class="button button--primary" type="submit">Abrir partida</button></div>
       </form>
     </dialog>
+
+    <dialog id="encounterModal" class="modal">
+      <form class="modal-card modal-card--wide" id="encounterForm">
+        <button class="modal-close" type="button" aria-label="Fechar">×</button>
+        <p class="eyebrow">encontro</p><h2 id="encounterModalTitle">Novo encontro</h2>
+        <label>Nome<input id="encounterName" type="text" maxlength="80" required /></label>
+        <label>Data<input id="encounterDate" type="date" required /></label>
+        <div class="form-section-heading"><span>Participantes</span><small>Escolha quem participará deste encontro</small></div>
+        <div id="encounterPlayerSelection" class="selection-grid"></div>
+        <p id="encounterFormError" class="form-error" role="alert" hidden></p>
+        <div class="modal-actions"><button class="button button--quiet" type="button" data-close-modal>Cancelar</button><button class="button button--primary" type="submit">Salvar encontro</button></div>
+      </form>
+    </dialog>
+
+    <dialog id="teamsModal" class="modal"><div class="modal-card modal-card--wide"><button class="modal-close" type="button" aria-label="Fechar">×</button><p class="eyebrow">competição</p><h2>Equipes do encontro</h2><div id="teamEditorList" class="extras-list"></div><form id="teamForm" class="team-form"><input id="teamName" maxlength="60" placeholder="Nome da equipe" required aria-label="Nome da equipe" /><select id="teamMetric" aria-label="Critério da equipe"><option value="sum">Soma dos integrantes</option><option value="average">Média dos integrantes</option></select><div id="teamPlayerSelection" class="selection-grid"></div><p id="teamError" class="form-error" hidden></p><div class="modal-actions"><button id="cancelTeamEdit" class="button button--quiet" type="button" hidden>Cancelar edição</button><button class="button button--primary" type="submit">Salvar equipe</button></div></form></div></dialog>
+
+    <dialog id="bracketModal" class="modal"><form id="bracketForm" class="modal-card modal-card--wide"><button class="modal-close" type="button" aria-label="Fechar">×</button><p class="eyebrow">competição</p><h2>Chave eliminatória</h2><p class="modal-copy">Escolha oito jogadores e uma partida para cada rodada. A ordem na lista define os confrontos consecutivos; use o sorteio para mudar essa ordem. Os vencedores avançam pelos pontos confirmados.</p><div id="bracketPlayerSelection" class="selection-grid"></div><button id="shuffleBracketButton" class="button button--quiet" type="button">Sortear ordem</button><label>Quartas de final<select id="bracketGame0"></select></label><label>Semifinal<select id="bracketGame1"></select></label><label>Final<select id="bracketGame2"></select></label><p id="bracketError" class="form-error" hidden></p><div class="modal-actions"><button id="deleteBracketButton" class="button button--quiet" type="button">Excluir chave</button><button class="button button--primary" type="submit">Salvar chave</button></div></form></dialog>
 
     <dialog id="playersModal" class="modal">
       <form method="dialog" class="modal-card modal-card--wide" id="playersForm">
         <button class="modal-close" value="cancel" aria-label="Fechar">×</button>
         <p class="eyebrow">cadastro</p>
         <h2>Participantes e pistas</h2>
-        <p class="modal-copy">O apelido é exatamente como aparece no monitor da pista e ajuda a sugerir a associação na leitura da foto.</p>
+        <p class="modal-copy">O apelido deve corresponder ao monitor da pista. Após cadastrar um jogador, edite o encontro para incluí-lo na lista de participantes.</p>
         <div class="form-section-heading"><span>Pistas</span><small>Renomear uma pista atualiza os jogadores</small></div>
-        <div class="lane-add-row"><input id="laneName" type="text" maxlength="20" placeholder="Ex.: 1 ou 2" aria-label="Nome da pista" /><button id="saveLaneButton" class="button button--quiet" type="button">Adicionar pista</button><button id="cancelLaneEditButton" class="button button--quiet" type="button" hidden>Cancelar</button></div>
+        <div class="lane-add-row"><input id="laneName" type="text" maxlength="20" placeholder="Ex.: 1 ou 2" aria-label="Nome da pista" /><input id="laneCapacity" type="number" min="1" max="20" value="4" aria-label="Capacidade da pista" title="Capacidade da pista" /><button id="saveLaneButton" class="button button--quiet" type="button">Adicionar pista</button><button id="cancelLaneEditButton" class="button button--quiet" type="button" hidden>Cancelar</button></div>
         <div id="lanesList" class="lanes-list"></div>
         <div class="form-section-heading"><span>Jogadores</span><small>Escolha uma pista cadastrada</small></div>
         <div class="player-add-row"><input id="playerName" type="text" placeholder="Nome da pessoa" /><input id="playerNickname" type="text" placeholder="Apelido no placar" /><select id="playerLane" aria-label="Pista do jogador"><option value="">Selecione a pista</option></select><button id="addPlayerButton" class="button button--primary" type="button">Adicionar</button><button id="cancelPlayerEditButton" class="button button--quiet" type="button" hidden>Cancelar</button></div>
@@ -257,7 +296,7 @@
         <button class="modal-close" type="button" aria-label="Fechar">×</button>
         <p class="eyebrow">convide os amigos</p>
         <h2>Acompanhar o placar</h2>
-        <p class="modal-copy">Escaneie o QR Code ou compartilhe o link. O placar pode ser visto sem cadastro.</p>
+        <p class="modal-copy">O QR Code abre o encontro em andamento. O link abaixo abre o encontro selecionado. O placar pode ser visto sem cadastro.</p>
         <img class="share-qr" src="share-qr.png" alt="QR Code para abrir o placar do Boliche dos Amigos" width="220" height="220" />
         <a class="share-link" href="https://munizmath.github.io/boliche/">munizmath.github.io/boliche</a>
         <div class="modal-actions"><button id="copyShareButton" class="button button--quiet" type="button">Copiar link</button><button id="shareResultButton" class="button button--quiet" type="button">Imagem do resultado</button><button id="nativeShareButton" class="button button--primary" type="button">Compartilhar</button></div>
@@ -310,6 +349,6 @@
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
     <script src="supabase-config.js"></script>
-    <script src="app.js?v=20261113-8"></script>
+    <script src="app.js?v=20261113-9"></script>
   </body>
 </html>

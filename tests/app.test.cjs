@@ -23,7 +23,7 @@ function loadApp(client = null) {
   });
   const source = fs.readFileSync(path.join(__dirname, '..', 'app.js'), 'utf8')
     .replace(/\nstart\(\);\s*$/, '\n');
-  vm.runInContext(`${source}\nrender = () => {};\nrefreshAfterReconnect = async () => {};\nglobalThis.testApp = { state, loadData, buildSuggestions, playersOnLane, updateReviewTable, updatePhotoConfirmState, drawOrientedPhoto, applyPhotoInteractionMode, canvasPoint, renderLeaderboard, renderCurrentGame, shareResultCard, confirmPhotoUpdate, submitAuth, submitProfile, prepareProfilePhoto };`, context);
+  vm.runInContext(`${source}\nrender = () => {};\nrefreshAfterReconnect = async () => {};\nglobalThis.testApp = { state, loadData, buildSuggestions, playersOnLane, updateReviewTable, updatePhotoConfirmState, drawOrientedPhoto, applyPhotoInteractionMode, canvasPoint, renderLeaderboard, renderCurrentGame, shareResultCard, confirmPhotoUpdate, submitAuth, submitProfile, prepareProfilePhoto, officialTotals, encounterGames, bracketRounds, bracketWinner, downloadResults };`, context);
   return { ...context.testApp, get, rows, document, context };
 }
 
@@ -187,8 +187,10 @@ test('visitante vê foto aprovada ao lado do jogador no ranking', async () => {
   const player = { id: 'matheus-player', nome: 'Matheus Muniz', apelido_placar: 'MATHEUS', pista: '1' };
   const rows = {
     players: [player], lanes: [{ name: '1' }],
-    games: [{ id: 'game-1', nome: 'Partida', status: 'final', created_at: '2026-11-13T20:00:00Z' }],
-    scores: [{ id: 'score-1', game_id: 'game-1', player_id: player.id, pontos: 213, finalizado: true }],
+    encounters: [{ id: 'meet-1', nome: 'Encontro', status: 'open' }],
+    encounter_players: [{ encounter_id: 'meet-1', player_id: player.id }],
+    games: [{ id: 'game-1', encounter_id: 'meet-1', nome: 'Partida', status: 'final', created_at: '2026-11-13T20:00:00Z' }],
+    scores: [{ id: 'score-1', game_id: 'game-1', player_id: player.id, pista: '1', pontos: 213, finalizado: true }],
     profiles: [{ player_id: player.id, foto_path: 'user-1/photo.jpg' }],
   };
   const filters = [];
@@ -219,8 +221,11 @@ test('visitante vê foto aprovada ao lado do jogador no ranking', async () => {
 test('cartão do resultado inclui o vencedor e salva PNG da classificação final', async () => {
   const app = loadApp();
   app.state.players = [{ id: 'matheus', nome: 'Matheus Muniz', pista: '2' }];
-  app.state.games = [{ id: 'game-1', status: 'final' }];
-  app.state.scores = [{ game_id: 'game-1', player_id: 'matheus', pontos: 213, finalizado: true }];
+  app.state.encounters = [{ id: 'meet-1', nome: 'Encontro', status: 'open' }];
+  app.state.encounterPlayers = [{ encounter_id: 'meet-1', player_id: 'matheus' }];
+  app.state.activeEncounterId = 'meet-1';
+  app.state.games = [{ id: 'game-1', encounter_id: 'meet-1', status: 'final' }];
+  app.state.scores = [{ game_id: 'game-1', player_id: 'matheus', pista: '2', pontos: 213, finalizado: true }];
   const written = [];
   const context = {
     fillRect() {}, strokeRect() {},
@@ -239,6 +244,78 @@ test('cartão do resultado inclui o vencedor e salva PNG da classificação fina
   assert.ok(written.includes('Matheus Muniz'));
   assert.ok(written.includes('213 pontos'));
   assert.equal(downloaded, true);
+});
+
+test('ranking isola encontros e calcula média por partidas concluídas', () => {
+  const app = loadApp();
+  app.state.players = [{ id: 'ana', nome: 'Ana', pista: '1' }, { id: 'bruno', nome: 'Bruno', pista: '2' }];
+  app.state.encounters = [{ id: 'a', status: 'open' }, { id: 'b', status: 'open' }];
+  app.state.encounterPlayers = ['a', 'b'].flatMap((encounter_id) => ['ana', 'bruno'].map((player_id) => ({ encounter_id, player_id })));
+  app.state.games = [{ id: 'a1', encounter_id: 'a', status: 'final' }, { id: 'a2', encounter_id: 'a', status: 'final' }, { id: 'b1', encounter_id: 'b', status: 'final' }];
+  app.state.scores = [
+    { game_id: 'a1', player_id: 'ana', pista: '1', pontos: 100, finalizado: true },
+    { game_id: 'a2', player_id: 'ana', pista: '2', pontos: 200, finalizado: true },
+    { game_id: 'a1', player_id: 'bruno', pista: '1', pontos: 180, finalizado: true },
+    { game_id: 'b1', player_id: 'bruno', pista: '2', pontos: 300, finalizado: true },
+  ];
+  app.state.activeEncounterId = 'a';
+  let totals = app.officialTotals();
+  assert.equal(totals.find((item) => item.player.id === 'ana').points, 300);
+  assert.equal(totals.find((item) => item.player.id === 'ana').gamesPlayed, 2);
+  assert.equal(totals.find((item) => item.player.id === 'bruno').points, 180);
+  app.get('rankingMetric').value = 'average';
+  totals = app.officialTotals();
+  assert.equal(totals[0].player.id, 'bruno');
+  assert.equal(totals[1].average, 150);
+  assert.equal(app.officialTotals('2').find((item) => item.player.id === 'ana').points, 200);
+  app.state.activeEncounterId = 'b';
+  assert.equal(app.officialTotals()[0].points, 300);
+});
+
+test('OCR usa a pista gravada na partida mesmo após alterar a pista padrão do jogador', () => {
+  const app = loadApp();
+  app.state.players = [{ id: 'ana', nome: 'Ana', pista: '2' }];
+  app.state.scores = [{ game_id: 'game', player_id: 'ana', pista: '1' }];
+  assert.deepEqual(app.playersOnLane('1', 'game').map((player) => player.id), ['ana']);
+  assert.equal(app.playersOnLane('2', 'game').length, 0);
+});
+
+test('chave eliminatória avança apenas vencedores de partidas finalizadas e deixa empate pendente', () => {
+  const app = loadApp();
+  const seeds = ['a','b','c','d','e','f','g','h'];
+  app.state.games = ['q','s','f'].map((id) => ({ id, status: 'final' }));
+  app.state.scores = [
+    ...seeds.map((id, index) => ({ game_id: 'q', player_id: id, pontos: index % 2 ? 100 : 200, finalizado: true })),
+    ...['a','c','e','g'].map((id, index) => ({ game_id: 's', player_id: id, pontos: index % 2 ? 100 : 200, finalizado: true })),
+    { game_id: 'f', player_id: 'a', pontos: 210, finalizado: true },
+    { game_id: 'f', player_id: 'e', pontos: 200, finalizado: true },
+  ];
+  const rounds = app.bracketRounds({ seeds, round_games: ['q','s','f'] });
+  assert.equal(JSON.stringify(rounds[1].matches.map((item) => [item.first,item.second])), JSON.stringify([['a','c'],['e','g']]));
+  assert.equal(JSON.stringify(rounds[2].matches.map((item) => [item.first,item.second])), JSON.stringify([['a','e']]));
+  assert.equal(app.bracketWinner('f','a','e'), 'a');
+  app.state.scores.find((item) => item.game_id === 'f' && item.player_id === 'e').pontos = 210;
+  assert.equal(app.bracketWinner('f','a','e'), null);
+});
+
+test('exportação inclui jogadores, partidas e pista histórica no CSV e no JSON', () => {
+  const app = loadApp();
+  app.state.encounters = [{ id: 'meet-1', nome: 'Noite', data: '2026-11-13' }];
+  app.state.activeEncounterId = 'meet-1';
+  app.state.players = [{ id: 'ana', nome: 'Ana', pista: '2' }];
+  app.state.encounterPlayers = [{ encounter_id: 'meet-1', player_id: 'ana' }];
+  app.state.games = [{ id: 'game-1', encounter_id: 'meet-1', nome: 'Partida', status: 'final' }];
+  app.state.scores = [{ game_id: 'game-1', player_id: 'ana', pista: '1', pontos: 213, finalizado: true }];
+  const exports = [];
+  app.context.Blob = class { constructor(parts) { exports.push(parts.join('')); } };
+  app.context.URL = { createObjectURL: () => 'blob:export', revokeObjectURL() {} };
+  app.document.createElement = () => ({ click() {} });
+  app.downloadResults('csv');
+  app.downloadResults('json');
+  assert.match(exports[0], /"jogador".*"Ana"/);
+  assert.match(exports[0], /"partida".*"Partida"/);
+  assert.match(exports[0], /"pontuacao".*"Ana","1","213","true"/);
+  assert.equal(JSON.parse(exports[1]).scores[0].pista, '1');
 });
 
 for (const existing of [false, true, 'stale']) {
