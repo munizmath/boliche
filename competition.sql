@@ -1,4 +1,4 @@
--- Equipes, torneio de oito jogadores e palpites. Aplicar depois de encounters.sql.
+-- Equipes, torneio de quatro ou oito jogadores e palpites por encontro. Aplicar depois de encounters.sql.
 begin;
 
 create table if not exists public.teams (
@@ -16,15 +16,16 @@ create table if not exists public.team_players (
 create table if not exists public.brackets (
   encounter_id uuid primary key references public.encounters(id) on delete cascade,
   seeds uuid[] not null,
-  round_games uuid[] not null default array[null,null,null]::uuid[],
-  check (cardinality(seeds)=8 and cardinality(round_games)=3)
+  round_games uuid[] not null,
+  tiebreak_rule text not null default 'higher_seed' check(tiebreak_rule in ('higher_seed','lower_seed')),
+  check ((cardinality(seeds)=4 and cardinality(round_games)=2) or (cardinality(seeds)=8 and cardinality(round_games)=3))
 );
 create table if not exists public.predictions (
-  game_id uuid not null references public.games(id) on delete cascade,
+  encounter_id uuid not null references public.encounters(id) on delete cascade,
   user_id uuid not null references auth.users(id) on delete cascade,
   predicted_player_id uuid not null references public.players(id) on delete cascade,
   created_at timestamptz not null default now(),
-  primary key(game_id,user_id)
+  primary key(encounter_id,user_id)
 );
 
 alter table public.teams enable row level security;
@@ -68,8 +69,13 @@ begin
       select encounter_id into target_encounter from public.teams where id=new.team_id;
     end if;
     if tg_op in ('INSERT','UPDATE') then
+      perform 1 from public.encounters where id=target_encounter for update;
       if not exists(select 1 from public.encounter_players where encounter_id=target_encounter and player_id=new.player_id) then
         raise exception 'Jogador não participa deste encontro';
+      end if;
+      if exists(select 1 from public.team_players tp join public.teams t on t.id=tp.team_id
+        where t.encounter_id=target_encounter and tp.player_id=new.player_id and tp.team_id<>new.team_id) then
+        raise exception 'Jogador já pertence a outra equipe neste encontro' using errcode='23514';
       end if;
     end if;
   else
@@ -91,7 +97,7 @@ returns public.teams language plpgsql security invoker set search_path=public as
 declare result public.teams%rowtype;
 begin
   if not public.is_admin() then raise exception 'Acesso de administrador necessário' using errcode='42501'; end if;
-  if not exists(select 1 from public.encounters where id=p_encounter_id and status='open' for update) then raise exception 'Encontro encerrado ou inexistente'; end if;
+  if not exists(select 1 from public.encounters where id=p_encounter_id and status<>'closed' for update) then raise exception 'Encontro encerrado ou inexistente'; end if;
   if length(trim(coalesce(p_name,''))) not between 1 and 60 or p_metric not in ('sum','average') or coalesce(cardinality(p_player_ids),0)=0 then raise exception 'Equipe inválida'; end if;
   if (select count(distinct x.id) from unnest(p_player_ids) as x(id))<>cardinality(p_player_ids)
     or (select count(*) from public.encounter_players where encounter_id=p_encounter_id and player_id=any(p_player_ids))<>cardinality(p_player_ids) then
@@ -124,26 +130,27 @@ end $$;
 drop trigger if exists brackets_guard_change on public.brackets;
 create trigger brackets_guard_change before insert or update or delete on public.brackets for each row execute function public.guard_bracket_change();
 
-create or replace function public.save_bracket(p_encounter_id uuid,p_seeds uuid[],p_round_games uuid[])
+create or replace function public.save_bracket(p_encounter_id uuid,p_seeds uuid[],p_round_games uuid[],p_tiebreak_rule text)
 returns public.brackets language plpgsql security invoker set search_path=public as $$
 declare result public.brackets%rowtype;
 begin
   if not public.is_admin() then raise exception 'Acesso de administrador necessário' using errcode='42501'; end if;
-  if not exists(select 1 from public.encounters where id=p_encounter_id and status='open' for update) then raise exception 'Encontro encerrado ou inexistente'; end if;
-  if cardinality(p_seeds)<>8 or cardinality(p_round_games)<>3
-    or (select count(distinct x.id) from unnest(p_seeds) as x(id))<>8
-    or (select count(*) from public.encounter_players where encounter_id=p_encounter_id and player_id=any(p_seeds))<>8
+  if not exists(select 1 from public.encounters where id=p_encounter_id and status<>'closed' for update) then raise exception 'Encontro encerrado ou inexistente'; end if;
+  if cardinality(p_seeds) not in (4,8) or cardinality(p_round_games)<>case when cardinality(p_seeds)=4 then 2 else 3 end
+    or p_tiebreak_rule not in ('higher_seed','lower_seed')
+    or (select count(distinct x.id) from unnest(p_seeds) as x(id))<>cardinality(p_seeds)
+    or (select count(*) from public.encounter_players where encounter_id=p_encounter_id and player_id=any(p_seeds))<>cardinality(p_seeds)
     or (select count(distinct x.id) from unnest(p_round_games) as x(id) where x.id is not null)<>
        (select count(*) from unnest(p_round_games) as x(id) where x.id is not null)
     or exists(select 1 from unnest(p_round_games) as x(id) where x.id is not null and not exists(select 1 from public.games where id=x.id and encounter_id=p_encounter_id)) then
     raise exception 'Chave ou partidas inválidas';
   end if;
-  insert into public.brackets(encounter_id,seeds,round_games) values(p_encounter_id,p_seeds,p_round_games)
-    on conflict(encounter_id) do update set seeds=excluded.seeds,round_games=excluded.round_games returning * into result;
+  insert into public.brackets(encounter_id,seeds,round_games,tiebreak_rule) values(p_encounter_id,p_seeds,p_round_games,p_tiebreak_rule)
+    on conflict(encounter_id) do update set seeds=excluded.seeds,round_games=excluded.round_games,tiebreak_rule=excluded.tiebreak_rule returning * into result;
   return result;
 end $$;
-revoke all on function public.save_bracket(uuid,uuid[],uuid[]) from public,anon;
-grant execute on function public.save_bracket(uuid,uuid[],uuid[]) to authenticated;
+revoke all on function public.save_bracket(uuid,uuid[],uuid[],text) from public,anon;
+grant execute on function public.save_bracket(uuid,uuid[],uuid[],text) to authenticated;
 
 create or replace function public.guard_roster_competition()
 returns trigger language plpgsql security invoker set search_path=public as $$
@@ -171,7 +178,7 @@ create or replace function public.delete_encounter(p_encounter_id uuid)
 returns void language plpgsql security invoker set search_path=public as $$
 begin
   if not public.is_admin() then raise exception 'Acesso de administrador necessário' using errcode='42501'; end if;
-  if not exists(select 1 from public.encounters where id=p_encounter_id and status='open' for update) then
+  if not exists(select 1 from public.encounters where id=p_encounter_id and status<>'closed' for update) then
     raise exception 'Reabra o encontro antes de excluí-lo';
   end if;
   delete from public.brackets where encounter_id=p_encounter_id;
@@ -183,19 +190,44 @@ grant execute on function public.delete_encounter(uuid) to authenticated;
 
 create or replace function public.guard_prediction()
 returns trigger language plpgsql security invoker set search_path=public as $$
-declare target_encounter uuid;
 begin
-  select encounter_id into target_encounter from public.games where id=new.game_id;
-  if not exists(select 1 from public.encounters where id=target_encounter and status='open')
-    or exists(select 1 from public.scores where game_id=new.game_id and pontos is not null)
-    or not exists(select 1 from public.scores where game_id=new.game_id and player_id=new.predicted_player_id) then
-    raise exception 'Palpites só podem ser feitos antes dos primeiros pontos, para participantes da partida' using errcode='42501';
+  perform 1 from public.encounters where id=new.encounter_id for update;
+  if not exists(select 1 from public.encounters where id=new.encounter_id and status='preparing'
+      and (prediction_closes_at is null or prediction_closes_at>now()))
+    or not exists(select 1 from public.encounter_players where encounter_id=new.encounter_id and player_id=new.predicted_player_id) then
+    raise exception 'Palpites encerrados ou jogador fora do encontro' using errcode='42501';
   end if;
-  if tg_op='UPDATE' and (new.game_id<>old.game_id or new.user_id<>old.user_id) then raise exception 'Palpite inválido'; end if;
+  if tg_op='UPDATE' then
+    if new.encounter_id<>old.encounter_id or new.user_id<>old.user_id then raise exception 'Palpite inválido'; end if;
+  end if;
   return new;
 end $$;
 drop trigger if exists predictions_guard on public.predictions;
 create trigger predictions_guard before insert or update on public.predictions for each row execute function public.guard_prediction();
+
+create or replace function public.prediction_standings()
+returns table(player_id uuid,player_name text,picks bigint,hits bigint)
+language sql stable security definer set search_path='' as $$
+  with results as (
+    select g.encounter_id,s.player_id,sum(s.pontos) points
+    from public.games g join public.scores s on s.game_id=g.id
+    join public.encounters e on e.id=g.encounter_id and e.status='closed'
+    where g.status='final' and s.finalizado and s.pontos is not null
+    group by g.encounter_id,s.player_id
+  ), winners as (
+    select r.encounter_id,r.player_id from results r
+    where r.points=(select max(x.points) from results x where x.encounter_id=r.encounter_id)
+      and 1=(select count(*) from results x where x.encounter_id=r.encounter_id and x.points=r.points)
+  )
+  select p.id,p.nome,count(pr.encounter_id),count(w.encounter_id)
+  from public.predictions pr join public.profiles pf on pf.id=pr.user_id and pf.status='approved'
+    join public.players p on p.id=pf.player_id
+    join public.encounters e on e.id=pr.encounter_id and e.status='closed'
+    left join winners w on w.encounter_id=pr.encounter_id and w.player_id=pr.predicted_player_id
+  group by p.id,p.nome order by count(w.encounter_id) desc,count(pr.encounter_id) desc,p.nome;
+$$;
+revoke all on function public.prediction_standings() from public;
+grant execute on function public.prediction_standings() to anon,authenticated;
 
 do $$ begin
   if not exists(select 1 from pg_publication_tables where pubname='supabase_realtime' and schemaname='public' and tablename='teams') then

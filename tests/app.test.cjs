@@ -23,7 +23,7 @@ function loadApp(client = null) {
   });
   const source = fs.readFileSync(path.join(__dirname, '..', 'app.js'), 'utf8')
     .replace(/\nstart\(\);\s*$/, '\n');
-  vm.runInContext(`${source}\nrender = () => {};\nrefreshAfterReconnect = async () => {};\nglobalThis.testApp = { state, loadData, buildSuggestions, playersOnLane, updateReviewTable, updatePhotoConfirmState, drawOrientedPhoto, applyPhotoInteractionMode, canvasPoint, renderLeaderboard, renderCurrentGame, shareResultCard, confirmPhotoUpdate, submitAuth, submitProfile, prepareProfilePhoto, officialTotals, encounterGames, bracketRounds, bracketWinner, downloadResults };`, context);
+  vm.runInContext(`${source}\nrender = () => {};\nrefreshAfterReconnect = async () => {};\nglobalThis.testApp = { state, loadData, buildSuggestions, playersOnLane, updateReviewTable, updatePhotoConfirmState, captureReviewDraft, markReviewEdited, changeReviewContext, runOcr, drawOrientedPhoto, applyPhotoInteractionMode, canvasPoint, renderLeaderboard, renderCurrentGame, renderRecords, shareResultCard, confirmPhotoUpdate, submitAuth, submitProfile, prepareProfilePhoto, cleanupUnusedProfilePhotos, officialTotals, encounterGames, bracketRounds, bracketWinner, balancedLaneDraw, buildResultsExport, downloadResults };`, context);
   return { ...context.testApp, get, rows, document, context };
 }
 
@@ -187,7 +187,7 @@ test('visitante vê foto aprovada ao lado do jogador no ranking', async () => {
   const player = { id: 'matheus-player', nome: 'Matheus Muniz', apelido_placar: 'MATHEUS', pista: '1' };
   const rows = {
     players: [player], lanes: [{ name: '1' }],
-    encounters: [{ id: 'meet-1', nome: 'Encontro', status: 'open' }],
+    encounters: [{ id: 'meet-1', nome: 'Encontro', status: 'active' }],
     encounter_players: [{ encounter_id: 'meet-1', player_id: player.id }],
     games: [{ id: 'game-1', encounter_id: 'meet-1', nome: 'Partida', status: 'final', created_at: '2026-11-13T20:00:00Z' }],
     scores: [{ id: 'score-1', game_id: 'game-1', player_id: player.id, pista: '1', pontos: 213, finalizado: true }],
@@ -196,6 +196,7 @@ test('visitante vê foto aprovada ao lado do jogador no ranking', async () => {
   const filters = [];
   const client = {
     storage: { from: () => ({ createSignedUrl: async (path) => ({ data: { signedUrl: `https://example.test/${path}` }, error: null }) }) },
+    rpc: async () => ({ data: [], error: null }),
     from: (table) => {
       const query = {
         select: () => query, order: () => query,
@@ -210,7 +211,7 @@ test('visitante vê foto aprovada ao lado do jogador no ranking', async () => {
   await app.loadData();
   app.renderLeaderboard();
   assert.deepEqual(filters.filter(([table]) => table === 'profiles'), [
-    ['profiles', 'status', 'approved'], ['profiles', 'player_id', 'is', null],
+    ['profiles', 'status', 'approved'], ['profiles', 'photo_public_opt_in', true], ['profiles', 'player_id', 'is', null],
   ]);
   assert.match(app.get('leaderboardBody').innerHTML, /<img class="ranking-avatar"[^>]+alt="Foto de Matheus Muniz"/);
   assert.match(app.get('leaderboardBody').innerHTML, /213/);
@@ -280,7 +281,7 @@ test('OCR usa a pista gravada na partida mesmo após alterar a pista padrão do 
   assert.equal(app.playersOnLane('2', 'game').length, 0);
 });
 
-test('chave eliminatória avança apenas vencedores de partidas finalizadas e deixa empate pendente', () => {
+test('chave eliminatória avança só com resultados finais e desempata pela ordem escolhida', () => {
   const app = loadApp();
   const seeds = ['a','b','c','d','e','f','g','h'];
   app.state.games = ['q','s','f'].map((id) => ({ id, status: 'final' }));
@@ -295,6 +296,9 @@ test('chave eliminatória avança apenas vencedores de partidas finalizadas e de
   assert.equal(JSON.stringify(rounds[2].matches.map((item) => [item.first,item.second])), JSON.stringify([['a','e']]));
   assert.equal(app.bracketWinner('f','a','e'), 'a');
   app.state.scores.find((item) => item.game_id === 'f' && item.player_id === 'e').pontos = 210;
+  assert.equal(app.bracketWinner('f','a','e'), 'a');
+  assert.equal(app.bracketWinner('f','a','e','lower_seed'), 'e');
+  app.state.games.find((game) => game.id === 'f').status = 'partial';
   assert.equal(app.bracketWinner('f','a','e'), null);
 });
 
@@ -312,10 +316,146 @@ test('exportação inclui jogadores, partidas e pista histórica no CSV e no JSO
   app.document.createElement = () => ({ click() {} });
   app.downloadResults('csv');
   app.downloadResults('json');
-  assert.match(exports[0], /"jogador".*"Ana"/);
+  assert.ok(exports[0].startsWith('\uFEFF'));
+  assert.match(exports[0], /"participante".*"Ana"/);
   assert.match(exports[0], /"partida".*"Partida"/);
-  assert.match(exports[0], /"pontuacao".*"Ana","1","213","true"/);
+  assert.match(exports[0], /"pontuacao".*"Ana";"1";"213";"true"/);
+  assert.match(exports[0], /"ranking".*"ana".*"213"/);
   assert.equal(JSON.parse(exports[1]).scores[0].pista, '1');
+  assert.equal(JSON.parse(exports[1]).rankings[0].total, 213);
+});
+
+test('edição manual e confirmação sobrevivem a leituras OCR repetidas', () => {
+  const app = loadApp();
+  app.state.players = [{ id: 'ana', nome: 'Ana', apelido_placar: 'ANA', pista: '1' }];
+  app.state.scores = [{ game_id: 'g', player_id: 'ana', pista: '1', pontos: 150, finalizado: true }];
+  app.get('photoGame').value = 'g'; app.get('photoLane').value = '1';
+  app.updateReviewTable();
+  const score = { value: '120' }; const final = { checked: true };
+  const row = { dataset: { reviewPlayer: 'ana', oldScore: '150', oldFinal: 'true', manualScore: 'false', manualFinal: 'false' }, querySelector: (selector) => selector === '.review-score' ? score : selector === '.review-final' ? final : { textContent: '' } };
+  app.rows.push(row);
+  app.markReviewEdited({ target: { value: '120', closest: () => row, matches: (selector) => selector === '.review-score' } });
+  assert.equal(final.checked, false);
+  app.updateReviewTable(new Map([['ana', { value: 110, hint: 'sugerido' }]]));
+  assert.match(app.get('reviewTable').innerHTML, /value="120"/);
+  assert.doesNotMatch(app.get('reviewTable').innerHTML, /class="review-final" type="checkbox" checked/);
+  app.updateReviewTable(new Map([['ana', { value: 110 }]]));
+  assert.match(app.get('reviewTable').innerHTML, /value="120"/);
+});
+
+test('atualização Realtime sinaliza conflito sem substituir a conferência local', async () => {
+  const rows = {
+    players: [{ id: 'ana', nome: 'Ana', pista: '1' }], lanes: [{ name: '1', capacity: 6 }],
+    encounters: [{ id: 'e', nome: 'Encontro', status: 'active' }], encounter_players: [{ encounter_id: 'e', player_id: 'ana' }],
+    games: [{ id: 'g', encounter_id: 'e', status: 'partial' }],
+    scores: [{ game_id: 'g', player_id: 'ana', pista: '1', pontos: 110, finalizado: false }],
+  };
+  const client = {
+    rpc: async () => ({ data: [], error: null }),
+    from: (table) => {
+      const query = { select: () => query, order: () => query, eq: () => query, not: () => query, then: (resolve) => resolve({ data: rows[table] || [], error: null }) };
+      return query;
+    },
+  };
+  const app = loadApp(client);
+  app.get('photoModal').open = true; app.get('photoGame').value = 'g'; app.get('photoLane').value = '1';
+  app.state.reviewViewKey = JSON.stringify(['g', '1']);
+  const input = { value: '120' }; const final = { checked: true };
+  app.rows.push({ dataset: { reviewPlayer: 'ana', oldScore: '100', oldFinal: 'false', manualScore: 'true', manualFinal: 'true' }, querySelector: (selector) => selector === '.review-score' ? input : selector === '.review-final' ? final : { textContent: '' } });
+  await app.loadData();
+  assert.equal(input.value, '120');
+  assert.equal(final.checked, true);
+  assert.equal(app.state.reviewConflict, true);
+  assert.match(app.get('photoConfirmHint').textContent, /outro aparelho/);
+});
+
+test('resposta antiga do OCR não substitui foto ou leitura posterior', async () => {
+  const app = loadApp();
+  app.state.players = [{ id: 'ana', nome: 'Ana', apelido_placar: 'ANA', pista: '1' }];
+  app.state.scores = [{ game_id: 'g', player_id: 'ana', pista: '1', pontos: null, finalizado: false }];
+  app.get('photoGame').value = 'g'; app.get('photoLane').value = '1'; app.get('photoModal').open = true;
+  app.state.image = { naturalWidth: 100, naturalHeight: 100 };
+  app.context.getOcrCanvas = () => ({ width: 1000 });
+  const resolvers = [];
+  const engine = { recognize: () => new Promise((resolve) => resolvers.push(resolve)) };
+  app.context.Tesseract = engine; app.context.window.Tesseract = engine;
+  const first = app.runOcr();
+  const second = app.runOcr();
+  resolvers[1]({ data: { text: 'ANA 120' } }); await second;
+  assert.match(app.get('reviewTable').innerHTML, /value="120"/);
+  resolvers[0]({ data: { text: 'ANA 110' } }); await first;
+  assert.match(app.get('reviewTable').innerHTML, /value="120"/);
+});
+
+test('sorteio distribui oito jogadores em 4+4 com capacidade seis', () => {
+  const app = loadApp();
+  const assignments = app.balancedLaneDraw(Array.from({ length: 8 }, (_, index) => String(index)), [{ name: '1', capacity: 6 }, { name: '2', capacity: 6 }]);
+  assert.equal(assignments.length, 8);
+  assert.equal(new Set(assignments.map((row) => row.player_id)).size, 8);
+  assert.equal(assignments.filter((row) => row.pista === '1').length, 4);
+  assert.equal(assignments.filter((row) => row.pista === '2').length, 4);
+  assert.equal(app.balancedLaneDraw(['a', 'b', 'c'], [{ name: '1', capacity: 2 }]), null);
+});
+
+test('chave de quatro usa semifinal e final sem antecipar resultados pendentes', () => {
+  const app = loadApp();
+  app.state.games = [{ id: 's', status: 'final' }, { id: 'f', status: 'partial' }];
+  app.state.scores = ['a', 'b', 'c', 'd'].map((id, index) => ({ game_id: 's', player_id: id, pontos: index % 2 ? 90 : 100, finalizado: true }));
+  let rounds = app.bracketRounds({ seeds: ['a', 'b', 'c', 'd'], round_games: ['s', 'f'], tiebreak_rule: 'higher_seed' });
+  assert.equal(rounds.length, 2);
+  assert.equal(rounds[0].name, 'Semifinal');
+  assert.equal(rounds[1].matches[0].first, 'a');
+  assert.equal(rounds[1].matches[0].second, 'c');
+  assert.equal(app.bracketWinner('f', 'a', 'c'), null);
+});
+
+test('exportação protege texto de fórmulas e conserva zero', () => {
+  const app = loadApp();
+  app.state.encounters = [{ id: 'e', nome: '=IMPORTXML("x")', data: '2026-11-13' }];
+  app.state.players = [{ id: 'p', nome: '+SUM(1)', pista: '1' }];
+  app.state.encounterPlayers = [{ encounter_id: 'e', player_id: 'p' }];
+  app.state.games = [{ id: 'g', encounter_id: 'e', nome: 'Partida', status: 'final' }];
+  app.state.scores = [{ game_id: 'g', player_id: 'p', pista: '1', pontos: 0, finalizado: true }];
+  const written = [];
+  app.context.Blob = class { constructor(parts) { written.push(parts.join('')); } };
+  app.context.URL = { createObjectURL: () => 'blob:test', revokeObjectURL() {} };
+  app.document.createElement = () => ({ click() {} });
+  app.downloadResults('csv');
+  assert.match(written[0], /"'=IMPORTXML/);
+  assert.match(written[0], /"'\+SUM\(1\)"/);
+  assert.match(written[0], /"0";"true"/);
+  assert.equal(app.buildResultsExport().rankings[0].average, 0);
+});
+
+test('limpeza remove só foto antiga não referenciada após confirmar perfil', async () => {
+  const removed = [];
+  const client = {
+    storage: { from: () => ({ list: async () => ({ data: [{ id: 'old', name: 'old.jpg' }, { id: 'new', name: 'new.jpg' }], error: null }), remove: async (paths) => { removed.push(...paths); return { error: null }; } }) },
+    rpc: async (_name, args) => ({ data: args.p_paths, error: null }),
+  };
+  const app = loadApp(client);
+  const result = await app.cleanupUnusedProfilePhotos('user', 'user/new.jpg');
+  assert.equal(result, null);
+  assert.deepEqual(removed, ['user/old.jpg']);
+});
+
+test('usuário pode autorizar a foto pública sem enviar nova imagem', async () => {
+  let payload;
+  const saved = { id: 'user', nome: 'Ana', foto_path: 'user/photo.jpg', status: 'approved', player_id: 'p', photo_public_opt_in: true };
+  const query = { eq: () => query, select: () => query, single: async () => ({ data: saved, error: null }) };
+  const client = {
+    auth: { getSession: async () => ({ data: { session: { user: { id: 'user' } } }, error: null }) },
+    storage: { from: () => ({ createSignedUrl: async () => ({ data: { signedUrl: 'https://example.test/photo' } }), list: async () => ({ data: [{ id: '1', name: 'photo.jpg' }], error: null }) }) },
+    from: () => ({ update: (value) => { payload = value; return query; } }),
+  };
+  const app = loadApp(client);
+  app.state.session = { user: { id: 'user' } };
+  app.state.profile = { ...saved, photo_public_opt_in: false };
+  app.get('profileName').value = 'Ana'; app.get('profilePhotoPublic').checked = true;
+  await app.submitProfile({ preventDefault() {} });
+  assert.equal(payload.photo_public_opt_in, true);
+  assert.equal(payload.foto_path, 'user/photo.jpg');
+  assert.equal(app.get('profileError').hidden, true);
 });
 
 for (const existing of [false, true, 'stale']) {
@@ -330,7 +470,7 @@ for (const existing of [false, true, 'stale']) {
     };
     const client = {
       auth: { getSession: async () => ({ data: { session: { user: { id: 'user-1' } } }, error: null }) },
-      storage: { from: () => ({ upload: async (path, body, options) => { upload = { path, body, options }; return { error: null }; }, createSignedUrl: async () => ({ data: { signedUrl: 'https://example.test/photo.jpg' } }) }) },
+      storage: { from: () => ({ upload: async (path, body, options) => { upload = { path, body, options }; return { error: null }; }, createSignedUrl: async () => ({ data: { signedUrl: 'https://example.test/photo.jpg' } }), list: async () => ({ data: [], error: null }) }) },
       from: () => ({
         select: () => ({ eq: () => ({ maybeSingle: async () => ({ data: existing === 'stale' ? { ...profile, foto_path: 'user-1/old.jpg' } : null, error: null }) }) }),
         insert: (payload) => { write = { method: 'insert', payload }; return query; },

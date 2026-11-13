@@ -6,13 +6,16 @@ create table if not exists public.encounters (
   id uuid primary key default gen_random_uuid(),
   nome text not null check (length(trim(nome)) between 1 and 80),
   data date not null,
-  status text not null default 'open' check (status in ('open', 'closed')),
+  status text not null default 'preparing' check (status in ('preparing', 'active', 'closed')),
+  prediction_closes_at timestamptz,
   closed_at timestamptz,
+  request_id uuid unique,
+  constraint encounter_closed_at_matches_status check ((status='closed') = (closed_at is not null)),
   created_at timestamptz not null default now()
 );
 
-insert into public.encounters (id, nome, data)
-values ('00000000-0000-4000-8000-000000000001', 'Encontro inicial', (now() at time zone 'America/Sao_Paulo')::date)
+insert into public.encounters (id, nome, data, status)
+values ('00000000-0000-4000-8000-000000000001', 'Encontro inicial', (now() at time zone 'America/Sao_Paulo')::date, 'active')
 on conflict (id) do nothing;
 update public.encounters
    set data = coalesce((select min(created_at at time zone 'America/Sao_Paulo')::date from public.games), data)
@@ -20,6 +23,7 @@ update public.encounters
    and nome = 'Encontro inicial';
 
 alter table public.games add column if not exists encounter_id uuid references public.encounters(id) on delete cascade;
+alter table public.games add column if not exists request_id uuid unique;
 update public.games set encounter_id = '00000000-0000-4000-8000-000000000001' where encounter_id is null;
 alter table public.games alter column encounter_id set default '00000000-0000-4000-8000-000000000001'::uuid;
 alter table public.games alter column encounter_id set not null;
@@ -79,6 +83,13 @@ create trigger scores_default_lane before insert on public.scores for each row e
 create or replace function public.guard_encounter_game()
 returns trigger language plpgsql security invoker set search_path = public as $$
 begin
+  if tg_op='UPDATE' then
+    if new.encounter_id is distinct from old.encounter_id or new.request_id is distinct from old.request_id then
+      raise exception 'A partida não pode mudar de encontro ou identificador' using errcode='42501';
+    end if;
+  end if;
+  if tg_op in ('UPDATE','DELETE') then perform 1 from public.encounters where id=old.encounter_id for update; end if;
+  if tg_op in ('INSERT','UPDATE') then perform 1 from public.encounters where id=new.encounter_id for update; end if;
   if tg_op in ('UPDATE', 'DELETE') and exists (select 1 from public.encounters where id = old.encounter_id and status = 'closed') then
     raise exception 'Reabra o encontro antes de alterar partidas' using errcode = '42501';
   end if;
@@ -98,14 +109,20 @@ declare old_encounter uuid; new_encounter uuid;
 begin
   if tg_op in ('UPDATE', 'DELETE') then
     select encounter_id into old_encounter from public.games where id = old.game_id;
+    perform 1 from public.encounters where id=old_encounter for update;
     if exists (select 1 from public.encounters where id = old_encounter and status = 'closed') then
       raise exception 'Reabra o encontro antes de alterar pontos' using errcode = '42501';
     end if;
   end if;
   if tg_op in ('INSERT', 'UPDATE') then
     select encounter_id into new_encounter from public.games where id = new.game_id;
+    perform 1 from public.encounters where id=new_encounter for update;
     if exists (select 1 from public.encounters where id = new_encounter and status = 'closed') then
       raise exception 'Reabra o encontro antes de alterar pontos' using errcode = '42501';
+    end if;
+    if exists (select 1 from public.encounters where id = new_encounter and status = 'preparing')
+       and (new.pontos is not null or new.finalizado) then
+      raise exception 'Inicie o encontro antes de registrar pontos' using errcode = '42501';
     end if;
   end if;
   if tg_op = 'DELETE' then return old; end if;
@@ -118,6 +135,8 @@ create trigger scores_guard_encounter before insert or update or delete on publi
 create or replace function public.guard_encounter_roster()
 returns trigger language plpgsql security invoker set search_path = public as $$
 begin
+  if tg_op in ('UPDATE','DELETE') then perform 1 from public.encounters where id=old.encounter_id for update; end if;
+  if tg_op in ('INSERT','UPDATE') then perform 1 from public.encounters where id=new.encounter_id for update; end if;
   if tg_op in ('UPDATE', 'DELETE') and exists (select 1 from public.encounters where id = old.encounter_id and status = 'closed') then
     raise exception 'Reabra o encontro antes de alterar participantes' using errcode = '42501';
   end if;
@@ -134,38 +153,59 @@ create trigger encounter_players_guard_closed before insert or update or delete 
 create or replace function public.guard_closed_encounter()
 returns trigger language plpgsql security invoker set search_path = public as $$
 begin
+  if tg_op='DELETE' then
+    if old.status='closed' then raise exception 'Reabra o encontro antes de excluí-lo' using errcode='42501'; end if;
+    return old;
+  end if;
+  if tg_op='UPDATE' and new.status='preparing' and old.status<>'preparing' then
+    raise exception 'Um encontro iniciado não pode voltar à preparação' using errcode='42501';
+  end if;
+  if tg_op='UPDATE' and old.status<>'preparing' and new.prediction_closes_at is distinct from old.prediction_closes_at then
+    raise exception 'Prazo de palpites só pode mudar na preparação' using errcode='42501';
+  end if;
+  if tg_op='UPDATE' and new.status='closed' and old.status<>'closed' then
+    if not exists(select 1 from public.games where encounter_id=old.id)
+      or exists(select 1 from public.games where encounter_id=old.id and status<>'final') then
+      raise exception 'Finalize todas as partidas antes de encerrar o encontro';
+    end if;
+  end if;
+  if tg_op='UPDATE' and old.status='preparing' and new.status='closed' then
+    raise exception 'Inicie o encontro antes de encerrá-lo';
+  end if;
   if old.status = 'closed' then
-    if tg_op = 'DELETE' then raise exception 'Reabra o encontro antes de excluí-lo' using errcode = '42501'; end if;
     if new.status = 'closed' and (new.nome is distinct from old.nome or new.data is distinct from old.data) then
       raise exception 'Reabra o encontro antes de editá-lo' using errcode = '42501';
     end if;
   end if;
-  if tg_op = 'DELETE' then return old; end if;
   return new;
 end $$;
 drop trigger if exists encounters_guard_closed on public.encounters;
 create trigger encounters_guard_closed before update or delete on public.encounters
   for each row execute function public.guard_closed_encounter();
 
-create or replace function public.create_encounter(p_name text, p_date date, p_player_ids uuid[])
+create or replace function public.create_encounter(p_name text, p_date date, p_player_ids uuid[], p_request_id uuid)
 returns public.encounters language plpgsql security invoker set search_path = public as $$
 declare result public.encounters%rowtype;
 begin
   if not public.is_admin() then raise exception 'Acesso de administrador necessário' using errcode = '42501'; end if;
-  if length(trim(coalesce(p_name,''))) not between 1 and 80 or p_date is null then raise exception 'Nome ou data inválidos'; end if;
+  if length(trim(coalesce(p_name,''))) not between 1 and 80 or p_date is null or p_request_id is null then raise exception 'Nome, data ou identificador inválidos'; end if;
+  select * into result from public.encounters where request_id=p_request_id;
+  if found then return result; end if;
   if (select count(distinct x.id) from unnest(coalesce(p_player_ids, array[]::uuid[])) as x(id)) <> coalesce(cardinality(p_player_ids),0) then
     raise exception 'Participante repetido';
   end if;
   if (select count(*) from public.players where id = any(coalesce(p_player_ids, array[]::uuid[]))) <> coalesce(cardinality(p_player_ids),0) then
     raise exception 'Participante não cadastrado';
   end if;
-  insert into public.encounters(nome,data) values(trim(p_name),p_date) returning * into result;
+  insert into public.encounters(nome,data,request_id) values(trim(p_name),p_date,p_request_id)
+    on conflict(request_id) do nothing returning * into result;
+  if result.id is null then select * into result from public.encounters where request_id=p_request_id; return result; end if;
   insert into public.encounter_players(encounter_id,player_id)
     select result.id, x.id from unnest(coalesce(p_player_ids, array[]::uuid[])) as x(id);
   return result;
 end $$;
-revoke all on function public.create_encounter(text,date,uuid[]) from public, anon;
-grant execute on function public.create_encounter(text,date,uuid[]) to authenticated;
+revoke all on function public.create_encounter(text,date,uuid[],uuid) from public, anon;
+grant execute on function public.create_encounter(text,date,uuid[],uuid) to authenticated;
 
 create or replace function public.save_encounter(p_encounter_id uuid, p_name text, p_date date, p_player_ids uuid[])
 returns public.encounters language plpgsql security invoker set search_path = public as $$
@@ -190,6 +230,32 @@ end $$;
 revoke all on function public.save_encounter(uuid,text,date,uuid[]) from public, anon;
 grant execute on function public.save_encounter(uuid,text,date,uuid[]) to authenticated;
 
+create or replace function public.activate_encounter(p_encounter_id uuid)
+returns public.encounters language plpgsql security invoker set search_path=public as $$
+declare result public.encounters%rowtype;
+begin
+  if not public.is_admin() then raise exception 'Acesso de administrador necessário' using errcode='42501'; end if;
+  update public.encounters set status='active'
+    where id=p_encounter_id and status='preparing' returning * into result;
+  if not found then raise exception 'Somente encontros em preparação podem ser iniciados'; end if;
+  return result;
+end $$;
+revoke all on function public.activate_encounter(uuid) from public,anon;
+grant execute on function public.activate_encounter(uuid) to authenticated;
+
+create or replace function public.set_prediction_deadline(p_encounter_id uuid,p_deadline timestamptz)
+returns public.encounters language plpgsql security invoker set search_path=public as $$
+declare result public.encounters%rowtype;
+begin
+  if not public.is_admin() then raise exception 'Acesso de administrador necessário' using errcode='42501'; end if;
+  update public.encounters set prediction_closes_at=p_deadline
+    where id=p_encounter_id and status='preparing' returning * into result;
+  if not found then raise exception 'Altere o prazo somente na preparação'; end if;
+  return result;
+end $$;
+revoke all on function public.set_prediction_deadline(uuid,timestamptz) from public,anon;
+grant execute on function public.set_prediction_deadline(uuid,timestamptz) to authenticated;
+
 create or replace function public.set_encounter_closed(p_encounter_id uuid, p_closed boolean)
 returns public.encounters language plpgsql security invoker set search_path = public as $$
 declare result public.encounters%rowtype;
@@ -203,7 +269,7 @@ begin
       raise exception 'Finalize todas as partidas antes de encerrar o encontro';
     end if;
   end if;
-  update public.encounters set status=case when p_closed then 'closed' else 'open' end,
+  update public.encounters set status=case when p_closed then 'closed' else 'active' end,
     closed_at=case when p_closed then now() else null end where id=p_encounter_id returning * into result;
   return result;
 end $$;
@@ -214,7 +280,7 @@ create or replace function public.delete_encounter(p_encounter_id uuid)
 returns void language plpgsql security invoker set search_path = public as $$
 begin
   if not public.is_admin() then raise exception 'Acesso de administrador necessário' using errcode = '42501'; end if;
-  if not exists(select 1 from public.encounters where id=p_encounter_id and status='open' for update) then
+  if not exists(select 1 from public.encounters where id=p_encounter_id and status<>'closed' for update) then
     raise exception 'Reabra o encontro antes de excluí-lo';
   end if;
   delete from public.encounters where id=p_encounter_id;
@@ -222,15 +288,18 @@ end $$;
 revoke all on function public.delete_encounter(uuid) from public, anon;
 grant execute on function public.delete_encounter(uuid) to authenticated;
 
-create or replace function public.create_encounter_game(p_encounter_id uuid, p_name text, p_assignments jsonb)
+create or replace function public.create_encounter_game(p_encounter_id uuid, p_name text, p_assignments jsonb, p_request_id uuid)
 returns public.games language plpgsql security invoker set search_path = public as $$
 declare result public.games%rowtype; expected_count integer;
 begin
   if not public.is_admin() then raise exception 'Acesso de administrador necessário' using errcode = '42501'; end if;
-  if length(trim(coalesce(p_name,''))) not between 1 and 80 or jsonb_typeof(p_assignments) is distinct from 'array' or jsonb_array_length(p_assignments)=0 then
+  if jsonb_typeof(p_assignments) is distinct from 'array' then raise exception 'Participantes inválidos'; end if;
+  if length(trim(coalesce(p_name,''))) not between 1 and 80 or p_request_id is null or jsonb_array_length(p_assignments)=0 then
     raise exception 'Nome ou participantes inválidos';
   end if;
-  if not exists(select 1 from public.encounters where id=p_encounter_id and status='open') then raise exception 'Encontro inexistente ou encerrado'; end if;
+  select * into result from public.games where request_id=p_request_id;
+  if found then return result; end if;
+  if not exists(select 1 from public.encounters where id=p_encounter_id and status<>'closed') then raise exception 'Encontro inexistente ou encerrado'; end if;
   expected_count := jsonb_array_length(p_assignments);
   if (select count(distinct x.player_id) from jsonb_to_recordset(p_assignments) x(player_id uuid,pista text)) <> expected_count
      or exists(select 1 from jsonb_to_recordset(p_assignments) x(player_id uuid,pista text) where x.player_id is null or x.pista is null or length(trim(x.pista)) not between 1 and 20)
@@ -239,22 +308,25 @@ begin
      or exists(select 1 from jsonb_to_recordset(p_assignments) x(player_id uuid,pista text) join public.lanes l on l.name=x.pista group by x.pista,l.capacity having count(*)>l.capacity) then
     raise exception 'Distribuição de pistas inválida ou acima da capacidade';
   end if;
-  insert into public.games(nome,encounter_id) values(trim(p_name),p_encounter_id) returning * into result;
+  insert into public.games(nome,encounter_id,request_id) values(trim(p_name),p_encounter_id,p_request_id)
+    on conflict(request_id) do nothing returning * into result;
+  if result.id is null then select * into result from public.games where request_id=p_request_id; return result; end if;
   insert into public.scores(game_id,player_id,pista,pontos,finalizado)
     select result.id,x.player_id,x.pista,null,false from jsonb_to_recordset(p_assignments) x(player_id uuid,pista text);
   return result;
 end $$;
-revoke all on function public.create_encounter_game(uuid,text,jsonb) from public, anon;
-grant execute on function public.create_encounter_game(uuid,text,jsonb) to authenticated;
+revoke all on function public.create_encounter_game(uuid,text,jsonb,uuid) from public, anon;
+grant execute on function public.create_encounter_game(uuid,text,jsonb,uuid) to authenticated;
 
 create or replace function public.edit_encounter_game(p_game_id uuid, p_name text, p_assignments jsonb)
 returns public.games language plpgsql security invoker set search_path = public as $$
 declare result public.games%rowtype; expected_count integer;
 begin
   if not public.is_admin() then raise exception 'Acesso de administrador necessário' using errcode = '42501'; end if;
-  if length(trim(coalesce(p_name,''))) not between 1 and 80 or jsonb_typeof(p_assignments) is distinct from 'array' or jsonb_array_length(p_assignments)=0 then raise exception 'Nome ou participantes inválidos'; end if;
+  if jsonb_typeof(p_assignments) is distinct from 'array' then raise exception 'Participantes inválidos'; end if;
+  if length(trim(coalesce(p_name,''))) not between 1 and 80 or jsonb_array_length(p_assignments)=0 then raise exception 'Nome ou participantes inválidos'; end if;
   select * into result from public.games where id=p_game_id for update;
-  if not found or not exists(select 1 from public.encounters where id=result.encounter_id and status='open') then raise exception 'Partida inexistente ou encontro encerrado'; end if;
+  if not found or not exists(select 1 from public.encounters where id=result.encounter_id and status<>'closed') then raise exception 'Partida inexistente ou encontro encerrado'; end if;
   expected_count := jsonb_array_length(p_assignments);
   if (select count(distinct x.player_id) from jsonb_to_recordset(p_assignments) x(player_id uuid,pista text)) <> expected_count
      or exists(select 1 from jsonb_to_recordset(p_assignments) x(player_id uuid,pista text) where x.player_id is null or x.pista is null or length(trim(x.pista)) not between 1 and 20)

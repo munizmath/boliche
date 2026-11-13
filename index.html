@@ -9,7 +9,7 @@
     <link rel="icon" href="favicon.ico" type="image/x-icon" />
     <link rel="apple-touch-icon" href="apple-touch-icon.png" />
     <link rel="manifest" href="manifest.webmanifest" />
-    <link rel="stylesheet" href="styles.css?v=20261113-9" />
+    <link rel="stylesheet" href="styles.css?v=20261113-12" />
   </head>
   <body>
     <div id="toastContainer" class="toast-container" aria-live="polite"></div>
@@ -68,9 +68,11 @@
         <button id="editEncounterButton" class="button button--quiet admin-only" type="button" hidden>Editar encontro</button>
         <button id="deleteEncounterButton" class="button button--quiet admin-only" type="button" hidden>Excluir encontro</button>
         <button id="closeEncounterButton" class="button button--quiet admin-only" type="button" hidden>Encerrar encontro</button>
+        <button id="startEncounterButton" class="button button--quiet admin-only" type="button" hidden>Iniciar encontro</button>
         <button id="exportCsvButton" class="button button--quiet" type="button">CSV</button>
         <button id="exportJsonButton" class="button button--quiet" type="button">JSON</button>
         <button id="tvModeButton" class="button button--quiet" type="button">Modo telão</button>
+        <button id="tvRankingToggle" class="button button--quiet" type="button" hidden>Classificação provisória</button>
       </section>
 
       <section id="demoBanner" class="notice notice--info" hidden>
@@ -100,7 +102,7 @@
               <p class="eyebrow">ranking geral</p>
               <h3 id="rankingTitle">Classificação acumulada</h3>
             </div>
-            <div class="ranking-controls"><select id="rankingMetric" aria-label="Critério do ranking"><option value="total">Pontos acumulados</option><option value="average">Média por partida</option></select><select id="rankingLane" aria-label="Filtrar ranking por pista"><option value="">Todas as pistas</option></select><span id="leaderboardMeta" class="section-meta">Nenhuma partida finalizada</span></div>
+            <div class="ranking-controls"><select id="rankingMetric" aria-label="Critério do ranking"><option value="total">Pontos acumulados</option><option value="average">Média por partida</option><option value="best">Melhor partida</option></select><select id="rankingLane" aria-label="Filtrar ranking por pista"><option value="">Todas as pistas</option></select><span id="leaderboardMeta" class="section-meta">Nenhuma partida finalizada</span></div>
           </div>
           <div id="podium" class="podium" aria-label="Pódio da classificação" hidden></div>
           <div class="table-wrap">
@@ -149,7 +151,7 @@
         <article class="glass-card blueprint"><div class="section-heading"><div><p class="eyebrow">histórico do grupo</p><h3>Recordes</h3></div></div><div id="groupRecords" class="extras-list"></div></article>
       </section>
 
-      <section id="predictionsSection" class="prediction-panel glass-card blueprint" hidden><div><p class="eyebrow">antes do jogo</p><h3>Seu palpite</h3><p id="predictionHint" class="intro-copy"></p></div><select id="predictionPlayer" aria-label="Quem vencerá a partida"></select><button id="savePredictionButton" class="button button--primary" type="button">Salvar palpite</button><span id="predictionAccuracy" class="section-meta"></span></section>
+      <section id="predictionsSection" class="prediction-panel glass-card blueprint" hidden><div><p class="eyebrow">antes do encontro</p><h3>Seu palpite</h3><p id="predictionHint" class="intro-copy"></p></div><select id="predictionPlayer" aria-label="Quem vencerá o encontro"></select><button id="savePredictionButton" class="button button--primary" type="button">Salvar palpite</button><span id="predictionAccuracy" class="section-meta"></span><div id="predictionBoard" class="extras-list"></div><div class="admin-only" hidden><label>Fechar palpites em<input id="predictionDeadline" type="datetime-local" /></label><button id="savePredictionDeadline" class="button button--quiet" type="button">Salvar prazo</button></div></section>
     </main>
 
     <section id="participantes" class="admin-section-anchor" aria-label="Cadastro de participantes"></section>
@@ -191,10 +193,11 @@
         <button class="modal-close" value="cancel" aria-label="Fechar">×</button>
         <p class="eyebrow">meu cadastro</p>
         <h2>Concluir perfil</h2>
-        <p class="modal-copy">Informe seu nome e adicione pelo menos uma foto. O perfil ficará pendente de aprovação do administrador.</p>
+        <p class="modal-copy">Informe seu nome e adicione uma foto para conferência do cadastro. Ela fica privada. Se autorizar a exibição pública, aparecerá no ranking somente após a aprovação do administrador. Você pode retirar essa autorização depois.</p>
         <label>Nome<input id="profileName" type="text" maxlength="80" autocomplete="name" /></label>
         <div id="profileCurrent" class="profile-current" hidden><img id="profileCurrentPhoto" alt="Foto atual do perfil" hidden /><span id="profileCurrentStatus"></span></div>
         <div class="upload-drop"><span class="upload-icon">⌁</span><strong>Foto de perfil</strong><div class="profile-photo-actions"><label class="profile-photo-choice">Escolher da galeria<input id="profilePhoto" type="file" accept="image/*,.heic,.heif" /></label><label class="profile-photo-choice">Tirar foto<input id="profileCamera" type="file" accept="image/*" capture="user" /></label></div><small id="profilePhotoName">Fotos grandes serão reduzidas para envio</small></div>
+        <label class="photo-consent"><input id="profilePhotoPublic" type="checkbox" /> Autorizo mostrar minha foto no ranking público após a aprovação do meu cadastro.</label>
         <p id="profileError" class="form-error" role="alert" hidden></p>
         <div class="modal-actions"><button id="profileSubmitButton" class="button button--primary" type="submit">Salvar perfil</button></div>
       </form>
@@ -241,7 +244,7 @@
 
     <dialog id="teamsModal" class="modal"><div class="modal-card modal-card--wide"><button class="modal-close" type="button" aria-label="Fechar">×</button><p class="eyebrow">competição</p><h2>Equipes do encontro</h2><div id="teamEditorList" class="extras-list"></div><form id="teamForm" class="team-form"><input id="teamName" maxlength="60" placeholder="Nome da equipe" required aria-label="Nome da equipe" /><select id="teamMetric" aria-label="Critério da equipe"><option value="sum">Soma dos integrantes</option><option value="average">Média dos integrantes</option></select><div id="teamPlayerSelection" class="selection-grid"></div><p id="teamError" class="form-error" hidden></p><div class="modal-actions"><button id="cancelTeamEdit" class="button button--quiet" type="button" hidden>Cancelar edição</button><button class="button button--primary" type="submit">Salvar equipe</button></div></form></div></dialog>
 
-    <dialog id="bracketModal" class="modal"><form id="bracketForm" class="modal-card modal-card--wide"><button class="modal-close" type="button" aria-label="Fechar">×</button><p class="eyebrow">competição</p><h2>Chave eliminatória</h2><p class="modal-copy">Escolha oito jogadores e uma partida para cada rodada. A ordem na lista define os confrontos consecutivos; use o sorteio para mudar essa ordem. Os vencedores avançam pelos pontos confirmados.</p><div id="bracketPlayerSelection" class="selection-grid"></div><button id="shuffleBracketButton" class="button button--quiet" type="button">Sortear ordem</button><label>Quartas de final<select id="bracketGame0"></select></label><label>Semifinal<select id="bracketGame1"></select></label><label>Final<select id="bracketGame2"></select></label><p id="bracketError" class="form-error" hidden></p><div class="modal-actions"><button id="deleteBracketButton" class="button button--quiet" type="button">Excluir chave</button><button class="button button--primary" type="submit">Salvar chave</button></div></form></dialog>
+    <dialog id="bracketModal" class="modal"><form id="bracketForm" class="modal-card modal-card--wide"><button class="modal-close" type="button" aria-label="Fechar">×</button><p class="eyebrow">competição</p><h2>Chave eliminatória</h2><p class="modal-copy">Escolha quatro ou oito jogadores e uma partida por rodada. A ordem na lista define os confrontos consecutivos. Cada confronto usa os pontos confirmados dos dois participantes.</p><div id="bracketPlayerSelection" class="selection-grid"></div><button id="shuffleBracketButton" class="button button--quiet" type="button">Sortear ordem</button><label id="bracketRound0">Quartas de final<select id="bracketGame0"></select></label><label id="bracketRound1">Semifinal<select id="bracketGame1"></select></label><label id="bracketRound2">Final<select id="bracketGame2"></select></label><label>Critério de desempate<select id="bracketTieRule"><option value="higher_seed">Jogador acima na chave</option><option value="lower_seed">Jogador abaixo na chave</option></select></label><p id="bracketError" class="form-error" hidden></p><div class="modal-actions"><button id="deleteBracketButton" class="button button--quiet" type="button">Excluir chave</button><button class="button button--primary" type="submit">Salvar chave</button></div></form></dialog>
 
     <dialog id="playersModal" class="modal">
       <form method="dialog" class="modal-card modal-card--wide" id="playersForm">
@@ -349,6 +352,6 @@
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
     <script src="supabase-config.js"></script>
-    <script src="app.js?v=20261113-9"></script>
+    <script src="app.js?v=20261113-12"></script>
   </body>
 </html>

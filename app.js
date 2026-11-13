@@ -15,6 +15,7 @@ const state = {
   teamPlayers: [],
   brackets: [],
   predictions: [],
+  predictionStandings: [],
   games: [],
   scores: [],
   profile: null,
@@ -26,6 +27,8 @@ const state = {
   activeGameId: null,
   activeEncounterId: null,
   editingEncounterId: null,
+  encounterRequestId: null,
+  gameRequestId: null,
   editingTeamId: null,
   lastUpdatedAt: null,
   crop: null,
@@ -37,6 +40,11 @@ const state = {
   photoZoom: 100,
   photoPanMode: false,
   previewBase: null,
+  reviewDraft: new Map(),
+  reviewViewKey: null,
+  reviewConflict: false,
+  photoRevision: 0,
+  ocrRunId: 0,
   editingPlayerId: null,
   editingLaneName: null,
   editingGameId: null,
@@ -60,7 +68,8 @@ const activeEncounter = () => state.encounters.find((encounter) => encounter.id 
 const encounterGames = () => state.games.filter((game) => game.encounter_id === state.activeEncounterId);
 const encounterPlayerIds = () => new Set(state.encounterPlayers.filter((row) => row.encounter_id === state.activeEncounterId).map((row) => row.player_id));
 const encounterPlayers = () => state.players.filter((player) => encounterPlayerIds().has(player.id));
-const encounterOpen = () => activeEncounter()?.status === "open";
+const encounterOpen = () => Boolean(activeEncounter() && activeEncounter().status !== "closed");
+const encounterActive = () => activeEncounter()?.status === "active";
 const scoreLane = (score) => score?.pista || getPlayer(score?.player_id)?.pista || "";
 const gameLaneForPlayer = (gameId, playerId) => scoreLane(state.scores.find((score) => score.game_id === gameId && score.player_id === playerId));
 const isAdmin = () => {
@@ -109,33 +118,43 @@ async function loadData() {
     return;
   }
   setConnection("Sincronizando…", "muted");
-  const [playersResult, lanesResult, encountersResult, rosterResult, gamesResult, scoresResult, teamsResult, teamPlayersResult, bracketsResult, predictionsResult, profilesResult, changesResult, publicPhotosResult] = await Promise.all([
+  const [playersResult, lanesResult, encountersResult, rosterResult, gamesResult, scoresResult, teamsResult, teamPlayersResult, bracketsResult, predictionsResult, standingsResult, profilesResult, changesResult, publicPhotosResult] = await Promise.all([
     client.from("players").select("id,nome,apelido_placar,pista").order("nome"),
     client.from("lanes").select("name,capacity").order("name"),
-    client.from("encounters").select("id,nome,data,status,closed_at,created_at").order("data", { ascending: false }),
+    client.from("encounters").select("id,nome,data,status,closed_at,prediction_closes_at,created_at").order("data", { ascending: false }),
     client.from("encounter_players").select("encounter_id,player_id"),
     client.from("games").select("id,nome,status,encounter_id,created_at,updated_at").order("created_at", { ascending: false }),
     client.from("scores").select("id,game_id,player_id,pista,pontos,finalizado,updated_at"),
     client.from("teams").select("id,encounter_id,name,metric"),
     client.from("team_players").select("team_id,player_id"),
-    client.from("brackets").select("encounter_id,seeds,round_games"),
-    isAuthenticated() ? client.from("predictions").select("game_id,user_id,predicted_player_id,created_at") : Promise.resolve({ data: [] }),
+    client.from("brackets").select("encounter_id,seeds,round_games,tiebreak_rule"),
+    isAuthenticated() ? client.from("predictions").select("encounter_id,user_id,predicted_player_id,created_at") : Promise.resolve({ data: [] }),
+    client.rpc("prediction_standings"),
     isAdmin() ? client.rpc("list_registered_accounts") : Promise.resolve({ data: [] }),
     isAdmin() ? client.from("score_changes").select("id,score_id,game_id,player_id,previous_points,new_points,previous_finalized,new_finalized,changed_at,actor_id").order("id", { ascending: false }).limit(100) : Promise.resolve({ data: [] }),
-    client.from("profiles").select("player_id,foto_path").eq("status", "approved").not("player_id", "is", null),
+    client.from("profiles").select("player_id,foto_path").eq("status", "approved").eq("photo_public_opt_in", true).not("player_id", "is", null),
   ]);
-  const error = playersResult.error || lanesResult.error || encountersResult.error || rosterResult.error || gamesResult.error || scoresResult.error || teamsResult.error || teamPlayersResult.error || bracketsResult.error || predictionsResult.error || profilesResult.error || changesResult.error || publicPhotosResult.error;
+  const error = playersResult.error || lanesResult.error || encountersResult.error || rosterResult.error || gamesResult.error || scoresResult.error || teamsResult.error || teamPlayersResult.error || bracketsResult.error || predictionsResult.error || standingsResult.error || profilesResult.error || changesResult.error || publicPhotosResult.error;
   if (error) throw error;
+  if ($("photoModal")?.open) {
+    captureReviewDraft();
+    for (const row of document.querySelectorAll("[data-review-player]")) {
+      const fresh = (scoresResult.data || []).find((score) => score.game_id === $("photoGame").value && score.player_id === row.dataset.reviewPlayer);
+      if (String(fresh?.pontos ?? "") !== row.dataset.oldScore || Boolean(fresh?.finalizado) !== (row.dataset.oldFinal === "true")) state.reviewConflict = true;
+    }
+  }
   state.players = playersResult.data || [];
   state.lanes = lanesResult.data || [];
   state.encounters = encountersResult.data || [];
   state.encounterPlayers = rosterResult.data || [];
   state.games = gamesResult.data || [];
   state.scores = scoresResult.data || [];
+  if ($("photoModal")?.open && state.reviewConflict) updatePhotoConfirmState();
   state.teams = teamsResult.data || [];
   state.teamPlayers = teamPlayersResult.data || [];
   state.brackets = bracketsResult.data || [];
   state.predictions = predictionsResult.data || [];
+  state.predictionStandings = standingsResult.data || [];
   state.profiles = isAdmin() ? (profilesResult.data || []) : [];
   state.scoreChanges = isAdmin() ? (changesResult.data || []) : [];
   const publicPhotos = publicPhotosResult.data || [];
@@ -155,7 +174,7 @@ async function loadData() {
   const requestedEncounterId = new URLSearchParams(window.location.search).get("encontro");
   state.activeEncounterId = state.encounters.some((item) => item.id === state.activeEncounterId)
     ? state.activeEncounterId
-    : state.encounters.find((item) => item.id === requestedEncounterId)?.id || state.encounters.find((item) => item.status === "open")?.id || state.encounters[0]?.id || null;
+    : state.encounters.find((item) => item.id === requestedEncounterId)?.id || state.encounters.find((item) => item.status === "active")?.id || state.encounters[0]?.id || null;
   state.activeGameId = encounterGames().some((game) => game.id === state.activeGameId)
     ? state.activeGameId
     : (encounterGames().find((game) => game.status === "partial")?.id || encounterGames()[0]?.id || null);
@@ -167,7 +186,7 @@ async function loadData() {
 async function loadProfile() {
   state.profile = null;
   if (!client || !state.session) return;
-  const { data, error } = await client.from("profiles").select("id,nome,foto_path,status,player_id").eq("id", state.session.user.id).maybeSingle();
+  const { data, error } = await client.from("profiles").select("id,nome,foto_path,status,player_id,photo_public_opt_in").eq("id", state.session.user.id).maybeSingle();
   if (error) {
     console.error(error);
     return;
@@ -185,6 +204,7 @@ function openProfileModal() {
   $("profilePhoto").value = "";
   $("profileCamera").value = "";
   $("profilePhotoName").textContent = state.profile?.foto_path ? "Escolha outra foto para substituir a atual" : "Fotos grandes serão reduzidas para envio";
+  $("profilePhotoPublic").checked = Boolean(state.profile?.photo_public_opt_in);
   $("profileCurrent").hidden = !state.profile?.foto_path;
   $("profileCurrentStatus").textContent = state.profile?.foto_path
     ? `Foto salva no perfil · ${state.profile.status === "approved" ? "cadastro aprovado" : state.profile.status === "rejected" ? "cadastro recusado" : "aguardando aprovação"}`
@@ -324,17 +344,18 @@ function renderEncounterBar() {
   const selected = state.activeEncounterId;
   $("encounterSelect").innerHTML = state.encounters.map((item) => `<option value="${esc(item.id)}">${esc(item.nome)} · ${esc(new Intl.DateTimeFormat("pt-BR", { timeZone: "UTC" }).format(new Date(`${item.data}T12:00:00Z`)))}</option>`).join("");
   $("encounterSelect").value = selected || "";
-  $("encounterStatus").textContent = !activeEncounter() ? "Sem encontro" : activeEncounter().status === "closed" ? "Encerrado" : "Em andamento";
+  $("encounterStatus").textContent = !activeEncounter() ? "Sem encontro" : activeEncounter().status === "closed" ? "Encerrado" : activeEncounter().status === "preparing" ? "Preparação" : "Em andamento";
   $("encounterStatus").className = `status-pill status-pill--${!activeEncounter() ? "muted" : encounterOpen() ? "warning" : "success"}`;
   $("editEncounterButton").disabled = !encounterOpen();
-  $("closeEncounterButton").disabled = !activeEncounter();
+  $("startEncounterButton").hidden = !isAdmin() || activeEncounter()?.status !== "preparing";
+  $("closeEncounterButton").disabled = !activeEncounter() || activeEncounter()?.status === "preparing";
   $("closeEncounterButton").textContent = encounterOpen() ? "Encerrar encontro" : "Reabrir encontro";
   $("deleteEncounterButton").disabled = !encounterOpen();
   $("manageTeamsButton").disabled = !encounterOpen();
   $("manageBracketButton").disabled = !encounterOpen();
   if (document.body.classList.contains("tv-mode")) document.querySelector(".page-title h1").textContent = activeEncounter()?.nome || "Boliche dos Amigos";
   $("newGameButton").disabled = !encounterOpen();
-  $("photoButton").disabled = !encounterOpen();
+  $("photoButton").disabled = !encounterActive();
   document.querySelector(".intro-row h2").textContent = activeEncounter() ? `O ranking de ${activeEncounter().nome}, em um só lugar.` : "O ranking do encontro, em um só lugar.";
 }
 
@@ -352,6 +373,7 @@ function openEncounterModal(editing = false) {
   const encounter = editing ? activeEncounter() : null;
   if (editing && !encounterOpen()) return showToast("Reabra o encontro para editá-lo.", "error");
   state.editingEncounterId = encounter?.id || null;
+  state.encounterRequestId = editing ? null : crypto.randomUUID();
   $("encounterModalTitle").textContent = editing ? "Editar encontro" : "Novo encontro";
   $("encounterName").value = encounter?.nome || "";
   $("encounterDate").value = encounter?.data || localIsoDate();
@@ -371,7 +393,7 @@ async function saveEncounter(event) {
   const editing = state.editingEncounterId;
   const { data, error } = await client.rpc(editing ? "save_encounter" : "create_encounter", editing
     ? { p_encounter_id: editing, p_name: name, p_date: date, p_player_ids: ids }
-    : { p_name: name, p_date: date, p_player_ids: ids });
+    : { p_name: name, p_date: date, p_player_ids: ids, p_request_id: state.encounterRequestId });
   if (error) { errorElement.textContent = error.message; errorElement.hidden = false; return; }
   setModal("encounterModal", false);
   await loadData();
@@ -382,7 +404,14 @@ async function saveEncounter(event) {
 async function toggleEncounterClosed() {
   const encounter = activeEncounter();
   if (!encounter) return;
-  const closing = encounter.status === "open";
+  const closing = encounter.status === "active";
+  if (closing) {
+    const pending = encounterGames().filter((game) => game.status !== "final");
+    if (pending.length || !encounterGames().length) {
+      showToast(pending.length ? `Finalize as partidas pendentes: ${pending.map((game) => game.nome).join(", ")}.` : "Crie e finalize uma partida antes de encerrar.", "error");
+      return;
+    }
+  }
   if (!window.confirm(closing
     ? `Encerrar ${encounter.nome}? A classificação ficará congelada até a reabertura explícita.`
     : `Reabrir ${encounter.nome}? Pontuações e partidas poderão ser corrigidas novamente.`)) return;
@@ -391,35 +420,54 @@ async function toggleEncounterClosed() {
   await loadData(); render(); showToast(closing ? "Encontro encerrado." : "Encontro reaberto.", "success");
 }
 
-function downloadResults(format) {
+async function startEncounter() {
   const encounter = activeEncounter();
-  if (!encounter) return showToast("Nenhum encontro para exportar.", "error");
-  const games = encounterGames();
-  const ids = new Set(games.map((game) => game.id));
-  const scores = state.scores.filter((score) => ids.has(score.game_id));
-  const teams = state.teams.filter((team) => team.encounter_id === encounter.id);
-  const teamIds = new Set(teams.map((team) => team.id));
-  const data = { encounter, players: encounterPlayers(), games, scores, teams,
-    teamPlayers: state.teamPlayers.filter((row) => teamIds.has(row.team_id)),
-    bracket: state.brackets.find((row) => row.encounter_id === encounter.id) || null };
+  if (!encounter || encounter.status !== "preparing") return;
+  if (!window.confirm(`Iniciar ${encounter.nome}? Os palpites serão encerrados e as pontuações poderão ser registradas.`)) return;
+  const { error } = await client.rpc("activate_encounter", { p_encounter_id: encounter.id });
+  if (error) return showToast(error.message, "error");
+  await loadData(); render(); showToast("Encontro iniciado.", "success");
+}
+
+function downloadResults(format) {
+  if (!state.encounters.length) return showToast("Nenhum encontro para exportar.", "error");
+  const data = buildResultsExport();
   let content;
   let mime;
   if (format === "json") { content = JSON.stringify(data, null, 2); mime = "application/json"; }
   else {
-    const quote = (value) => `"${String(value ?? "").replace(/"/g, '""')}"`;
-    const header = ["tipo", "encontro_id", "encontro", "data", "partida_id", "partida", "status_partida", "jogador_id", "jogador", "pista", "pontos", "confirmado"];
-    const prefix = [encounter.id, encounter.nome, encounter.data];
+    const quote = (value) => {
+      const raw = String(value ?? "");
+      const safe = /^[\s]*[=+@\-\t\r]/.test(raw) && !/^-?\d+(?:[.,]\d+)?$/.test(raw) ? `'${raw}` : raw;
+      return `"${safe.replace(/"/g, '""')}"`;
+    };
+    const header = ["tipo", "encontro_id", "encontro", "data", "partida_id", "partida", "status_partida", "jogador_id", "jogador", "pista", "pontos", "confirmado", "posicao", "pontos_total", "media", "melhor", "partidas"];
     const rows = [
-      ...encounterPlayers().map((player) => ["jogador", ...prefix, "", "", "", player.id, player.nome, player.pista, "", ""]),
-      ...games.map((game) => ["partida", ...prefix, game.id, game.nome, game.status, "", "", "", "", ""]),
-      ...scores.map((score) => { const game = games.find((item) => item.id === score.game_id); return ["pontuacao", ...prefix, game?.id, game?.nome, game?.status, score.player_id, getPlayer(score.player_id)?.nome, scoreLane(score), score.pontos, score.finalizado]; }),
+      ...data.encounters.map((encounter) => ["encontro", encounter.id, encounter.nome, encounter.data]),
+      ...data.participations.map((row) => { const encounter = data.encounters.find((item) => item.id === row.encounter_id); const player = getPlayer(row.player_id); return ["participante", encounter.id, encounter.nome, encounter.data, "", "", "", row.player_id, player?.nome, player?.pista]; }),
+      ...data.games.map((game) => { const encounter = data.encounters.find((item) => item.id === game.encounter_id); return ["partida", encounter?.id, encounter?.nome, encounter?.data, game.id, game.nome, game.status]; }),
+      ...data.scores.map((score) => { const game = getGame(score.game_id); const encounter = data.encounters.find((item) => item.id === game?.encounter_id); return ["pontuacao", encounter?.id, encounter?.nome, encounter?.data, game?.id, game?.nome, game?.status, score.player_id, getPlayer(score.player_id)?.nome, score.pista, score.pontos, score.finalizado]; }),
+      ...data.rankings.map((row) => { const encounter = data.encounters.find((item) => item.id === row.encounter_id); return ["ranking", encounter?.id, encounter?.nome, encounter?.data, "", "", "", row.player_id, getPlayer(row.player_id)?.nome, "", "", "", row.position, row.total, row.average?.toFixed(2).replace(".", ","), row.best, row.games_played]; }),
     ];
-    content = [header, ...rows].map((row) => row.map(quote).join(",")).join("\r\n"); mime = "text/csv;charset=utf-8";
+    content = `\uFEFF${[header, ...rows].map((row) => row.map(quote).join(";")).join("\r\n")}`; mime = "text/csv;charset=utf-8";
   }
   const url = URL.createObjectURL(new Blob([content], { type: mime }));
   const link = document.createElement("a");
-  link.href = url; link.download = `boliche-${encounter.data}-${encounter.id.slice(0, 8)}.${format}`; link.click();
+  link.href = url; link.download = `boliche-resultados-${localIsoDate()}.${format}`; link.click();
   window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function buildResultsExport() {
+  const rankings = state.encounters.flatMap((encounter) => {
+    const finalIds = new Set(state.games.filter((game) => game.encounter_id === encounter.id && game.status === "final").map((game) => game.id));
+    const rows = state.encounterPlayers.filter((item) => item.encounter_id === encounter.id).map((item) => {
+      const scores = state.scores.filter((score) => score.player_id === item.player_id && finalIds.has(score.game_id) && score.finalizado && score.pontos != null);
+      const total = scores.reduce((sum, score) => sum + Number(score.pontos), 0);
+      return { encounter_id: encounter.id, player_id: item.player_id, total, average: scores.length ? total / scores.length : null, best: scores.length ? Math.max(...scores.map((score) => Number(score.pontos))) : null, games_played: scores.length };
+    }).filter((item) => item.games_played).sort((a, b) => b.total - a.total || (getPlayer(a.player_id)?.nome || "").localeCompare(getPlayer(b.player_id)?.nome || "", "pt-BR"));
+    return rows.map((row, index) => ({ ...row, position: rows.findIndex((other) => other.total === row.total) + 1 }));
+  });
+  return { schema_version: 1, exported_at: new Date().toISOString(), encounters: state.encounters, players: state.players, participations: state.encounterPlayers, games: state.games, scores: state.scores, rankings };
 }
 
 async function deleteEncounter() {
@@ -434,7 +482,8 @@ async function deleteEncounter() {
 
 function renderTeams() {
   const teams = state.teams.filter((team) => team.encounter_id === state.activeEncounterId);
-  const totals = new Map(officialTotals().map((item) => [item.player.id, item.points]));
+  const finalGameIds = new Set(encounterGames().filter((game) => game.status === "final").map((game) => game.id));
+  const totals = new Map(encounterPlayers().map((player) => [player.id, state.scores.filter((score) => score.player_id === player.id && finalGameIds.has(score.game_id) && score.finalizado && score.pontos != null).reduce((sum, score) => sum + Number(score.pontos), 0)]));
   const ranked = teams.map((team) => {
     const members = state.teamPlayers.filter((row) => row.team_id === team.id).map((row) => getPlayer(row.player_id)).filter(Boolean);
     const sum = members.reduce((value, player) => value + (totals.get(player.id) || 0), 0);
@@ -443,20 +492,22 @@ function renderTeams() {
   $("teamsList").innerHTML = ranked.length ? ranked.map(({ team, members, value }, index) => `<div class="extra-row"><strong>${index + 1}º ${esc(team.name)}</strong><span>${value.toFixed(team.metric === "average" ? 1 : 0).replace(".", ",")} ${team.metric === "average" ? "de média" : "pontos"}</span><small>${esc(members.map((player) => player.nome).join(", "))}</small></div>`).join("") : `<p class="empty-inline">Nenhuma equipe neste encontro.</p>`;
 }
 
-function bracketWinner(gameId, first, second) {
+function bracketWinner(gameId, first, second, rule = "higher_seed") {
   if (!gameId || !first || !second || getGame(gameId)?.status !== "final") return null;
   const scores = [first, second].map((id) => state.scores.find((score) => score.game_id === gameId && score.player_id === id && score.finalizado && score.pontos != null));
-  if (scores.some((score) => !score) || scores[0].pontos === scores[1].pontos) return null;
+  if (scores.some((score) => !score)) return null;
+  if (scores[0].pontos === scores[1].pontos) return rule === "lower_seed" ? second : first;
   return scores[0].pontos > scores[1].pontos ? first : second;
 }
 
 function bracketRounds(bracket) {
   if (!bracket) return [];
   let entrants = bracket.seeds;
-  return ["Quartas de final", "Semifinal", "Final"].map((name, round) => {
+  const names = bracket.seeds.length === 4 ? ["Semifinal", "Final"] : ["Quartas de final", "Semifinal", "Final"];
+  return names.map((name, round) => {
     const gameId = bracket.round_games[round];
     const matches = Array.from({ length: entrants.length / 2 }, (_, i) => ({ first: entrants[i * 2], second: entrants[i * 2 + 1], gameId }));
-    entrants = matches.map((match) => bracketWinner(match.gameId, match.first, match.second));
+    entrants = matches.map((match) => bracketWinner(match.gameId, match.first, match.second, bracket.tiebreak_rule));
     return { name, matches };
   });
 }
@@ -466,9 +517,9 @@ function renderBracket() {
   if (!bracket) { $("bracketBoard").innerHTML = `<p class="empty-inline">Chave ainda não criada.</p>`; return; }
   const rounds = bracketRounds(bracket);
   $("bracketBoard").innerHTML = rounds.map(({ name, matches }) => `<div class="bracket-round"><strong>${name}</strong>${matches.map(({ first, second, gameId }) => {
-    const winner = bracketWinner(gameId, first, second);
+    const winner = bracketWinner(gameId, first, second, bracket.tiebreak_rule);
     return `<div class="extra-row"><span>${esc(getPlayer(first)?.nome || "A definir")} × ${esc(getPlayer(second)?.nome || "A definir")}</span><small>${esc(getGame(gameId)?.nome || "Escolha uma partida")} · ${winner ? `avança ${esc(getPlayer(winner)?.nome)}` : "aguardando resultado"}</small></div>`;
-  }).join("")}</div>`).join("");
+  }).join("")}</div>`).join("") + (rounds.at(-1)?.matches?.[0] && bracketWinner(rounds.at(-1).matches[0].gameId, rounds.at(-1).matches[0].first, rounds.at(-1).matches[0].second, bracket.tiebreak_rule) ? `<p class="section-meta">Campeão: ${esc(getPlayer(bracketWinner(rounds.at(-1).matches[0].gameId, rounds.at(-1).matches[0].first, rounds.at(-1).matches[0].second, bracket.tiebreak_rule))?.nome)}</p>` : "");
 }
 
 function renderRecords() {
@@ -483,38 +534,45 @@ function renderRecords() {
     byEncounterPlayer.get(key).push(score);
   });
   const bestAverage = [...byEncounterPlayer.entries()].map(([key, items]) => ({ player: getPlayer(key.split(":")[1]), encounter: state.encounters.find((item) => item.id === key.split(":")[0]), average: items.reduce((sum, item) => sum + item.pontos, 0) / items.length })).sort((a, b) => b.average - a.average)[0];
+  const biggestTotal = [...byEncounterPlayer.entries()].map(([key, items]) => ({ player: getPlayer(key.split(":")[1]), encounter: state.encounters.find((item) => item.id === key.split(":")[0]), total: items.reduce((sum, item) => sum + Number(item.pontos), 0) })).sort((a, b) => b.total - a.total)[0];
   const growth = [...byEncounterPlayer.values()].flatMap((items) => {
     const ordered = [...items].sort((a, b) => new Date(getGame(a.game_id)?.created_at) - new Date(getGame(b.game_id)?.created_at));
     return ordered.slice(1).map((score, index) => ({ score, diff: score.pontos - ordered[index].pontos }));
   }).sort((a, b) => b.diff - a.diff)[0];
-  $("groupRecords").innerHTML = high ? `<div class="extra-row"><strong>Maior pontuação</strong><span>${high.pontos} · ${esc(getPlayer(high.player_id)?.nome)}</span></div><div class="extra-row"><strong>Melhor média em um encontro</strong><span>${bestAverage.average.toFixed(1).replace(".", ",")} · ${esc(bestAverage.player?.nome)}</span><small>${esc(bestAverage.encounter?.nome)}</small></div><div class="extra-row"><strong>Maior evolução</strong><span>${growth && growth.diff > 0 ? `+${growth.diff} · ${esc(getPlayer(growth.score.player_id)?.nome)}` : "Aguardando duas partidas"}</span></div>` : `<p class="empty-inline">Os recordes aparecerão após a primeira partida concluída.</p>`;
+  const wins = new Map();
+  finalGames.forEach((game) => {
+    const results = scores.filter((score) => score.game_id === game.id);
+    const highest = Math.max(...results.map((score) => Number(score.pontos)));
+    const leaders = results.filter((score) => score.pontos === highest);
+    if (leaders.length === 1) wins.set(leaders[0].player_id, (wins.get(leaders[0].player_id) || 0) + 1);
+  });
+  const winLeader = [...wins].sort((a, b) => b[1] - a[1])[0];
+  const appearances = new Map();
+  scores.forEach((score) => appearances.set(score.player_id, (appearances.get(score.player_id) || 0) + 1));
+  const appearanceLeader = [...appearances].sort((a, b) => b[1] - a[1])[0];
+  $("groupRecords").innerHTML = high ? `<div class="extra-row"><strong>Maior pontuação</strong><span>${high.pontos} · ${esc(getPlayer(high.player_id)?.nome)}</span></div><div class="extra-row"><strong>Maior total em um encontro</strong><span>${biggestTotal.total} · ${esc(biggestTotal.player?.nome)}</span><small>${esc(biggestTotal.encounter?.nome)}</small></div><div class="extra-row"><strong>Melhor média em um encontro</strong><span>${bestAverage.average.toFixed(1).replace(".", ",")} · ${esc(bestAverage.player?.nome)}</span><small>${esc(bestAverage.encounter?.nome)}</small></div><div class="extra-row"><strong>Maior evolução</strong><span>${growth && growth.diff > 0 ? `+${growth.diff} · ${esc(getPlayer(growth.score.player_id)?.nome)}` : "Aguardando duas partidas"}</span></div><div class="extra-row"><strong>Mais vitórias</strong><span>${winLeader ? `${winLeader[1]} · ${esc(getPlayer(winLeader[0])?.nome)}` : "Nenhuma vitória isolada"}</span></div><div class="extra-row"><strong>Mais participações</strong><span>${appearanceLeader[1]} · ${esc(getPlayer(appearanceLeader[0])?.nome)}</span></div><small>Somente partidas finais e pontos confirmados. Vitória exige maior pontuação isolada na partida; empate não conta vitória. Participação é uma partida concluída por jogador.</small>` : `<p class="empty-inline">Os recordes aparecerão após a primeira partida concluída.</p>`;
 }
 
 function renderPredictions() {
   const panel = $("predictionsSection");
-  const game = getGame(state.activeGameId);
+  const encounter = activeEncounter();
   const userId = state.session?.user?.id;
-  const canPredict = Boolean(userId && state.profile?.status === "approved" && game && encounterOpen());
-  panel.hidden = !canPredict;
-  if (!canPredict) return;
-  const scores = gameScores(game.id);
-  const started = scores.some((score) => score.pontos != null);
-  const existing = state.predictions.find((prediction) => prediction.game_id === game.id && prediction.user_id === userId);
-  $("predictionHint").textContent = started ? "Os palpites desta partida estão encerrados." : `Quem vencerá ${game.nome}? Seu palpite pode mudar até o primeiro ponto.`;
-  $("predictionPlayer").innerHTML = `<option value="">Escolha um jogador</option>${scores.map((score) => `<option value="${esc(score.player_id)}">${esc(getPlayer(score.player_id)?.nome || "Jogador")}</option>`).join("")}`;
+  panel.hidden = !encounter || !userId || state.profile?.status !== "approved";
+  if (panel.hidden) return;
+  const started = encounter.status !== "preparing" || (encounter.prediction_closes_at && Date.now() >= new Date(encounter.prediction_closes_at).getTime());
+  const existing = state.predictions.find((prediction) => prediction.encounter_id === encounter.id && prediction.user_id === userId);
+  $("predictionHint").textContent = started ? "Palpites deste encontro encerrados." : `Quem vencerá ${encounter.nome}? Seu palpite pode mudar até o início ou prazo definido.`;
+  $("predictionPlayer").innerHTML = `<option value="">Escolha um jogador</option>${encounterPlayers().map((player) => `<option value="${esc(player.id)}">${esc(player.nome)}</option>`).join("")}`;
   $("predictionPlayer").value = existing?.predicted_player_id || "";
   $("predictionPlayer").disabled = started;
   $("savePredictionButton").disabled = started;
-  const own = state.predictions.filter((item) => item.user_id === userId && getGame(item.game_id)?.encounter_id === state.activeEncounterId && getGame(item.game_id)?.status === "final");
-  const decided = own.filter((item) => {
-    const points = gameScores(item.game_id).filter((score) => score.finalizado && score.pontos != null);
-    return points.filter((score) => score.pontos === Math.max(...points.map((row) => row.pontos))).length === 1;
-  });
-  const hits = decided.filter((item) => {
-    const points = gameScores(item.game_id);
-    return points.some((score) => score.player_id === item.predicted_player_id && score.pontos === Math.max(...points.map((row) => row.pontos)));
-  }).length;
-  $("predictionAccuracy").textContent = decided.length ? `${hits}/${decided.length} palpites certos (${Math.round(100 * hits / decided.length)}%)` : "Nenhum palpite decidido";
+  const ownStanding = state.predictionStandings.find((row) => row.player_id === state.profile?.player_id);
+  $("predictionAccuracy").textContent = ownStanding ? `${ownStanding.hits}/${ownStanding.picks} palpites certos` : "Nenhum palpite decidido";
+  $("predictionBoard").innerHTML = state.predictionStandings.map((row, index) => `<div class="extra-row"><strong>${index + 1}º ${esc(row.player_name)}</strong><span>${row.hits}/${row.picks} acertos</span></div>`).join("") || `<p class="empty-inline">Classificação recreativa após o primeiro encontro encerrado.</p>`;
+  const deadlineInput = $("predictionDeadline");
+  deadlineInput.disabled = encounter.status !== "preparing";
+  $("savePredictionDeadline").disabled = deadlineInput.disabled;
+  if (document.activeElement !== deadlineInput) deadlineInput.value = encounter.prediction_closes_at ? new Date(encounter.prediction_closes_at).toLocaleString("sv-SE", { timeZone: "America/Sao_Paulo", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }).replace(" ", "T") : "";
 }
 
 function renderTeamEditor() {
@@ -569,18 +627,27 @@ function openBracketModal() {
   $("bracketPlayerSelection").innerHTML = players.map((player) => `<label class="selection-item"><input type="checkbox" value="${esc(player.id)}" ${selected.has(player.id) ? "checked" : ""} /><span>${esc(player.nome)}</span></label>`).join("");
   const options = `<option value="">Escolha a partida</option>${encounterGames().map((game) => `<option value="${esc(game.id)}">${esc(game.nome)} · ${game.status === "final" ? "final" : "parcial"}</option>`).join("")}`;
   [0, 1, 2].forEach((round) => { $(`bracketGame${round}`).innerHTML = options; $(`bracketGame${round}`).value = bracket?.round_games[round] || ""; });
+  $("bracketTieRule").value = bracket?.tiebreak_rule || "higher_seed";
+  updateBracketRoundLabels();
   $("deleteBracketButton").hidden = !bracket;
   $("bracketError").hidden = true;
   setModal("bracketModal", true);
 }
 
+function updateBracketRoundLabels() {
+  const count = $("bracketPlayerSelection").querySelectorAll("input:checked").length;
+  $("bracketRound0").firstChild.textContent = count === 4 ? "Semifinal" : "Quartas de final";
+  $("bracketRound1").firstChild.textContent = count === 4 ? "Final" : "Semifinal";
+  $("bracketRound2").hidden = count === 4;
+}
+
 async function saveBracket(event) {
   event.preventDefault();
   const seeds = [...$("bracketPlayerSelection").querySelectorAll("input:checked")].map((input) => input.value);
-  if (seeds.length !== 8) { $("bracketError").textContent = "Escolha exatamente oito jogadores."; $("bracketError").hidden = false; return; }
-  const games = [0, 1, 2].map((round) => $(`bracketGame${round}`).value || null);
+  if (![4, 8].includes(seeds.length)) { $("bracketError").textContent = "Escolha quatro ou oito jogadores."; $("bracketError").hidden = false; return; }
+  const games = Array.from({ length: seeds.length === 4 ? 2 : 3 }, (_, round) => $(`bracketGame${round}`).value || null);
   if (new Set(games.filter(Boolean)).size !== games.filter(Boolean).length) { $("bracketError").textContent = "Escolha partidas diferentes para cada rodada."; $("bracketError").hidden = false; return; }
-  const { error } = await client.rpc("save_bracket", { p_encounter_id: state.activeEncounterId, p_seeds: seeds, p_round_games: games });
+  const { error } = await client.rpc("save_bracket", { p_encounter_id: state.activeEncounterId, p_seeds: seeds, p_round_games: games, p_tiebreak_rule: $("bracketTieRule").value });
   if (error) { $("bracketError").textContent = error.message; $("bracketError").hidden = false; return; }
   setModal("bracketModal", false); await loadData(); render(); showToast("Chave salva.", "success");
 }
@@ -595,9 +662,17 @@ async function deleteBracket() {
 async function savePrediction() {
   const playerId = $("predictionPlayer").value;
   if (!playerId) return showToast("Escolha quem você acha que vai vencer.", "error");
-  const { error } = await client.from("predictions").upsert({ game_id: state.activeGameId, user_id: state.session.user.id, predicted_player_id: playerId }, { onConflict: "game_id,user_id" });
+  const { error } = await client.from("predictions").upsert({ encounter_id: state.activeEncounterId, user_id: state.session.user.id, predicted_player_id: playerId }, { onConflict: "encounter_id,user_id" });
   if (error) return showToast(error.message, "error");
   await loadData(); render(); showToast("Palpite salvo.", "success");
+}
+
+async function savePredictionDeadline() {
+  const value = $("predictionDeadline").value;
+  const deadline = value ? new Date(value).toISOString() : null;
+  const { error } = await client.rpc("set_prediction_deadline", { p_encounter_id: state.activeEncounterId, p_deadline: deadline });
+  if (error) return showToast(error.message, "error");
+  await loadData(); render(); showToast("Prazo dos palpites atualizado.", "success");
 }
 
 function render() {
@@ -622,13 +697,17 @@ function officialTotals(lane = "") {
     const points = results.reduce((sum, score) => sum + Number(score.pontos), 0);
     const gamesPlayed = results.length;
     const current = state.scores.find((score) => score.game_id === state.activeGameId && score.player_id === player.id);
-    return { player, points, gamesPlayed, average: gamesPlayed ? points / gamesPlayed : 0, current, lane: results.at(-1)?.pista || current?.pista || player.pista };
-  }).filter((item) => item.gamesPlayed > 0).sort((a, b) => (metric === "average" ? b.average - a.average : b.points - a.points) || b.points - a.points || a.player.nome.localeCompare(b.player.nome, "pt-BR"));
+    return { player, points, gamesPlayed, average: gamesPlayed ? points / gamesPlayed : null, best: gamesPlayed ? Math.max(...results.map((score) => Number(score.pontos))) : null, current, lane: results.at(-1)?.pista || current?.pista || player.pista };
+  }).filter((item) => item.gamesPlayed > 0).sort((a, b) => rankingValue(b, metric) - rankingValue(a, metric) || b.points - a.points || a.player.nome.localeCompare(b.player.nome, "pt-BR"));
+}
+
+function rankingValue(item, metric = $("rankingMetric")?.value || "total") {
+  return metric === "average" ? item.average : metric === "best" ? item.best : item.points;
 }
 
 function officialPosition(totals, index) {
   const metric = $("rankingMetric")?.value || "total";
-  return totals.findIndex((item) => (metric === "average" ? item.average : item.points) === (metric === "average" ? totals[index].average : totals[index].points)) + 1;
+  return totals.findIndex((item) => rankingValue(item, metric) === rankingValue(totals[index], metric)) + 1;
 }
 
 function renderLeaderboard() {
@@ -642,25 +721,25 @@ function renderLeaderboard() {
   if (lanes.includes(selectedLane)) laneSelect.value = selectedLane;
   const totals = officialTotals(laneSelect.value);
   const metric = $("rankingMetric").value;
-  $("rankingValueHeader").textContent = metric === "average" ? "Média" : "Pontos";
-  $("rankingTitle").textContent = metric === "average" ? "Classificação por média" : "Classificação acumulada";
+  $("rankingValueHeader").textContent = metric === "average" ? "Média" : metric === "best" ? "Melhor" : "Pontos";
+  $("rankingTitle").textContent = metric === "average" ? "Classificação por média" : metric === "best" ? "Melhor partida" : "Classificação acumulada";
   const podium = $("podium");
   podium.hidden = totals.length === 0;
   podium.innerHTML = totals.slice(0, 3).map((item, index) => {
     const photoUrl = state.playerPhotos.get(item.player.id);
-    return `<div class="podium-place podium-place--${index + 1}"><span class="podium-medal">${officialPosition(totals, index)}º</span>${photoUrl ? `<img class="podium-avatar" src="${esc(photoUrl)}" alt="Foto de ${esc(item.player.nome)}" loading="lazy" />` : `<span class="podium-avatar podium-avatar--empty" aria-hidden="true">${esc(item.player.nome.slice(0, 1))}</span>`}<strong>${metric === "average" ? item.average.toFixed(1).replace(".", ",") + " média" : item.points.toLocaleString("pt-BR") + " pontos"}</small></div>`;
+    return `<div class="podium-place podium-place--${index + 1}"><span class="podium-medal">${officialPosition(totals, index)}º</span>${photoUrl ? `<img class="podium-avatar" src="${esc(photoUrl)}" alt="Foto de ${esc(item.player.nome)}" loading="lazy" />` : `<span class="podium-avatar podium-avatar--empty" aria-hidden="true">${esc(item.player.nome.slice(0, 1))}</span>`}<strong>${esc(item.player.nome)}</strong><small>${metric === "average" ? item.average.toFixed(1).replace(".", ",") + " média" : rankingValue(item, metric).toLocaleString("pt-BR") + " pontos"}</small></div>`;
   }).join("");
   let previousPoints = null;
   let previousPosition = 0;
   body.innerHTML = totals.map((item, index) => {
-    const rankingValue = metric === "average" ? item.average : item.points;
-    const position = rankingValue === previousPoints ? previousPosition : index + 1;
-    previousPoints = rankingValue;
+    const value = rankingValue(item, metric);
+    const position = value === previousPoints ? previousPosition : index + 1;
+    previousPoints = value;
     previousPosition = position;
     const situation = item.current?.finalizado ? "Final" : (item.current ? "Parcial" : "—");
     const chipClass = situation === "Final" ? "status-chip status-chip--final" : "status-chip status-chip--partial";
     const photoUrl = state.playerPhotos.get(item.player.id);
-    return `<tr><td class="rank-cell">${position}</td><td><div class="ranking-player">${photoUrl ? `<img class="ranking-avatar" src="${esc(photoUrl)}" alt="Foto de ${esc(item.player.nome)}" loading="lazy" />` : ""}<span><button class="player-stats-link" type="button" data-stats-player="${esc(item.player.id)}">${esc(item.player.nome)}</button><small>${esc(item.player.apelido_placar || "sem apelido")}</small></span></div></td><td>${esc(item.lane || "—")}</td><td>${item.gamesPlayed}</td><td class="points-cell">${metric === "average" ? item.average.toFixed(1).replace(".", ",") : item.points.toLocaleString("pt-BR")}</td><td><span class="${chipClass}">${situation}</span></td></tr>`;
+    return `<tr><td class="rank-cell">${position}</td><td><div class="ranking-player">${photoUrl ? `<img class="ranking-avatar" src="${esc(photoUrl)}" alt="Foto de ${esc(item.player.nome)}" loading="lazy" />` : ""}<span><button class="player-stats-link" type="button" data-stats-player="${esc(item.player.id)}">${esc(item.player.nome)}</button><small>${esc(item.player.apelido_placar || "sem apelido")}</small></span></div></td><td>${esc(item.lane || "—")}</td><td>${item.gamesPlayed}</td><td class="points-cell">${metric === "average" ? item.average.toFixed(1).replace(".", ",") : value.toLocaleString("pt-BR")}</td><td><span class="${chipClass}">${situation}</span></td></tr>`;
   }).join("");
   body.querySelectorAll("[data-stats-player]").forEach((button) => button.addEventListener("click", () => openStatsModal(button.dataset.statsPlayer)));
   $("leaderboardEmpty").hidden = totals.length > 0;
@@ -686,15 +765,18 @@ function renderCurrentGame() {
   body.innerHTML = ranked.length ? ranked.map(({ score, player }) => {
     const position = score.pontos == null ? "—" : `${ranked.findIndex((item) => item.score.pontos === score.pontos) + 1}º`;
     const photoUrl = state.playerPhotos.get(player.id);
-    return `<div class="current-row"><div class="current-player${photoUrl ? " current-player--with-photo" : ""}"><span class="provisional-rank">${position}</span>${photoUrl ? `<img class="ranking-avatar" src="${esc(photoUrl)}" alt="Foto de ${esc(player.nome)}" loading="lazy" />` : ""}<button class="player-stats-link current-stats-link" type="button" data-stats-player="${esc(player.id)}">${esc(player.nome)}</button><span>Pista ${esc(scoreLane(score) || "—")}</span></div><div class="current-score"><strong>${score.pontos == null ? "—" : Number(score.pontos).toLocaleString("pt-BR")}</strong><span class="status-chip ${score.finalizado ? "status-chip--final" : "status-chip--partial"}">${score.finalizado ? "Final" : "Pendente"}</span>${isAdmin() && encounterOpen() ? `<button class="text-button" type="button" data-quick-score="${esc(player.id)}">Corrigir</button>${score.pontos != null ? `<button class="text-button text-button--danger" type="button" data-clear-score="${esc(player.id)}">Limpar</button>` : ""}` : ""}</div></div>`;
+    return `<div class="current-row"><div class="current-player${photoUrl ? " current-player--with-photo" : ""}"><span class="provisional-rank">${position}</span>${photoUrl ? `<img class="ranking-avatar" src="${esc(photoUrl)}" alt="Foto de ${esc(player.nome)}" loading="lazy" />` : ""}<button class="player-stats-link current-stats-link" type="button" data-stats-player="${esc(player.id)}">${esc(player.nome)}</button><span>Pista ${esc(scoreLane(score) || "—")}</span></div><div class="current-score"><strong>${score.pontos == null ? "—" : Number(score.pontos).toLocaleString("pt-BR")}</strong><span class="status-chip ${score.finalizado ? "status-chip--final" : "status-chip--partial"}">${score.finalizado ? "Final" : "Pendente"}</span>${isAdmin() && encounterActive() ? `<button class="text-button" type="button" data-quick-score="${esc(player.id)}">Corrigir</button>${score.pontos != null ? `<button class="text-button text-button--danger" type="button" data-clear-score="${esc(player.id)}">Limpar</button>` : ""}` : ""}</div></div>`;
   }).join("") : `<div class="empty-state"><span>Partida sem participantes.</span></div>`;
   body.querySelectorAll("[data-stats-player]").forEach((button) => button.addEventListener("click", () => openStatsModal(button.dataset.statsPlayer)));
   body.querySelectorAll("[data-quick-score]").forEach((button) => button.addEventListener("click", () => openQuickScore(button.dataset.quickScore)));
   body.querySelectorAll("[data-clear-score]").forEach((button) => button.addEventListener("click", () => clearScore(button.dataset.clearScore)));
   $("laneProgress").innerHTML = [...new Set(scores.map(({ score }) => scoreLane(score)))].map((lane) => {
     const laneScores = scores.filter(({ score }) => scoreLane(score) === lane);
+    const informed = laneScores.filter(({ score }) => score.pontos != null).length;
     const confirmed = laneScores.filter(({ score }) => score.finalizado && score.pontos != null).length;
-    return `<span class="status-pill status-pill--${confirmed === laneScores.length ? "success" : "warning"}">Pista ${esc(lane)}: ${confirmed}/${laneScores.length} confirmados</span>`;
+    const pending = laneScores.length - confirmed;
+    const percent = Math.round(100 * confirmed / laneScores.length);
+    return `<div class="lane-progress-card"><strong>Pista ${esc(lane)} · ${confirmed}/${laneScores.length} confirmados</strong><small>${laneScores.length} participantes · ${informed} informados · ${pending} pendentes · ${percent}% concluído</small><progress max="100" value="${percent}" aria-label="Conclusão da pista ${esc(lane)}"></progress></div>`;
   }).join("");
 }
 
@@ -852,6 +934,59 @@ function playersOnLane(lane = $("photoLane").value, gameId = $("photoGame").valu
   return state.players.filter((player) => linkedIds.has(player.id));
 }
 
+const reviewKey = (gameId, lane, playerId) => JSON.stringify([gameId, lane, playerId]);
+function captureReviewDraft() {
+  if (!state.reviewViewKey) return;
+  const [gameId, lane] = JSON.parse(state.reviewViewKey);
+  for (const row of document.querySelectorAll("[data-review-player]")) {
+    state.reviewDraft.set(reviewKey(gameId, lane, row.dataset.reviewPlayer), {
+      score: row.querySelector(".review-score").value,
+      finalized: row.querySelector(".review-final").checked,
+      manualScore: row.dataset.manualScore === "true",
+      manualFinal: row.dataset.manualFinal === "true",
+    });
+  }
+}
+
+function markReviewEdited(event) {
+  const row = event.target.closest("[data-review-player]");
+  if (!row) return;
+  if (event.target.matches(".review-score")) {
+    row.dataset.manualScore = "true";
+    if (row.dataset.oldFinal === "true" && event.target.value !== row.dataset.oldScore && row.querySelector(".review-final").checked) {
+      row.querySelector(".review-final").checked = false;
+      row.dataset.manualFinal = "true";
+    }
+  }
+  if (event.target.matches(".review-final")) row.dataset.manualFinal = "true";
+  captureReviewDraft();
+  updatePhotoConfirmState();
+}
+
+function changeReviewContext(event) {
+  state.ocrRunId++;
+  const [oldGameId, oldLane] = state.reviewViewKey ? JSON.parse(state.reviewViewKey) : [null, null];
+  captureReviewDraft();
+  const dirty = [...state.reviewDraft.entries()].some(([key, draft]) => {
+    const [gameId, lane] = JSON.parse(key);
+    if (gameId !== oldGameId || lane !== oldLane) return false;
+    const old = state.scores.find((score) => score.game_id === gameId && score.player_id === JSON.parse(key)[2]);
+    return draft.manualScore || draft.manualFinal || draft.score !== String(old?.pontos ?? "") || draft.finalized !== Boolean(old?.finalizado);
+  });
+  if (dirty && !window.confirm("Há alterações não salvas nesta conferência. Descartá-las e trocar de partida ou pista?")) {
+    $("photoGame").value = oldGameId || "";
+    $("photoLane").value = oldLane || "";
+    return;
+  }
+  for (const key of state.reviewDraft.keys()) {
+    const [gameId, lane] = JSON.parse(key);
+    if (gameId === oldGameId && lane === oldLane) state.reviewDraft.delete(key);
+  }
+  state.reviewViewKey = null;
+  state.reviewConflict = false;
+  if (event.target.id === "photoGame") renderPhotoOptions(); else updateReviewTable();
+}
+
 function updatePhotoConfirmState() {
   const rows = [...document.querySelectorAll("[data-review-player]")];
   const values = rows.map((row) => row.querySelector(".review-score").value);
@@ -871,6 +1006,7 @@ function updatePhotoConfirmState() {
     : !valid ? "Corrija as pontuações: use números inteiros de 0 a 300."
     : !hasChange ? "Preencha ou altere ao menos uma pontuação na conferência. Selecionar a foto não publica pontos automaticamente."
     : "Há pontuações prontas para salvar. Confira os totais antes de confirmar.";
+  if (state.reviewConflict) $("photoConfirmHint").textContent += " Os resultados mudaram em outro aparelho; revise antes de salvar.";
   $("reviewPendingNote").hidden = !hasChange;
 }
 
@@ -878,13 +1014,18 @@ function updateReviewTable(suggestions = new Map()) {
   const lane = $("photoLane").value;
   $("reviewLaneLabel").textContent = lane ? `Pista ${lane}` : "Selecione a pista";
   const gameId = $("photoGame").value;
+  const viewKey = JSON.stringify([gameId, lane]);
+  if (state.reviewViewKey === viewKey) captureReviewDraft();
+  state.reviewViewKey = viewKey;
   const rows = playersOnLane(lane);
   $("reviewTable").innerHTML = rows.length ? rows.map((player) => {
     const old = state.scores.find((score) => score.game_id === gameId && score.player_id === player.id);
     const suggestion = suggestions.get(player.id);
-    const value = suggestion?.value ?? (old?.pontos ?? "");
-    const finalizado = Boolean(old?.finalizado) && (!suggestion || Number(suggestion.value) === Number(old.pontos));
-    return `<div class="review-row" data-review-player="${esc(player.id)}" data-old-score="${old?.pontos ?? ""}" data-old-final="${Boolean(old?.finalizado)}"><div class="review-player"><strong>${esc(player.nome)}</strong><small>${esc(player.apelido_placar || "sem apelido")} · pista ${esc(scoreLane(old) || "—")}${suggestion ? ` · ${esc(suggestion.hint)}` : ""}</small></div><div class="review-score-wrap"><input class="review-score" type="number" min="0" max="300" step="1" inputmode="numeric" placeholder="—" value="${value === "" ? "" : esc(value)}" aria-label="Pontos de ${esc(player.nome)}" /><small></small></div><label class="review-confirm"><input class="review-final" type="checkbox" ${finalizado ? "checked" : ""} /> confirmar</label></div>`;
+    const draft = state.reviewDraft.get(reviewKey(gameId, lane, player.id));
+    const value = draft?.manualScore ? draft.score : suggestion?.value ?? draft?.score ?? old?.pontos ?? "";
+    const suggestionChangesScore = suggestion && Number(suggestion.value) !== Number(old?.pontos);
+    const finalizado = draft?.manualFinal || draft?.manualScore ? draft.finalized : suggestionChangesScore ? false : draft?.finalized ?? Boolean(old?.finalizado);
+    return `<div class="review-row" data-review-player="${esc(player.id)}" data-old-score="${old?.pontos ?? ""}" data-old-final="${Boolean(old?.finalizado)}" data-manual-score="${Boolean(draft?.manualScore)}" data-manual-final="${Boolean(draft?.manualFinal)}"><div class="review-player"><strong>${esc(player.nome)}</strong><small>${esc(player.apelido_placar || "sem apelido")} · pista ${esc(scoreLane(old) || "—")}${suggestion && !draft?.manualScore ? ` · ${esc(suggestion.hint)}` : ""}</small></div><div class="review-score-wrap"><input class="review-score" type="number" min="0" max="300" step="1" inputmode="numeric" placeholder="—" value="${value === "" ? "" : esc(value)}" aria-label="Pontos de ${esc(player.nome)}" /><small></small></div><label class="review-confirm"><input class="review-final" type="checkbox" ${finalizado ? "checked" : ""} /> confirmar</label></div>`;
   }).join("") : `<div class="empty-state"><strong>Nenhum jogador nessa pista</strong><span>Cadastre o participante com o número da pista antes de importar.</span></div>`;
   updatePhotoConfirmState();
 }
@@ -1011,11 +1152,32 @@ function profilePhotoSelected(event) {
   $("profileError").hidden = true;
 }
 
+async function cleanupUnusedProfilePhotos(userId, currentPath) {
+  const bucket = client.storage.from("profile-photos");
+  const paths = [];
+  for (let offset = 0; ; offset += 1000) {
+    const { data: files, error: listError } = await bucket.list(userId, { limit: 1000, offset });
+    if (listError) return listError;
+    paths.push(...(files || []).filter((file) => file.id).map((file) => `${userId}/${file.name}`).filter((path) => path !== currentPath));
+    if (!files || files.length < 1000) break;
+  }
+  if (!paths.length) return null;
+  const { data: unused, error: checkError } = await client.rpc("unreferenced_profile_photos", { p_paths: paths });
+  if (checkError) return checkError;
+  if (!unused?.length) return null;
+  for (let index = 0; index < unused.length; index += 100) {
+    const { error: removeError } = await bucket.remove(unused.slice(index, index + 100));
+    if (removeError) return removeError;
+  }
+  return null;
+}
+
 async function submitProfile(event) {
   event.preventDefault();
   const errorElement = $("profileError");
   const file = $("profileCamera").files?.[0] || $("profilePhoto").files?.[0];
   const nome = $("profileName").value.trim();
+  const photoPublic = $("profilePhotoPublic").checked;
   errorElement.hidden = true;
   if (!client || !state.session) {
     errorElement.textContent = "Sua sessão terminou. Entre novamente para salvar o perfil.";
@@ -1043,7 +1205,7 @@ async function submitProfile(event) {
     state.session = authData.session;
     let currentProfile = state.profile;
     if (!currentProfile) {
-      const { data: existing, error: readError } = await client.from("profiles").select("id,nome,foto_path,status,player_id").eq("id", state.session.user.id).maybeSingle();
+      const { data: existing, error: readError } = await client.from("profiles").select("id,nome,foto_path,status,player_id,photo_public_opt_in").eq("id", state.session.user.id).maybeSingle();
       if (readError) throw new Error(`Não foi possível conferir o cadastro: ${readError.message || "tente novamente"}.`);
       currentProfile = existing;
     }
@@ -1059,12 +1221,15 @@ async function submitProfile(event) {
     }
     button.textContent = "Salvando perfil…";
     const query = currentProfile
-      ? client.from("profiles").update({ nome, foto_path: fotoPath }).eq("id", state.session.user.id)
-      : client.from("profiles").insert({ id: state.session.user.id, nome, foto_path: fotoPath });
-    const { data, error } = await query.select("id,nome,foto_path,status,player_id").single();
+      ? client.from("profiles").update({ nome, foto_path: fotoPath, photo_public_opt_in: photoPublic }).eq("id", state.session.user.id)
+      : client.from("profiles").insert({ id: state.session.user.id, nome, foto_path: fotoPath, photo_public_opt_in: photoPublic });
+    const { data, error } = await query.select("id,nome,foto_path,status,player_id,photo_public_opt_in").single();
     if (error) {
       if (uploadedPath) {
-        try { await client.storage.from("profile-photos").remove([uploadedPath]); } catch (cleanupError) { console.warn(cleanupError); }
+        try {
+          const { error: cleanupError } = await client.storage.from("profile-photos").remove([uploadedPath]);
+          if (cleanupError) console.warn("Nova foto ainda não referenciada; limpeza pendente", cleanupError);
+        } catch (cleanupError) { console.warn("Nova foto ainda não referenciada; limpeza pendente", cleanupError); }
       }
       throw new Error(`Não foi possível salvar o perfil: ${error.message || "tente novamente"}.`);
     }
@@ -1080,7 +1245,11 @@ async function submitProfile(event) {
     setModal("profileModal", false);
     render();
     if (data.status === "approved") refreshAfterReconnect();
-    showToast(data.status === "approved" ? "Perfil atualizado." : "Perfil salvo e enviado para aprovação.", "success");
+    let cleanupError = null;
+    try { cleanupError = await cleanupUnusedProfilePhotos(state.session.user.id, data.foto_path); }
+    catch (error) { cleanupError = error; }
+    if (cleanupError) console.warn("Perfil salvo; falha ao remover fotos antigas", cleanupError);
+    showToast(cleanupError ? "Perfil salvo, mas fotos antigas ainda precisam ser removidas." : data.status === "approved" ? "Perfil atualizado." : "Perfil salvo e enviado para aprovação.", cleanupError ? "warning" : "success");
   } catch (error) {
     console.error(error);
     errorElement.textContent = error.message || "Não foi possível salvar seu perfil. Tente novamente.";
@@ -1142,7 +1311,7 @@ async function createGame(event) {
     setModal("gameModal", false); await loadData(); render(); showToast("Partida atualizada.", "success");
     return;
   }
-  const { data, error } = await client.rpc("create_encounter_game", { p_encounter_id: state.activeEncounterId, p_name: nome, p_assignments: assignments });
+  const { data, error } = await client.rpc("create_encounter_game", { p_encounter_id: state.activeEncounterId, p_name: nome, p_assignments: assignments, p_request_id: state.gameRequestId });
   if (error) return showToast(`Não foi possível abrir a partida: ${error.message}`, "error");
   state.activeGameId = data.id;
   setModal("gameModal", false); await loadData(); render(); showToast("Partida aberta.", "success");
@@ -1150,16 +1319,31 @@ async function createGame(event) {
 
 function drawLanes() {
   const checked = [...$("playerSelection").querySelectorAll(".game-player-check:checked")];
-  const slots = state.lanes.flatMap((lane) => Array(lane.capacity).fill(lane.name));
-  if (checked.length > slots.length) return showToast("Cadastre pistas ou aumente a capacidade antes de sortear.", "error");
-  for (let i = slots.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [slots[i], slots[j]] = [slots[j], slots[i]]; }
-  checked.forEach((input, index) => { $("playerSelection").querySelector(`[data-player-lane="${input.value}"]`).value = slots[index]; });
+  const assignments = balancedLaneDraw(checked.map((input) => input.value), state.lanes);
+  if (!assignments) return showToast("Cadastre pistas ou aumente a capacidade antes de sortear.", "error");
+  assignments.forEach(({ player_id, pista }) => { $("playerSelection").querySelector(`[data-player-lane="${player_id}"]`).value = pista; });
   showToast("Pistas sorteadas para esta partida. Confira antes de salvar.", "success");
+}
+
+function balancedLaneDraw(playerIds, lanes) {
+  if (!lanes.length || playerIds.length > lanes.reduce((sum, lane) => sum + lane.capacity, 0)) return null;
+  const shuffled = [...playerIds];
+  for (let i = shuffled.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]]; }
+  const occupancy = new Map(lanes.map((lane) => [lane.name, 0]));
+  return shuffled.map((player_id) => {
+    const eligible = lanes.filter((lane) => occupancy.get(lane.name) < lane.capacity);
+    const least = Math.min(...eligible.map((lane) => occupancy.get(lane.name)));
+    const choices = eligible.filter((lane) => occupancy.get(lane.name) === least);
+    const lane = choices[Math.floor(Math.random() * choices.length)];
+    occupancy.set(lane.name, occupancy.get(lane.name) + 1);
+    return { player_id, pista: lane.name };
+  });
 }
 
 function openGameModal() {
   if (!encounterOpen()) return showToast("Reabra o encontro para criar partidas.", "error");
   state.editingGameId = null;
+  state.gameRequestId = crypto.randomUUID();
   $("gameSubmitButton").textContent = "Abrir partida";
   $("gameModalTitle").textContent = "Nova partida";
   $("gameName").value = `Partida ${encounterGames().length + 1}`;
@@ -1258,7 +1442,7 @@ function renderScoreHistory() {
     const player = getPlayer(change.player_id);
     const game = getGame(change.game_id);
     const actor = state.profiles.find((profile) => profile.id === change.actor_id)?.nome || (change.actor_id === state.session?.user?.id ? "Você" : "Administrador");
-    const canUndo = encounterOpen() && !changes.slice(0, index).some((newer) => newer.score_id === change.score_id);
+    const canUndo = encounterActive() && !changes.slice(0, index).some((newer) => newer.score_id === change.score_id);
     return `<div class="history-row"><div><strong>${esc(player?.nome || "Jogador")}</strong><small>${esc(game?.nome || "Partida")} · ${fmtDate(change.changed_at)} · ${esc(actor)}</small><span>${change.previous_points ?? "—"} → ${change.new_points ?? "—"}${change.previous_finalized !== change.new_finalized ? ` · ${change.new_finalized ? "confirmado" : "pendente"}` : ""}</span></div>${canUndo ? `<button class="text-button" type="button" data-undo-change="${change.id}">Desfazer</button>` : ""}</div>`;
   }).join("") : `<p class="empty-inline">Nenhuma alteração registrada.</p>`;
   $("scoreHistoryList").querySelectorAll("[data-undo-change]").forEach((button) => button.addEventListener("click", () => undoScoreChange(Number(button.dataset.undoChange))));
@@ -1296,7 +1480,8 @@ async function shareScoreboard() {
 }
 
 async function shareResultCard() {
-  const totals = officialTotals();
+  const totals = [...officialTotals()].sort((a, b) => b.points - a.points || a.player.nome.localeCompare(b.player.nome, "pt-BR"));
+  const totalPosition = (index) => totals.findIndex((item) => item.points === totals[index].points) + 1;
   const finalGames = encounterGames().filter((game) => game.status === "final");
   if (!totals.length) return showToast("Finalize uma partida para gerar a imagem do resultado.", "error");
   const canvas = document.createElement("canvas");
@@ -1314,7 +1499,7 @@ async function shareResultCard() {
     const x = 80 + index * 315;
     context.fillStyle = index === 0 ? "#e9d5b8" : "#fbfaf7"; context.fillRect(x, 246, 295, 180);
     context.strokeStyle = "#d8d9d3"; context.strokeRect(x, 246, 295, 180);
-    context.fillStyle = "#805928"; context.font = "bold 44px Georgia"; context.fillText(`${officialPosition(totals, index)}º`, x + 18, 302);
+    context.fillStyle = "#805928"; context.font = "bold 44px Georgia"; context.fillText(`${totalPosition(index)}º`, x + 18, 302);
     context.fillStyle = "#2f312f"; context.font = "bold 24px Arial"; context.fillText(item.player.nome.slice(0, 19), x + 18, 350);
     context.font = "21px Arial"; context.fillText(`${item.points} pontos`, x + 18, 390);
   });
@@ -1322,7 +1507,7 @@ async function shareResultCard() {
   totals.forEach((item, index) => {
     const y = 520 + index * 72;
     context.fillStyle = index % 2 ? "#f1eee8" : "#fbfaf7"; context.fillRect(80, y - 37, 925, 62);
-    context.fillStyle = "#805928"; context.font = "bold 27px Georgia"; context.fillText(`${officialPosition(totals, index)}º`, 100, y);
+    context.fillStyle = "#805928"; context.font = "bold 27px Georgia"; context.fillText(`${totalPosition(index)}º`, 100, y);
     context.fillStyle = "#2f312f"; context.font = "bold 24px Arial"; context.fillText(item.player.nome.slice(0, 30), 180, y);
     context.font = "22px Arial"; context.textAlign = "right"; context.fillText(`${item.points} pontos`, 980, y); context.textAlign = "left";
   });
@@ -1342,12 +1527,17 @@ async function shareResultCard() {
 }
 
 function openPhotoModal() {
-  if (!encounterOpen()) return showToast("Reabra o encontro para atualizar os pontos.", "error");
+  if (!encounterActive()) return showToast("Inicie ou reabra o encontro para atualizar os pontos.", "error");
   if (!encounterGames().length) return showToast("Abra uma partida antes de importar uma foto.", "error");
   resetPhotoState(); renderPhotoOptions(); setModal("photoModal", true);
 }
 
 function resetPhotoState() {
+  state.photoRevision++;
+  state.ocrRunId++;
+  state.reviewDraft.clear();
+  state.reviewViewKey = null;
+  state.reviewConflict = false;
   if (state.imageUrl) URL.revokeObjectURL(state.imageUrl);
   state.imageUrl = null;
   state.crop = null; state.image = null; state.imageFile = null; state.previewBase = null;
@@ -1363,6 +1553,8 @@ function resetPhotoState() {
 function loadPhoto(event) {
   const file = event.target.files?.[0];
   if (!file) return;
+  state.photoRevision++;
+  state.ocrRunId++;
   if (state.imageUrl) URL.revokeObjectURL(state.imageUrl);
   state.imageFile = file;
   const image = new Image();
@@ -1452,17 +1644,23 @@ function endCrop() { if (state.crop && (state.crop.width < 12 || state.crop.heig
 
 async function runOcr() {
   if (!state.image || !window.Tesseract) return showToast("O leitor de texto não está disponível. Preencha a tabela manualmente.", "error");
+  const revision = state.photoRevision;
+  const runId = ++state.ocrRunId;
+  const gameId = $("photoGame").value;
+  const lane = $("photoLane").value;
   $("runOcrButton").disabled = true; $("ocrStatus").textContent = "Lendo a imagem… isso pode levar alguns segundos.";
   try {
     const source = getOcrCanvas();
-    const result = await Tesseract.recognize(source, "por+eng", { logger: (info) => { if (info.status === "recognizing text") $("ocrStatus").textContent = `Lendo a imagem… ${Math.round((info.progress || 0) * 100)}%`; } });
+    const result = await Tesseract.recognize(source, "por+eng", { logger: (info) => { if (runId === state.ocrRunId && revision === state.photoRevision && info.status === "recognizing text") $("ocrStatus").textContent = `Lendo a imagem… ${Math.round((info.progress || 0) * 100)}%`; } });
+    if (runId !== state.ocrRunId || revision !== state.photoRevision || gameId !== $("photoGame").value || lane !== $("photoLane").value || !$('photoModal').open) return;
     const suggestions = buildSuggestions(result.data, source.width);
     updateReviewTable(suggestions);
     $("ocrStatus").textContent = suggestions.size ? `OCR encontrou ${suggestions.size} sugestão(ões). Revise antes de confirmar.` : "OCR não encontrou associações confiáveis. Preencha a tabela manualmente.";
     updatePhotoConfirmState();
   } catch (error) {
+    if (runId !== state.ocrRunId || revision !== state.photoRevision) return;
     console.error(error); $("ocrStatus").textContent = "Não foi possível ler a foto. Preencha os pontos manualmente."; updatePhotoConfirmState();
-  } finally { $("runOcrButton").disabled = false; }
+  } finally { if (runId === state.ocrRunId) $("runOcrButton").disabled = !state.image; }
 }
 
 function getOcrCanvas() {
@@ -1540,6 +1738,7 @@ async function confirmPhotoUpdate(event) {
   }
   const updates = all.filter((item) => item.pontos !== "" && (item.pontos !== item.previous || item.finalizado !== item.previousFinal));
   if (!updates.length) return fail("Preencha ou altere ao menos uma pontuação na tabela. A foto sozinha não publica resultados.");
+  if (state.reviewConflict && !window.confirm("Os resultados desta pista mudaram em outro aparelho. Salvar sua conferência sobre os valores atuais?")) return;
   if (!client) return fail("Supabase não configurado.");
   const button = $("confirmPhotoButton");
   button.disabled = true;
@@ -1582,6 +1781,7 @@ function bindEvents() {
   $("closeEncounterButton").addEventListener("click", toggleEncounterClosed);
   $("deleteEncounterButton").addEventListener("click", deleteEncounter);
   $("encounterForm").addEventListener("submit", saveEncounter);
+  $("startEncounterButton").addEventListener("click", startEncounter);
   $("exportCsvButton").addEventListener("click", () => downloadResults("csv"));
   $("exportJsonButton").addEventListener("click", () => downloadResults("json"));
   $("drawLanesButton").addEventListener("click", drawLanes);
@@ -1590,6 +1790,8 @@ function bindEvents() {
   $("cancelTeamEdit").addEventListener("click", openTeamsModal);
   $("manageBracketButton").addEventListener("click", openBracketModal);
   $("bracketForm").addEventListener("submit", saveBracket);
+  $("bracketPlayerSelection").addEventListener("change", updateBracketRoundLabels);
+  $("savePredictionDeadline").addEventListener("click", savePredictionDeadline);
   $("deleteBracketButton").addEventListener("click", deleteBracket);
   $("shuffleBracketButton").addEventListener("click", () => {
     const grid = $("bracketPlayerSelection");
@@ -1598,7 +1800,8 @@ function bindEvents() {
     selected.forEach((label) => grid.append(label));
   });
   $("savePredictionButton").addEventListener("click", savePrediction);
-  $("tvModeButton").addEventListener("click", () => { const tv = document.body.classList.toggle("tv-mode"); $("tvModeButton").textContent = tv ? "Sair do telão" : "Modo telão"; document.querySelector(".page-title h1").textContent = tv ? activeEncounter()?.nome || "Boliche dos Amigos" : "Placar compartilhado"; });
+  $("tvModeButton").addEventListener("click", () => { const tv = document.body.classList.toggle("tv-mode"); if (!tv) document.body.classList.remove("tv-provisional"); $("tvRankingToggle").hidden = !tv; $("tvRankingToggle").textContent = "Classificação provisória"; $("tvModeButton").textContent = tv ? "Sair do telão" : "Modo telão"; document.querySelector(".page-title h1").textContent = tv ? activeEncounter()?.nome || "Boliche dos Amigos" : "Placar compartilhado"; });
+  $("tvRankingToggle").addEventListener("click", () => { const provisional = document.body.classList.toggle("tv-provisional"); $("tvRankingToggle").textContent = provisional ? "Classificação oficial" : "Classificação provisória"; });
   document.querySelectorAll("[data-close-modal]").forEach((button) => button.addEventListener("click", () => button.closest("dialog").close()));
   window.addEventListener("online", refreshAfterReconnect);
   document.addEventListener("visibilitychange", () => { if (!document.hidden) refreshAfterReconnect(); });
@@ -1619,7 +1822,7 @@ function bindEvents() {
   $("shareResultButton").addEventListener("click", shareResultCard);
   $("rankingLane").addEventListener("change", renderLeaderboard);
   $("rankingMetric").addEventListener("change", renderLeaderboard);
-  $("photoForm").addEventListener("submit", confirmPhotoUpdate); $("photoInput").addEventListener("change", loadPhoto); $("photoLane").addEventListener("change", () => updateReviewTable()); $("photoGame").addEventListener("change", renderPhotoOptions); $("reviewTable").addEventListener("input", updatePhotoConfirmState); $("runOcrButton").addEventListener("click", runOcr); $("clearCropButton").addEventListener("click", () => { state.crop = null; drawCanvas(); });
+  $("photoForm").addEventListener("submit", confirmPhotoUpdate); $("photoInput").addEventListener("change", loadPhoto); $("photoLane").addEventListener("change", changeReviewContext); $("photoGame").addEventListener("change", changeReviewContext); $("reviewTable").addEventListener("input", markReviewEdited); $("reviewTable").addEventListener("change", markReviewEdited); $("runOcrButton").addEventListener("click", runOcr); $("clearCropButton").addEventListener("click", () => { state.crop = null; drawCanvas(); });
   $("rotatePhotoButton").addEventListener("click", () => { state.photoRotation = (state.photoRotation + 90) % 360; state.crop = null; updatePhotoPreview(); });
   $("photoPanButton").addEventListener("click", () => { state.photoPanMode = !state.photoPanMode; applyPhotoInteractionMode(); });
   $("photoZoom").addEventListener("input", (event) => { state.photoZoom = Number(event.target.value); $("photoCanvas").style.width = `${state.photoZoom}%`; state.photoPanMode = state.photoZoom > 100; applyPhotoInteractionMode(); });

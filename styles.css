@@ -120,7 +120,12 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .encounter-bar select { min-height: 36px; max-width: min(55vw, 320px); padding: 0 10px; border: 1px solid var(--color-divider); color: var(--color-text); background: var(--color-bg); }
 .selection-item .game-player-lane { width: min(120px, 100%); min-height: 34px; margin-left: auto; padding: 0 5px; font-size: 12px; }
 .selection-item span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.modal-card .photo-consent { display: flex; align-items: flex-start; gap: 9px; color: var(--color-text); font-size: 12px; font-weight: 500; line-height: 1.45; }
+.modal-card .photo-consent input { flex: none; width: 17px; min-height: 17px; height: 17px; margin: 1px 0 0; }
 .lane-progress { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 14px; }
+.lane-progress-card { flex: 1 1 190px; display: grid; gap: 5px; padding: 9px; border: 1px solid var(--color-divider); font-size: 12px; }
+.lane-progress-card small { color: var(--color-muted); line-height: 1.35; }
+.lane-progress-card progress { width: 100%; height: 7px; accent-color: var(--color-accent); }
 .lane-add-row #laneCapacity { width: 105px; }
 .extras-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px; margin-top: 28px; }
 .extras-grid > article { min-width: 0; padding: 22px; }
@@ -141,7 +146,13 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .team-form > input, .team-form > select { min-height: 40px; padding: 0 10px; border: 1px solid var(--color-divider); color: var(--color-text); background: var(--color-surface); }
 .tv-mode .topbar, .tv-mode .header-actions, .tv-mode .intro-row, .tv-mode .current-card, .tv-mode .history-section, .tv-mode .extras-grid, .tv-mode .prediction-panel, .tv-mode .app-footer { display: none !important; }
 .tv-mode .encounter-bar { position: fixed; z-index: 20; right: 12px; bottom: 12px; margin: 0; padding: 4px; opacity: .65; }
-.tv-mode .encounter-bar > :not(#tvModeButton) { display: none !important; }
+.tv-mode .encounter-bar > :not(#tvModeButton):not(#tvRankingToggle) { display: none !important; }
+.tv-mode #tvRankingToggle { display: inline-flex !important; }
+.tv-mode.tv-provisional .leaderboard-card { display: none; }
+.tv-mode.tv-provisional .current-card { display: block !important; }
+.tv-mode .current-row { font-size: clamp(20px, 2.4vw, 38px); padding: 20px 12px; }
+.tv-mode .current-row .text-button { display: none; }
+.tv-mode .current-score strong { font-size: 1.3em; }
 .tv-mode .shell { max-width: none; padding: 32px; }
 .tv-mode .app-header { margin-bottom: 22px; }
 .tv-mode .dashboard-grid { display: block; }
