@@ -30,7 +30,16 @@ const fmtTime = (value) => value ? new Intl.DateTimeFormat("pt-BR", { hour: "2-d
 const getPlayer = (id) => state.players.find((player) => player.id === id);
 const getGame = (id) => state.games.find((game) => game.id === id);
 const gameScores = (gameId) => state.scores.filter((score) => score.game_id === gameId);
-const isAdmin = () => state.session?.user?.app_metadata?.role === "admin";
+const isAdmin = () => {
+  if (state.session?.user?.app_metadata?.role !== "admin") return false;
+  try {
+    const encoded = state.session.access_token.split(".")[1].replace(/-/g, "+").replace(/_/g, "/");
+    const claims = JSON.parse(atob(encoded.padEnd(Math.ceil(encoded.length / 4) * 4, "=")));
+    return claims.amr?.some((method) => method.method === "password") === true;
+  } catch {
+    return false;
+  }
+};
 const isAuthenticated = () => Boolean(state.session);
 
 function showToast(message, type = "info") {
@@ -136,13 +145,22 @@ async function submitRecovery(event) {
       errorElement.hidden = false;
       return;
     }
+    const email = state.session?.user?.email || "";
+    const { error: signOutError } = await client.auth.signOut();
+    if (signOutError) {
+      errorElement.textContent = "Senha salva, mas a sessão não foi encerrada. Clique em Sair e entre com a nova senha.";
+      errorElement.hidden = false;
+      return;
+    }
+    state.session = null;
     state.recovering = false;
     sessionStorage.removeItem("boliche-recovery-user");
     $("recoveryForm").reset();
     setModal("recoveryModal", false);
+    $("authEmail").value = email;
     render();
-    showToast("Nova senha salva. Acesso liberado.", "success");
-    showProfileIfNeeded();
+    setModal("authModal", true);
+    showToast("Senha salva. Entre novamente com a nova senha.", "success");
   } catch (error) {
     console.error(error);
     errorElement.textContent = "Não foi possível salvar a senha. Tente novamente.";

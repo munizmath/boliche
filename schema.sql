@@ -52,7 +52,8 @@ drop trigger if exists scores_updated_at on public.scores;
 create trigger games_updated_at before update on public.games for each row execute function public.set_updated_at();
 create trigger scores_updated_at before update on public.scores for each row execute function public.set_updated_at();
 
--- Definido no app_metadata do usuário, que não pode ser alterado pelo navegador.
+-- Escrita administrativa exige papel concedido pelo servidor e login com senha.
+-- Uma sessão criada por link de recuperação não deve publicar resultados.
 create or replace function public.is_admin()
 returns boolean
 language sql
@@ -60,7 +61,11 @@ stable
 security invoker
 set search_path = public
 as $$
-  select coalesce((auth.jwt() -> 'app_metadata' ->> 'role') = 'admin', false);
+  select coalesce(
+    (auth.jwt() -> 'app_metadata' ->> 'role') = 'admin'
+    and (auth.jwt() -> 'amr') @> '[{"method":"password"}]'::jsonb,
+    false
+  );
 $$;
 
 alter table public.players enable row level security;

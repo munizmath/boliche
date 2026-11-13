@@ -14,12 +14,13 @@ Abra `http://localhost:4173`. Sem uma publishable key preenchida, a interface pe
 
 1. Abra o SQL Editor do projeto e execute [`schema.sql`](schema.sql).
 2. Execute [`registration.sql`](registration.sql) para habilitar cadastro, perfis e fotos privadas.
-3. Crie a conta do administrador em Authentication → Users.
-4. Marque o usuário com `app_metadata.role = "admin"` usando o SQL comentado no final de `schema.sql` (ou pelo fluxo administrativo equivalente). O frontend não confia em um campo editável pelo navegador.
-5. Copie a Project URL e a Publishable Key para [`supabase-config.js`](supabase-config.js). A URL e a publishable/anon key podem estar no navegador; nunca coloque `service_role` no repositório.
-6. Publique a pasta raiz na branch `main` pelo GitHub Pages.
+3. Execute [`admin-password-auth.sql`](admin-password-auth.sql) para exigir login com senha nas operações administrativas, inclusive após recuperação.
+4. Crie a conta do administrador em Authentication → Users.
+5. Marque o usuário com `app_metadata.role = "admin"` usando o SQL comentado no final de `schema.sql` (ou pelo fluxo administrativo equivalente). O frontend não confia em um campo editável pelo navegador.
+6. Copie a Project URL e a Publishable Key para [`supabase-config.js`](supabase-config.js). A URL e a publishable/anon key podem estar no navegador; nunca coloque `service_role` no repositório.
+7. Publique a pasta raiz na branch `main` pelo GitHub Pages.
 
-As políticas permitem leitura pública das três tabelas e escrita apenas para usuários autenticados cujo `app_metadata.role` seja `admin`. A foto do placar é processada localmente com Tesseract.js e não é enviada ao Supabase.
+As políticas permitem leitura pública das três tabelas e escrita apenas para usuários autenticados cujo `app_metadata.role` seja `admin` e cuja sessão tenha login com senha. A foto do placar é processada localmente com Tesseract.js e não é enviada ao Supabase.
 
 O cadastro público usa `auth.users` + `public.profiles`: qualquer pessoa pode criar a própria conta e concluir o perfil com uma foto obrigatória. O perfil começa como `pending`; ele não vira jogador automaticamente e não concede acesso administrativo. As fotos ficam no bucket privado `profile-photos`, isoladas por usuário.
 
