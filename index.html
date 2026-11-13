@@ -173,6 +173,18 @@
       </form>
     </dialog>
 
+    <dialog id="recoveryModal" class="modal">
+      <form class="modal-card" id="recoveryForm">
+        <p class="eyebrow">recuperação de acesso</p>
+        <h2>Definir nova senha</h2>
+        <p class="modal-copy">O link de recuperação foi confirmado. Crie uma senha para continuar.</p>
+        <label>Nova senha<input id="recoveryPassword" type="password" minlength="8" autocomplete="new-password" required /></label>
+        <label>Confirmar nova senha<input id="recoveryPasswordConfirm" type="password" minlength="8" autocomplete="new-password" required /></label>
+        <p id="recoveryError" class="form-error" role="alert" hidden></p>
+        <div class="modal-actions"><button id="recoverySignOut" class="button button--quiet" type="button">Sair</button><button id="recoverySubmit" class="button button--primary" type="submit">Salvar nova senha</button></div>
+      </form>
+    </dialog>
+
     <dialog id="gameModal" class="modal">
       <form method="dialog" class="modal-card modal-card--wide" id="gameForm">
         <button class="modal-close" value="cancel" aria-label="Fechar">×</button>

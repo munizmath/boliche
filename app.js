@@ -12,6 +12,7 @@ const state = {
   scores: [],
   profile: null,
   session: null,
+  recovering: /(?:^#|&)type=recovery(?:&|$)/.test(window.location.hash) || new URLSearchParams(window.location.search).get("type") === "recovery",
   activeGameId: null,
   lastUpdatedAt: null,
   crop: null,
@@ -53,8 +54,8 @@ function setUpdated(value = new Date().toISOString()) {
 
 function setModal(id, open) {
   const modal = $(id);
-  if (open) modal.showModal();
-  else modal.close();
+  if (open && !modal.open) modal.showModal();
+  else if (!open && modal.open) modal.close();
 }
 
 async function loadData() {
@@ -94,16 +95,61 @@ async function loadProfile() {
 }
 
 function openProfileModal() {
-  if (!state.session) return;
+  if (!state.session || state.recovering) return;
   $("profileName").value = state.profile?.nome || state.session.user.user_metadata?.nome || "";
   $("profilePhoto").value = "";
+  $("profilePhoto").required = !state.profile?.foto_path;
   $("profilePhotoName").textContent = state.profile?.foto_path ? "Escolha outra foto para substituir a atual" : "JPG, PNG ou WebP · até 5 MB";
   $("profileError").hidden = true;
   setModal("profileModal", true);
 }
 
 function showProfileIfNeeded() {
+  if (state.recovering) return showRecoveryIfNeeded();
   if (state.session && !state.profile) window.setTimeout(openProfileModal, 0);
+}
+
+function showRecoveryIfNeeded() {
+  if (!state.recovering || !state.session) return;
+  sessionStorage.setItem("boliche-recovery-user", state.session.user.id);
+  setModal("profileModal", false);
+  $("recoveryError").hidden = true;
+  setModal("recoveryModal", true);
+}
+
+async function submitRecovery(event) {
+  event.preventDefault();
+  const errorElement = $("recoveryError");
+  const password = $("recoveryPassword").value;
+  if (password !== $("recoveryPasswordConfirm").value) {
+    errorElement.textContent = "As senhas não conferem.";
+    errorElement.hidden = false;
+    return;
+  }
+  const button = $("recoverySubmit");
+  button.disabled = true;
+  errorElement.hidden = true;
+  try {
+    const { error } = await client.auth.updateUser({ password });
+    if (error) {
+      errorElement.textContent = error.message || "Não foi possível salvar a senha. Solicite um novo link e tente novamente.";
+      errorElement.hidden = false;
+      return;
+    }
+    state.recovering = false;
+    sessionStorage.removeItem("boliche-recovery-user");
+    $("recoveryForm").reset();
+    setModal("recoveryModal", false);
+    render();
+    showToast("Nova senha salva. Acesso liberado.", "success");
+    showProfileIfNeeded();
+  } catch (error) {
+    console.error(error);
+    errorElement.textContent = "Não foi possível salvar a senha. Tente novamente.";
+    errorElement.hidden = false;
+  } finally {
+    button.disabled = false;
+  }
 }
 
 function subscribeRealtime() {
@@ -134,16 +180,16 @@ async function refreshFromRealtime() {
 }
 
 function applyAuthUi() {
-  const admin = isAdmin();
+  const admin = isAdmin() && !state.recovering;
   document.querySelectorAll(".admin-only").forEach((element) => {
     element.hidden = !admin;
   });
   $("authButton").textContent = state.session ? "Sair" : "Entrar";
   $("authButton").title = state.session?.user?.email || "Acesso do administrador";
   $("registerButton").hidden = isAuthenticated();
-  $("profileButton").hidden = !isAuthenticated();
+  $("profileButton").hidden = !isAuthenticated() || state.recovering;
   const sidebarRole = $("sidebarRole");
-  if (sidebarRole) sidebarRole.textContent = isAdmin() ? "Administrador" : (state.session ? "Participante" : "Visitante");
+  if (sidebarRole) sidebarRole.textContent = state.recovering ? "Recuperação de acesso" : (isAdmin() ? "Administrador" : (state.session ? "Participante" : "Visitante"));
   const sidebarRoleNote = sidebarRole?.nextElementSibling;
   if (sidebarRoleNote) sidebarRoleNote.textContent = state.session ? (state.session.user?.email || "acesso autorizado") : "acompanha o encontro";
 }
@@ -265,6 +311,9 @@ function openAuth() {
 async function signOut() {
   if (client) await client.auth.signOut();
   state.session = null;
+  state.recovering = false;
+  sessionStorage.removeItem("boliche-recovery-user");
+  setModal("recoveryModal", false);
   showToast("Sessão encerrada.", "info");
   render();
 }
@@ -540,11 +589,14 @@ function initTheme() {
 
 function bindEvents() {
   initTheme();
+  $("recoveryForm").addEventListener("submit", submitRecovery);
+  $("recoverySignOut").addEventListener("click", signOut);
+  $("recoveryModal").addEventListener("cancel", (event) => event.preventDefault());
   $("authButton").addEventListener("click", openAuth); $("registerButton").addEventListener("click", openRegister); $("profileButton").addEventListener("click", openProfileModal); $("photoButton").addEventListener("click", openPhotoModal); $("newGameButton").addEventListener("click", openGameModal);
   $("gameForm").addEventListener("submit", createGame); $("authForm").addEventListener("submit", submitAuth); $("registerForm").addEventListener("submit", submitRegister); $("profileForm").addEventListener("submit", submitProfile); $("profilePhoto").addEventListener("change", () => { const file = $("profilePhoto").files?.[0]; if (file) $("profilePhotoName").textContent = file.name; }); $("playersForm").addEventListener("click", (event) => { if (event.target.id === "addPlayerButton") addPlayer(); });
   $("photoForm").addEventListener("submit", confirmPhotoUpdate); $("photoInput").addEventListener("change", loadPhoto); $("photoLane").addEventListener("change", () => updateReviewTable()); $("photoGame").addEventListener("change", () => updateReviewTable()); $("runOcrButton").addEventListener("click", runOcr); $("clearCropButton").addEventListener("click", () => { state.crop = null; drawCanvas(); });
   const canvas = $("photoCanvas"); canvas.addEventListener("pointerdown", startCrop); canvas.addEventListener("pointermove", moveCrop); canvas.addEventListener("pointerup", endCrop); canvas.addEventListener("pointercancel", endCrop);
-  document.addEventListener("keydown", (event) => { if (event.key === "Escape") document.querySelectorAll("dialog[open]").forEach((dialog) => dialog.close()); });
+  document.addEventListener("keydown", (event) => { if (event.key === "Escape" && !state.recovering) document.querySelectorAll("dialog[open]").forEach((dialog) => dialog.close()); });
   $("authButton").insertAdjacentHTML("beforebegin", `<button id="playersButton" class="button button--quiet admin-only" type="button" hidden>Participantes</button>`); $("playersButton").addEventListener("click", openPlayersModal);
   document.querySelectorAll("[data-scroll-to]").forEach((button) => button.addEventListener("click", () => {
     const target = button.dataset.scrollTo;
@@ -563,13 +615,19 @@ function bindEvents() {
 async function start() {
   bindEvents();
   if (client) {
-    const { data } = await client.auth.getSession(); state.session = data.session;
-    await loadProfile();
-    client.auth.onAuthStateChange((_event, session) => {
+    client.auth.onAuthStateChange((event, session) => {
+      if (event === "PASSWORD_RECOVERY") state.recovering = true;
+      if (event === "SIGNED_OUT") {
+        state.recovering = false;
+        sessionStorage.removeItem("boliche-recovery-user");
+      }
       state.session = session;
       applyAuthUi();
       window.setTimeout(async () => { await loadProfile(); render(); showProfileIfNeeded(); }, 0);
     });
+    const { data } = await client.auth.getSession(); state.session = data.session;
+    if (data.session?.user?.id === sessionStorage.getItem("boliche-recovery-user")) state.recovering = true;
+    await loadProfile();
   }
   try { await loadData(); render(); showProfileIfNeeded(); subscribeRealtime(); } catch (error) { console.error(error); setConnection("Falha ao carregar", "error"); showToast("Não foi possível carregar o placar. Verifique o Supabase.", "error"); }
 }
