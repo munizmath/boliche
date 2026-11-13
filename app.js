@@ -13,6 +13,7 @@ const state = {
   scores: [],
   profile: null,
   profiles: [],
+  playerPhotos: new Map(),
   scoreChanges: [],
   session: null,
   recovering: /(?:^#|&)type=recovery(?:&|$)/.test(window.location.hash) || new URLSearchParams(window.location.search).get("type") === "recovery",
@@ -22,6 +23,10 @@ const state = {
   image: null,
   imageFile: null,
   imageUrl: null,
+  photoRotation: 0,
+  photoContrast: 100,
+  photoZoom: 100,
+  previewBase: null,
   editingPlayerId: null,
   editingLaneName: null,
   editingGameId: null,
@@ -76,22 +81,23 @@ function setModal(id, open) {
 
 async function loadData() {
   if (isDemoMode) {
-    state.players = []; state.lanes = []; state.games = []; state.scores = []; state.activeGameId = null;
+    state.players = []; state.lanes = []; state.games = []; state.scores = []; state.playerPhotos = new Map(); state.activeGameId = null;
     setConnection("Supabase não configurado", "error");
     $("demoBanner").hidden = false;
     $("demoBanner").innerHTML = "<strong>Supabase não configurado</strong><span>Configure a URL e a Publishable Key antes de usar o placar. Nenhum dado fictício será exibido.</span>";
     return;
   }
   setConnection("Sincronizando…", "muted");
-  const [playersResult, lanesResult, gamesResult, scoresResult, profilesResult, changesResult] = await Promise.all([
+  const [playersResult, lanesResult, gamesResult, scoresResult, profilesResult, changesResult, publicPhotosResult] = await Promise.all([
     client.from("players").select("id,nome,apelido_placar,pista").order("nome"),
     client.from("lanes").select("name").order("name"),
     client.from("games").select("id,nome,status,created_at,updated_at").order("created_at", { ascending: false }),
     client.from("scores").select("id,game_id,player_id,pontos,finalizado,updated_at"),
     isAdmin() ? client.rpc("list_registered_accounts") : Promise.resolve({ data: [] }),
     isAdmin() ? client.from("score_changes").select("id,score_id,game_id,player_id,previous_points,new_points,previous_finalized,new_finalized,changed_at,actor_id").order("id", { ascending: false }).limit(100) : Promise.resolve({ data: [] }),
+    client.from("profiles").select("player_id,foto_path").eq("status", "approved").not("player_id", "is", null),
   ]);
-  const error = playersResult.error || lanesResult.error || gamesResult.error || scoresResult.error || profilesResult.error || changesResult.error;
+  const error = playersResult.error || lanesResult.error || gamesResult.error || scoresResult.error || profilesResult.error || changesResult.error || publicPhotosResult.error;
   if (error) throw error;
   state.players = playersResult.data || [];
   state.lanes = lanesResult.data || [];
@@ -99,6 +105,13 @@ async function loadData() {
   state.scores = scoresResult.data || [];
   state.profiles = isAdmin() ? (profilesResult.data || []) : [];
   state.scoreChanges = isAdmin() ? (changesResult.data || []) : [];
+  const publicPhotos = publicPhotosResult.data || [];
+  const signedPhotos = await Promise.all(publicPhotos.map(async (profile) => {
+    const { data, error: photoError } = await client.storage.from("profile-photos").createSignedUrl(profile.foto_path, 300);
+    if (photoError) console.warn("Foto pública indisponível", photoError);
+    return [profile.player_id, data?.signedUrl || null];
+  }));
+  state.playerPhotos = new Map(signedPhotos.filter(([, url]) => url));
   if (isAdmin()) {
     await Promise.all(state.profiles.map(async (profile) => {
       if (!profile.foto_path) return;
@@ -277,6 +290,15 @@ function render() {
   if ($("historyModal").open) renderScoreHistory();
 }
 
+function officialTotals(lane = "") {
+  const finalGames = state.games.filter((game) => game.status === "final");
+  return (finalGames.length ? state.players : []).filter((player) => !lane || player.pista === lane).map((player) => {
+    const points = state.scores.filter((score) => score.player_id === player.id && finalGames.some((game) => game.id === score.game_id) && score.finalizado).reduce((sum, score) => sum + Number(score.pontos || 0), 0);
+    const current = state.scores.find((score) => score.game_id === state.activeGameId && score.player_id === player.id);
+    return { player, points, current };
+  }).sort((a, b) => b.points - a.points || a.player.nome.localeCompare(b.player.nome, "pt-BR"));
+}
+
 function renderLeaderboard() {
   const body = $("leaderboardBody");
   const finalGames = state.games.filter((game) => game.status === "final");
@@ -285,11 +307,13 @@ function renderLeaderboard() {
   const lanes = [...new Set(state.players.map((player) => player.pista).filter(Boolean))].sort((a, b) => a.localeCompare(b, "pt-BR", { numeric: true }));
   laneSelect.innerHTML = `<option value="">Todas as pistas</option>${lanes.map((lane) => `<option value="${esc(lane)}">Pista ${esc(lane)}</option>`).join("")}`;
   if (lanes.includes(selectedLane)) laneSelect.value = selectedLane;
-  const totals = (finalGames.length ? state.players : []).filter((player) => !laneSelect.value || player.pista === laneSelect.value).map((player) => {
-    const points = state.scores.filter((score) => score.player_id === player.id && finalGames.some((game) => game.id === score.game_id) && score.finalizado).reduce((sum, score) => sum + Number(score.pontos || 0), 0);
-    const current = state.scores.find((score) => score.game_id === state.activeGameId && score.player_id === player.id);
-    return { player, points, current };
-  }).sort((a, b) => b.points - a.points || a.player.nome.localeCompare(b.player.nome, "pt-BR"));
+  const totals = officialTotals(laneSelect.value);
+  const podium = $("podium");
+  podium.hidden = totals.length === 0;
+  podium.innerHTML = totals.slice(0, 3).map((item, index) => {
+    const photoUrl = state.playerPhotos.get(item.player.id);
+    return `<div class="podium-place podium-place--${index + 1}"><span class="podium-medal">${index + 1}º</span>${photoUrl ? `<img class="podium-avatar" src="${esc(photoUrl)}" alt="Foto de ${esc(item.player.nome)}" loading="lazy" />` : `<span class="podium-avatar podium-avatar--empty" aria-hidden="true">${esc(item.player.nome.slice(0, 1))}</span>`}<strong>${esc(item.player.nome)}</strong><small>${item.points.toLocaleString("pt-BR")} pontos</small></div>`;
+  }).join("");
   let previousPoints = null;
   let previousPosition = 0;
   body.innerHTML = totals.map((item, index) => {
@@ -298,7 +322,8 @@ function renderLeaderboard() {
     previousPosition = position;
     const situation = item.current?.finalizado ? "Final" : (item.current ? "Parcial" : "—");
     const chipClass = situation === "Final" ? "status-chip status-chip--final" : "status-chip status-chip--partial";
-    return `<tr><td class="rank-cell">${position}</td><td><button class="player-stats-link" type="button" data-stats-player="${esc(item.player.id)}">${esc(item.player.nome)}</button><small>${esc(item.player.apelido_placar || "sem apelido")}</small></td><td>${esc(item.player.pista || "—")}</td><td class="points-cell">${item.points.toLocaleString("pt-BR")}</td><td><span class="${chipClass}">${situation}</span></td></tr>`;
+    const photoUrl = state.playerPhotos.get(item.player.id);
+    return `<tr><td class="rank-cell">${position}</td><td><div class="ranking-player">${photoUrl ? `<img class="ranking-avatar" src="${esc(photoUrl)}" alt="Foto de ${esc(item.player.nome)}" loading="lazy" />` : ""}<span><button class="player-stats-link" type="button" data-stats-player="${esc(item.player.id)}">${esc(item.player.nome)}</button><small>${esc(item.player.apelido_placar || "sem apelido")}</small></span></div></td><td>${esc(item.player.pista || "—")}</td><td class="points-cell">${item.points.toLocaleString("pt-BR")}</td><td><span class="${chipClass}">${situation}</span></td></tr>`;
   }).join("");
   body.querySelectorAll("[data-stats-player]").forEach((button) => button.addEventListener("click", () => openStatsModal(button.dataset.statsPlayer)));
   $("leaderboardEmpty").hidden = totals.length > 0;
@@ -322,8 +347,10 @@ function renderCurrentGame() {
   const ranked = [...scores].sort((a, b) => (b.score.pontos ?? -1) - (a.score.pontos ?? -1) || a.player.nome.localeCompare(b.player.nome, "pt-BR"));
   body.innerHTML = ranked.length ? ranked.map(({ score, player }) => {
     const position = score.pontos == null ? "—" : `${ranked.findIndex((item) => item.score.pontos === score.pontos) + 1}º`;
-    return `<div class="current-row"><div class="current-player"><span class="provisional-rank">${position}</span><strong>${esc(player.nome)}</strong><span>Pista ${esc(player.pista || "—")}</span></div><div class="current-score"><strong>${score.pontos == null ? "—" : Number(score.pontos).toLocaleString("pt-BR")}</strong><span class="status-chip ${score.finalizado ? "status-chip--final" : "status-chip--partial"}">${score.finalizado ? "Final" : "Pendente"}</span>${isAdmin() ? `<button class="text-button" type="button" data-quick-score="${esc(player.id)}">Corrigir</button>${score.pontos != null ? `<button class="text-button text-button--danger" type="button" data-clear-score="${esc(player.id)}">Limpar</button>` : ""}` : ""}</div></div>`;
+    const photoUrl = state.playerPhotos.get(player.id);
+    return `<div class="current-row"><div class="current-player${photoUrl ? " current-player--with-photo" : ""}"><span class="provisional-rank">${position}</span>${photoUrl ? `<img class="ranking-avatar" src="${esc(photoUrl)}" alt="Foto de ${esc(player.nome)}" loading="lazy" />` : ""}<button class="player-stats-link current-stats-link" type="button" data-stats-player="${esc(player.id)}">${esc(player.nome)}</button><span>Pista ${esc(player.pista || "—")}</span></div><div class="current-score"><strong>${score.pontos == null ? "—" : Number(score.pontos).toLocaleString("pt-BR")}</strong><span class="status-chip ${score.finalizado ? "status-chip--final" : "status-chip--partial"}">${score.finalizado ? "Final" : "Pendente"}</span>${isAdmin() ? `<button class="text-button" type="button" data-quick-score="${esc(player.id)}">Corrigir</button>${score.pontos != null ? `<button class="text-button text-button--danger" type="button" data-clear-score="${esc(player.id)}">Limpar</button>` : ""}` : ""}</div></div>`;
   }).join("") : `<div class="empty-state"><span>Partida sem participantes.</span></div>`;
+  body.querySelectorAll("[data-stats-player]").forEach((button) => button.addEventListener("click", () => openStatsModal(button.dataset.statsPlayer)));
   body.querySelectorAll("[data-quick-score]").forEach((button) => button.addEventListener("click", () => openQuickScore(button.dataset.quickScore)));
   body.querySelectorAll("[data-clear-score]").forEach((button) => button.addEventListener("click", () => clearScore(button.dataset.clearScore)));
 }
@@ -355,9 +382,14 @@ function openStatsModal(playerId) {
   const results = finalGames.map((game) => ({ game, score: state.scores.find((score) => score.game_id === game.id && score.player_id === playerId) })).filter((item) => item.score?.finalizado && item.score.pontos != null);
   const points = results.map((item) => Number(item.score.pontos));
   const wins = results.filter(({ game, score }) => Number(score.pontos) === Math.max(...gameScores(game.id).filter((item) => item.pontos != null).map((item) => Number(item.pontos)))).length;
+  const position = officialTotals().findIndex((item) => item.player.id === playerId) + 1;
+  const photoUrl = state.playerPhotos.get(playerId);
   $("statsTitle").textContent = player.nome;
+  $("statsHero").innerHTML = `${photoUrl ? `<img src="${esc(photoUrl)}" alt="Foto de ${esc(player.nome)}" />` : `<span class="stats-avatar-empty" aria-hidden="true">${esc(player.nome.slice(0, 1))}</span>`}<div><strong>${position ? `${position}º no ranking` : "Ainda sem posição oficial"}</strong><span>Pista ${esc(player.pista || "—")} · ${points.length} ${points.length === 1 ? "partida concluída" : "partidas concluídas"}</span></div>`;
   $("statsSummary").innerHTML = `<div><strong>${points.length ? Math.max(...points) : "—"}</strong><span>recorde</span></div><div><strong>${points.length ? (points.reduce((sum, value) => sum + value, 0) / points.length).toFixed(1).replace(".", ",") : "—"}</strong><span>média</span></div><div><strong>${wins}</strong><span>vitórias</span></div>`;
-  $("statsGames").innerHTML = results.length ? results.map(({ game, score }) => `<div class="history-row"><strong>${esc(game.nome)}</strong><span>${score.pontos} pontos</span></div>`).join("") : `<p class="empty-inline">Nenhuma partida finalizada para este jogador.</p>`;
+  const coords = points.map((value, index) => `${points.length === 1 ? 240 : 20 + index * 440 / (points.length - 1)},${115 - value * .3}`);
+  $("statsEvolution").innerHTML = points.length ? `<strong>Evolução por partida</strong><svg viewBox="0 0 480 140" role="img" aria-label="Pontuações: ${points.join(", ")}"><line x1="20" y1="115" x2="460" y2="115" stroke="currentColor" opacity=".25" /><polyline points="${coords.join(" ")}" fill="none" stroke="var(--color-accent)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" />${coords.map((point) => `<circle cx="${point.split(",")[0]}" cy="${point.split(",")[1]}" r="5" fill="var(--color-accent)" />`).join("")}</svg>` : "";
+  $("statsGames").innerHTML = results.length ? results.map(({ game, score }) => `<div class="history-row"><div><strong>${esc(game.nome)}</strong><small>${fmtDate(game.created_at)}</small></div><span>${score.pontos} pontos</span></div>`).join("") : `<p class="empty-inline">Nenhuma partida finalizada para este jogador.</p>`;
   setModal("statsModal", true);
 }
 
@@ -500,8 +532,8 @@ function updateReviewTable(suggestions = new Map()) {
     const old = state.scores.find((score) => score.game_id === gameId && score.player_id === player.id);
     const suggestion = suggestions.get(player.id);
     const value = suggestion?.value ?? (old?.pontos ?? "");
-    const finalizado = suggestion ? false : Boolean(old?.finalizado);
-    return `<div class="review-row" data-review-player="${esc(player.id)}" data-old-score="${old?.pontos ?? ""}" data-old-final="${Boolean(old?.finalizado)}"><div class="review-player"><strong>${esc(player.nome)}</strong><small>${esc(player.apelido_placar || "sem apelido")} · pista ${esc(player.pista || "—")}</small></div><div class="review-score-wrap"><input class="review-score" type="number" min="0" max="300" step="1" inputmode="numeric" placeholder="—" value="${value === "" ? "" : esc(value)}" aria-label="Pontos de ${esc(player.nome)}" /><small></small></div><label class="review-confirm"><input class="review-final" type="checkbox" ${finalizado ? "checked" : ""} /> confirmar</label></div>`;
+    const finalizado = Boolean(old?.finalizado) && (!suggestion || Number(suggestion.value) === Number(old.pontos));
+    return `<div class="review-row" data-review-player="${esc(player.id)}" data-old-score="${old?.pontos ?? ""}" data-old-final="${Boolean(old?.finalizado)}"><div class="review-player"><strong>${esc(player.nome)}</strong><small>${esc(player.apelido_placar || "sem apelido")} · pista ${esc(player.pista || "—")}${suggestion ? ` · ${esc(suggestion.hint)}` : ""}</small></div><div class="review-score-wrap"><input class="review-score" type="number" min="0" max="300" step="1" inputmode="numeric" placeholder="—" value="${value === "" ? "" : esc(value)}" aria-label="Pontos de ${esc(player.nome)}" /><small></small></div><label class="review-confirm"><input class="review-final" type="checkbox" ${finalizado ? "checked" : ""} /> confirmar</label></div>`;
   }).join("") : `<div class="empty-state"><strong>Nenhum jogador nessa pista</strong><span>Cadastre o participante com o número da pista antes de importar.</span></div>`;
   updatePhotoConfirmState();
 }
@@ -696,6 +728,7 @@ async function submitProfile(event) {
     }
     setModal("profileModal", false);
     render();
+    if (data.status === "approved") refreshAfterReconnect();
     showToast(data.status === "approved" ? "Perfil atualizado." : "Perfil salvo e enviado para aprovação.", "success");
   } catch (error) {
     console.error(error);
@@ -891,6 +924,51 @@ async function shareScoreboard() {
   catch (error) { if (error.name !== "AbortError") showToast("Não foi possível compartilhar o link.", "error"); }
 }
 
+async function shareResultCard() {
+  const totals = officialTotals();
+  const finalGames = state.games.filter((game) => game.status === "final");
+  if (!totals.length) return showToast("Finalize uma partida para gerar a imagem do resultado.", "error");
+  const canvas = document.createElement("canvas");
+  canvas.width = 1080;
+  canvas.height = Math.max(1100, 500 + totals.length * 72 + 150);
+  const context = canvas.getContext("2d");
+  context.fillStyle = "#f6f4ef"; context.fillRect(0, 0, canvas.width, canvas.height);
+  context.fillStyle = "#bd8d52"; context.fillRect(0, 0, canvas.width, 18);
+  context.fillStyle = "#2f312f"; context.font = "bold 62px Georgia"; context.fillText("Boliche dos Amigos", 80, 110);
+  context.font = "28px Arial"; context.fillText("Classificação oficial do encontro", 80, 160);
+  context.fillStyle = "#777a76"; context.font = "22px Arial";
+  context.fillText(`${finalGames.length} ${finalGames.length === 1 ? "partida finalizada" : "partidas finalizadas"} · ${new Intl.DateTimeFormat("pt-BR", { dateStyle: "long" }).format(new Date())}`, 80, 202);
+  totals.slice(0, 3).forEach((item, index) => {
+    const x = 80 + index * 315;
+    context.fillStyle = index === 0 ? "#e9d5b8" : "#fbfaf7"; context.fillRect(x, 246, 295, 180);
+    context.strokeStyle = "#d8d9d3"; context.strokeRect(x, 246, 295, 180);
+    context.fillStyle = "#805928"; context.font = "bold 44px Georgia"; context.fillText(`${index + 1}º`, x + 18, 302);
+    context.fillStyle = "#2f312f"; context.font = "bold 24px Arial"; context.fillText(item.player.nome.slice(0, 19), x + 18, 350);
+    context.font = "21px Arial"; context.fillText(`${item.points} pontos`, x + 18, 390);
+  });
+  context.fillStyle = "#805928"; context.font = "bold 22px Arial"; context.fillText("RANKING COMPLETO", 80, 475);
+  totals.forEach((item, index) => {
+    const y = 520 + index * 72;
+    context.fillStyle = index % 2 ? "#f1eee8" : "#fbfaf7"; context.fillRect(80, y - 37, 925, 62);
+    context.fillStyle = "#805928"; context.font = "bold 27px Georgia"; context.fillText(`${index + 1}º`, 100, y);
+    context.fillStyle = "#2f312f"; context.font = "bold 24px Arial"; context.fillText(item.player.nome.slice(0, 30), 180, y);
+    context.font = "22px Arial"; context.textAlign = "right"; context.fillText(`${item.points} pontos`, 980, y); context.textAlign = "left";
+  });
+  context.fillStyle = "#777a76"; context.font = "21px Arial"; context.fillText("munizmath.github.io/boliche", 80, canvas.height - 70);
+  const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
+  if (!blob) return showToast("Não foi possível gerar a imagem.", "error");
+  const file = new File([blob], "resultado-boliche.png", { type: "image/png" });
+  if (navigator.share && navigator.canShare?.({ files: [file] })) {
+    try { await navigator.share({ title: "Resultado do Boliche dos Amigos", files: [file] }); return; }
+    catch (error) { if (error.name === "AbortError") return; }
+  }
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a"); link.href = url; link.download = file.name;
+  document.body.append(link); link.click(); link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 60000);
+  showToast("Imagem do resultado salva no aparelho.", "success");
+}
+
 function openPhotoModal() {
   if (!state.games.length) return showToast("Abra uma partida antes de importar uma foto.", "error");
   resetPhotoState(); renderPhotoOptions(); setModal("photoModal", true);
@@ -899,7 +977,11 @@ function openPhotoModal() {
 function resetPhotoState() {
   if (state.imageUrl) URL.revokeObjectURL(state.imageUrl);
   state.imageUrl = null;
-  state.crop = null; state.image = null; state.imageFile = null;
+  state.crop = null; state.image = null; state.imageFile = null; state.previewBase = null;
+  state.photoRotation = 0; state.photoContrast = 100; state.photoZoom = 100;
+  $("photoZoom").value = "100"; $("photoContrast").value = "100";
+  $("photoZoom").disabled = true; $("photoContrast").disabled = true; $("rotatePhotoButton").disabled = true;
+  $("photoCanvas").style.width = "100%";
   $("photoError").hidden = true;
   $("photoInput").value = ""; $("canvasPlaceholder").hidden = false; $("photoCanvas").hidden = true; $("runOcrButton").disabled = true; $("ocrStatus").textContent = "Foto opcional: você também pode preencher os pontos manualmente."; updateReviewTable();
 }
@@ -916,23 +998,51 @@ function loadPhoto(event) {
     if (state.imageUrl !== imageUrl) return;
     URL.revokeObjectURL(imageUrl); state.imageUrl = null;
     state.image = image;
-    const canvas = $("photoCanvas");
-    const scale = Math.min(1, 900 / image.naturalWidth);
-    canvas.width = Math.round(image.naturalWidth * scale); canvas.height = Math.round(image.naturalHeight * scale);
-    canvas.hidden = false; $("canvasPlaceholder").hidden = true; drawCanvas(); $("runOcrButton").disabled = false; $("ocrStatus").textContent = "Imagem pronta. Recorte a região se quiser e leia as sugestões.";
+    state.crop = null;
+    updatePhotoPreview();
+    $("photoCanvas").hidden = false; $("canvasPlaceholder").hidden = true;
+    $("runOcrButton").disabled = false; $("rotatePhotoButton").disabled = false;
+    $("photoZoom").disabled = false; $("photoContrast").disabled = false;
+    $("ocrStatus").textContent = "Imagem pronta. Ajuste, recorte e leia as sugestões.";
   };
   image.onerror = () => { if (state.imageUrl !== imageUrl) return; URL.revokeObjectURL(imageUrl); state.imageUrl = null; $("ocrStatus").textContent = "Não foi possível abrir a foto. Preencha os pontos manualmente."; };
   image.src = imageUrl;
 }
 
+function drawOrientedPhoto(canvas, maxSide) {
+  const rotated = state.photoRotation % 180 !== 0;
+  const sourceWidth = rotated ? state.image.naturalHeight : state.image.naturalWidth;
+  const sourceHeight = rotated ? state.image.naturalWidth : state.image.naturalHeight;
+  const scale = Math.min(1, maxSide / Math.max(sourceWidth, sourceHeight));
+  canvas.width = Math.max(1, Math.round(sourceWidth * scale));
+  canvas.height = Math.max(1, Math.round(sourceHeight * scale));
+  const context = canvas.getContext("2d");
+  context.translate(canvas.width / 2, canvas.height / 2);
+  context.rotate(state.photoRotation * Math.PI / 180);
+  context.filter = `contrast(${state.photoContrast}%)`;
+  context.drawImage(state.image, -state.image.naturalWidth * scale / 2, -state.image.naturalHeight * scale / 2, state.image.naturalWidth * scale, state.image.naturalHeight * scale);
+  context.setTransform(1, 0, 0, 1, 0, 0);
+  context.filter = "none";
+}
+
+function updatePhotoPreview() {
+  if (!state.image) return;
+  const base = document.createElement("canvas");
+  drawOrientedPhoto(base, 900);
+  state.previewBase = base;
+  const canvas = $("photoCanvas");
+  canvas.width = base.width; canvas.height = base.height;
+  drawCanvas();
+}
+
 function drawCanvas() {
   const canvas = $("photoCanvas"); const context = canvas.getContext("2d");
-  if (!state.image) return;
-  context.clearRect(0, 0, canvas.width, canvas.height); context.drawImage(state.image, 0, 0, canvas.width, canvas.height);
+  if (!state.previewBase) return;
+  context.clearRect(0, 0, canvas.width, canvas.height); context.drawImage(state.previewBase, 0, 0);
   if (!state.crop) return;
   const { x, y, width, height } = state.crop;
   context.fillStyle = "rgba(18, 15, 12, .52)"; context.fillRect(0, 0, canvas.width, canvas.height);
-  context.clearRect(x, y, width, height); context.drawImage(state.image, x * state.image.naturalWidth / canvas.width, y * state.image.naturalHeight / canvas.height, width * state.image.naturalWidth / canvas.width, height * state.image.naturalHeight / canvas.height, x, y, width, height);
+  context.clearRect(x, y, width, height); context.drawImage(state.previewBase, x, y, width, height, x, y, width, height);
   context.strokeStyle = "#f4b86a"; context.lineWidth = 3; context.strokeRect(x, y, width, height);
 }
 
@@ -965,7 +1075,7 @@ async function runOcr() {
   try {
     const source = getOcrCanvas();
     const result = await Tesseract.recognize(source, "por+eng", { logger: (info) => { if (info.status === "recognizing text") $("ocrStatus").textContent = `Lendo a imagem… ${Math.round((info.progress || 0) * 100)}%`; } });
-    const suggestions = buildSuggestions(result.data.text || "");
+    const suggestions = buildSuggestions(result.data, source.width);
     updateReviewTable(suggestions);
     $("ocrStatus").textContent = suggestions.size ? `OCR encontrou ${suggestions.size} sugestão(ões). Revise antes de confirmar.` : "OCR não encontrou associações confiáveis. Preencha a tabela manualmente.";
     updatePhotoConfirmState();
@@ -976,27 +1086,53 @@ async function runOcr() {
 
 function getOcrCanvas() {
   const source = document.createElement("canvas");
+  drawOrientedPhoto(source, 1800);
   const crop = state.crop && state.crop.width > 12 ? state.crop : { x: 0, y: 0, width: $("photoCanvas").width, height: $("photoCanvas").height };
-  const sourceWidth = crop.width * state.image.naturalWidth / $("photoCanvas").width;
-  const sourceHeight = crop.height * state.image.naturalHeight / $("photoCanvas").height;
-  const scale = Math.min(1, 1800 / sourceWidth, 1800 / sourceHeight);
-  source.width = Math.max(1, Math.round(sourceWidth * scale)); source.height = Math.max(1, Math.round(sourceHeight * scale));
-  source.getContext("2d").drawImage(state.image, crop.x * state.image.naturalWidth / $("photoCanvas").width, crop.y * state.image.naturalHeight / $("photoCanvas").height, sourceWidth, sourceHeight, 0, 0, source.width, source.height);
-  return source;
+  if (crop.x === 0 && crop.y === 0 && crop.width === $("photoCanvas").width && crop.height === $("photoCanvas").height) return source;
+  const scaleX = source.width / $("photoCanvas").width;
+  const scaleY = source.height / $("photoCanvas").height;
+  const clipped = document.createElement("canvas");
+  clipped.width = Math.max(1, Math.round(crop.width * scaleX));
+  clipped.height = Math.max(1, Math.round(crop.height * scaleY));
+  clipped.getContext("2d").drawImage(source, crop.x * scaleX, crop.y * scaleY, crop.width * scaleX, crop.height * scaleY, 0, 0, clipped.width, clipped.height);
+  return clipped;
 }
 
-function buildSuggestions(text) {
+function buildSuggestions(ocr, imageWidth = 0) {
   const suggestions = new Map();
   const players = playersOnLane();
-  text.split(/\r?\n/).forEach((line) => {
-    const normalizedLine = normalize(line);
+  const structuredLines = typeof ocr === "object" && ocr?.blocks?.flatMap((block) => block.paragraphs?.flatMap((paragraph) => paragraph.lines || []) || []) || [];
+  const lines = structuredLines.length ? structuredLines : String(typeof ocr === "string" ? ocr : ocr?.text || "").split(/\r?\n/).map((text) => ({ text }));
+  const candidates = [];
+  lines.forEach((line) => {
+    const normalizedLine = normalize(line.text || "");
     const matches = players.filter((player) => [player.nome, player.apelido_placar]
       .filter(Boolean).some((alias) => normalizedLine.includes(normalize(alias))));
-    if (matches.length !== 1 || suggestions.has(matches[0].id)) return;
-    const values = [...line.matchAll(/\b\d{1,3}\b/g)]
-      .map((match) => Number(match[0])).filter((value) => value <= 300);
-    if (!values.length) return;
-    suggestions.set(matches[0].id, { value: values.at(-1), hint: "Último total da linha · confira" });
+    if (matches.length !== 1) return;
+    const words = (line.words || []).filter((word) => word.bbox && /^\d{1,3}$/.test(word.text?.trim() || "") && Number(word.text) <= 300).sort((a, b) => a.bbox.x0 - b.bbox.x0);
+    if (!words.length) {
+      const values = [...String(line.text || "").matchAll(/\b\d{1,3}\b/g)].map((match) => Number(match[0])).filter((value) => value <= 300);
+      if (values.length === 1) candidates.push({ playerId: matches[0].id, value: values[0], reliable: true, x: null });
+      return;
+    }
+    const last = words.at(-1);
+    const previous = words.at(-2);
+    const gap = previous ? last.bbox.x0 - previous.bbox.x1 : Infinity;
+    const allEarlierValues = words.slice(0, -1).map((word) => Number(word.text));
+    const afterLast = (line.words || []).some((word) => word.bbox?.x0 > last.bbox.x1 && /[\p{L}\d]/u.test(word.text || ""));
+    const plausible = Number(last.text) >= Math.max(0, ...allEarlierValues)
+      && !afterLast && last.confidence >= 40
+      && (imageWidth ? last.bbox.x0 >= imageWidth * .68 && gap >= imageWidth * .035 : gap >= 25);
+    if (plausible) candidates.push({ playerId: matches[0].id, value: Number(last.text), x: (last.bbox.x0 + last.bbox.x1) / 2, gap });
+  });
+  const positioned = candidates.filter((item) => item.x != null);
+  const aligned = positioned.length >= 2 && positioned.every((item) => Math.abs(item.x - positioned[0].x) <= imageWidth * .07);
+  const candidateCounts = new Map();
+  candidates.forEach((item) => candidateCounts.set(item.playerId, (candidateCounts.get(item.playerId) || 0) + 1));
+  candidates.forEach((item) => {
+    if (candidateCounts.get(item.playerId) !== 1) return;
+    if (item.x != null && !aligned && item.gap < imageWidth * .08) return;
+    suggestions.set(item.playerId, { value: item.value, hint: "Total final sugerido · confira" });
   });
   return suggestions;
 }
@@ -1061,6 +1197,7 @@ function bindEvents() {
   initTheme();
   window.addEventListener("online", refreshAfterReconnect);
   document.addEventListener("visibilitychange", () => { if (!document.hidden) refreshAfterReconnect(); });
+  if (client) window.setInterval(refreshAfterReconnect, 240000);
   $("recoveryForm").addEventListener("submit", submitRecovery);
   $("recoverySignOut").addEventListener("click", signOut);
   $("recoveryModal").addEventListener("cancel", (event) => event.preventDefault());
@@ -1074,8 +1211,12 @@ function bindEvents() {
   $("shareButton").addEventListener("click", () => setModal("shareModal", true));
   $("copyShareButton").addEventListener("click", copyShareLink);
   $("nativeShareButton").addEventListener("click", shareScoreboard);
+  $("shareResultButton").addEventListener("click", shareResultCard);
   $("rankingLane").addEventListener("change", renderLeaderboard);
   $("photoForm").addEventListener("submit", confirmPhotoUpdate); $("photoInput").addEventListener("change", loadPhoto); $("photoLane").addEventListener("change", () => updateReviewTable()); $("photoGame").addEventListener("change", renderPhotoOptions); $("reviewTable").addEventListener("input", updatePhotoConfirmState); $("runOcrButton").addEventListener("click", runOcr); $("clearCropButton").addEventListener("click", () => { state.crop = null; drawCanvas(); });
+  $("rotatePhotoButton").addEventListener("click", () => { state.photoRotation = (state.photoRotation + 90) % 360; state.crop = null; updatePhotoPreview(); });
+  $("photoZoom").addEventListener("input", (event) => { state.photoZoom = Number(event.target.value); $("photoCanvas").style.width = `${state.photoZoom}%`; });
+  $("photoContrast").addEventListener("input", (event) => { state.photoContrast = Number(event.target.value); updatePhotoPreview(); });
   const canvas = $("photoCanvas"); canvas.addEventListener("pointerdown", startCrop); canvas.addEventListener("pointermove", moveCrop); canvas.addEventListener("pointerup", endCrop); canvas.addEventListener("pointercancel", endCrop);
   document.addEventListener("keydown", (event) => { if (event.key === "Escape" && !state.recovering) document.querySelectorAll("dialog[open]").forEach((dialog) => dialog.close()); });
   $("authButton").insertAdjacentHTML("beforebegin", `<button id="playersButton" class="button button--quiet admin-only" type="button" hidden>Participantes</button>`); $("playersButton").addEventListener("click", openPlayersModal);
@@ -1105,6 +1246,7 @@ async function start() {
         sessionStorage.removeItem("boliche-recovery-user");
         state.profile = null;
         state.profiles = [];
+        state.playerPhotos = new Map();
         state.scoreChanges = [];
         ["approvalsModal", "historyModal", "playersModal", "gameModal", "photoModal", "profileModal"].forEach((id) => setModal(id, false));
         if (interrupted) showToast("Sua sessão terminou. Entre novamente para salvar.", "error");

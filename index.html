@@ -9,13 +9,13 @@
     <link rel="icon" href="favicon.ico" type="image/x-icon" />
     <link rel="apple-touch-icon" href="apple-touch-icon.png" />
     <link rel="manifest" href="manifest.webmanifest" />
-    <link rel="stylesheet" href="styles.css?v=20261113-5" />
+    <link rel="stylesheet" href="styles.css?v=20261113-7" />
   </head>
   <body>
     <div id="toastContainer" class="toast-container" aria-live="polite"></div>
 
     <div class="app-shell">
-      <aside class="sidebar" aria-label="Navegação principal">
+      <header class="topbar">
         <div class="sidebar-brand">
           <div class="brand-mark"><img src="logo.png" alt="" /></div>
           <div>
@@ -23,7 +23,7 @@
             <span>gestão de partidas</span>
           </div>
         </div>
-        <nav class="sidebar-nav">
+        <nav class="sidebar-nav" aria-label="Navegação principal">
           <p class="nav-group-label">Operação</p>
           <button class="nav-link nav-link--active" type="button" data-scroll-to="partidas" aria-current="page"><span class="nav-icon">▦</span>Partidas</button>
           <button class="nav-link admin-only" type="button" data-scroll-to="importacao" hidden><span class="nav-icon">◉</span>Atualizar por foto</button>
@@ -37,7 +37,7 @@
           <div class="operator-mark">OP</div>
           <div><strong id="sidebarRole">Visitante</strong><span>acompanha o encontro</span></div>
         </div>
-      </aside>
+      </header>
 
       <div class="app-frame">
     <main class="shell">
@@ -90,6 +90,7 @@
             </div>
             <div class="ranking-controls"><select id="rankingLane" aria-label="Filtrar ranking por pista"><option value="">Todas as pistas</option></select><span id="leaderboardMeta" class="section-meta">Nenhuma partida finalizada</span></div>
           </div>
+          <div id="podium" class="podium" aria-label="Pódio da classificação" hidden></div>
           <div class="table-wrap">
             <table class="score-table">
               <thead>
@@ -244,7 +245,9 @@
         <button class="modal-close" type="button" aria-label="Fechar">×</button>
         <p class="eyebrow">estatísticas individuais</p>
         <h2 id="statsTitle">Jogador</h2>
+        <div id="statsHero" class="stats-hero"></div>
         <div id="statsSummary" class="stats-summary"></div>
+        <div id="statsEvolution" class="stats-evolution"></div>
         <div id="statsGames" class="history-list"></div>
       </div>
     </dialog>
@@ -257,7 +260,7 @@
         <p class="modal-copy">Escaneie o QR Code ou compartilhe o link. O placar pode ser visto sem cadastro.</p>
         <img class="share-qr" src="share-qr.png" alt="QR Code para abrir o placar do Boliche dos Amigos" width="220" height="220" />
         <a class="share-link" href="https://munizmath.github.io/boliche/">munizmath.github.io/boliche</a>
-        <div class="modal-actions"><button id="copyShareButton" class="button button--quiet" type="button">Copiar link</button><button id="nativeShareButton" class="button button--primary" type="button">Compartilhar</button></div>
+        <div class="modal-actions"><button id="copyShareButton" class="button button--quiet" type="button">Copiar link</button><button id="shareResultButton" class="button button--quiet" type="button">Imagem do resultado</button><button id="nativeShareButton" class="button button--primary" type="button">Compartilhar</button></div>
       </div>
     </dialog>
 
@@ -275,6 +278,7 @@
           <div class="photo-column">
             <label class="upload-drop"><input id="photoInput" type="file" accept="image/*" capture="environment" /><span class="upload-icon">⌁</span><strong>Escolher foto do placar</strong><small>Toque para usar a câmera ou a galeria</small></label>
             <div class="canvas-frame"><canvas id="photoCanvas" aria-label="Prévia da foto; arraste para selecionar um recorte"></canvas><div id="canvasPlaceholder" class="canvas-placeholder">A prévia da foto aparece aqui</div></div>
+            <div class="photo-adjustments"><button id="rotatePhotoButton" class="button button--quiet" type="button" disabled>Girar 90°</button><label>Zoom <input id="photoZoom" type="range" min="100" max="200" step="25" value="100" disabled /></label><label>Contraste <input id="photoContrast" type="range" min="75" max="200" step="25" value="100" disabled /></label></div>
             <div class="photo-tools"><span>Arraste sobre nomes e totais para recortar</span><button id="clearCropButton" class="text-button" type="button">Usar imagem inteira</button></div>
             <button id="runOcrButton" class="button button--quiet button--wide" type="button" disabled>Ler sugestões com OCR</button>
             <p id="ocrStatus" class="ocr-status" aria-live="polite">Nenhuma imagem selecionada.</p>
@@ -306,6 +310,6 @@
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
     <script src="supabase-config.js"></script>
-    <script src="app.js?v=20261113-5"></script>
+    <script src="app.js?v=20261113-7"></script>
   </body>
 </html>

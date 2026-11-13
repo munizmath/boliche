@@ -8,7 +8,7 @@ function loadApp(client = null) {
   const elements = new Map();
   const rows = [];
   const get = (id) => {
-    if (!elements.has(id)) elements.set(id, { value: '', hidden: false, disabled: false, textContent: '', focus() {} });
+    if (!elements.has(id)) elements.set(id, { value: '', hidden: false, disabled: false, textContent: '', innerHTML: '', focus() {}, querySelectorAll: () => [] });
     return elements.get(id);
   };
   const document = {
@@ -23,11 +23,11 @@ function loadApp(client = null) {
   });
   const source = fs.readFileSync(path.join(__dirname, '..', 'app.js'), 'utf8')
     .replace(/\nstart\(\);\s*$/, '\n');
-  vm.runInContext(`${source}\nrender = () => {};\nglobalThis.testApp = { state, buildSuggestions, playersOnLane, updatePhotoConfirmState, canvasPoint, renderLeaderboard, renderCurrentGame, confirmPhotoUpdate, submitAuth, submitProfile, prepareProfilePhoto };`, context);
+  vm.runInContext(`${source}\nrender = () => {};\nrefreshAfterReconnect = async () => {};\nglobalThis.testApp = { state, loadData, buildSuggestions, playersOnLane, updateReviewTable, updatePhotoConfirmState, drawOrientedPhoto, canvasPoint, renderLeaderboard, renderCurrentGame, shareResultCard, confirmPhotoUpdate, submitAuth, submitProfile, prepareProfilePhoto };`, context);
   return { ...context.testApp, get, rows, document, context };
 }
 
-test('OCR só sugere total da última coluna para jogadores vinculados à partida e pista', () => {
+test('OCR só sugere total alinhado à última coluna para jogadores vinculados à partida e pista', () => {
   const app = loadApp();
   app.state.players = [
     { id: 'ana', nome: 'Ana Horta', apelido_placar: 'ANA', pista: '1' },
@@ -37,10 +37,20 @@ test('OCR só sugere total da última coluna para jogadores vinculados à partid
   app.state.scores = [{ game_id: 'game', player_id: 'ana' }, { game_id: 'game', player_id: 'bruno' }];
   app.get('photoGame').value = 'game';
   app.get('photoLane').value = '1';
-  const result = app.buildSuggestions('ANA 10 42 213\nBRUNO 16 200\nOUTRO 30 250');
+  const numeric = (text, x0, x1) => ({ text, bbox: { x0, x1 }, confidence: 85 });
+  const result = app.buildSuggestions({ blocks: [{ paragraphs: [{ lines: [
+    { text: 'ANA 10 42 213', words: [numeric('10', 130, 160), numeric('42', 200, 230), numeric('213', 850, 900)] },
+    { text: 'BRUNO 16 200', words: [numeric('16', 200, 230), numeric('200', 850, 900)] },
+    { text: 'OUTRO 30 250', words: [numeric('30', 200, 230), numeric('250', 850, 900)] },
+  ] }] }] }, 1000);
   assert.equal(result.get('ana').value, 213);
   assert.equal(result.has('bruno'), false);
   assert.equal(result.has('outro'), false);
+  assert.equal(app.buildSuggestions('ANA 10 42 213').size, 0);
+  const ambiguous = app.buildSuggestions({ blocks: [{ paragraphs: [{ lines: [
+    { text: 'ANA 10 42 213 7', words: [numeric('10', 130, 160), numeric('42', 200, 230), numeric('213', 750, 800), numeric('7', 900, 915)] },
+  ] }] }] }, 1000);
+  assert.equal(ambiguous.size, 0);
 });
 
 test('conferência manual explica quando há alteração válida', () => {
@@ -67,6 +77,18 @@ test('conferência manual explica quando há alteração válida', () => {
   assert.match(app.get('photoConfirmHint').textContent, /prontas para salvar/);
 });
 
+test('reimportar o mesmo total mantém a confirmação; total alterado exige nova confirmação', () => {
+  const app = loadApp();
+  app.state.players = [{ id: 'ana', nome: 'Ana Horta', apelido_placar: 'ANA', pista: '1' }];
+  app.state.scores = [{ game_id: 'game-1', player_id: 'ana', pontos: 213, finalizado: true }];
+  app.get('photoGame').value = 'game-1';
+  app.get('photoLane').value = '1';
+  app.updateReviewTable(new Map([['ana', { value: 213 }]]));
+  assert.match(app.get('reviewTable').innerHTML, /class="review-final" type="checkbox" checked/);
+  app.updateReviewTable(new Map([['ana', { value: 214 }]]));
+  assert.doesNotMatch(app.get('reviewTable').innerHTML, /class="review-final" type="checkbox" checked/);
+});
+
 test('recorte converte coordenadas CSS para resolução interna do canvas', () => {
   const app = loadApp();
   const canvas = { width: 900, height: 600, getBoundingClientRect: () => ({ left: 10, top: 20, width: 450, height: 300 }) };
@@ -74,6 +96,26 @@ test('recorte converte coordenadas CSS para resolução interna do canvas', () =
   const point = app.canvasPoint({ clientX: 235, clientY: 170 });
   assert.equal(point.x, 450);
   assert.equal(point.y, 300);
+});
+
+test('giro de 90 graus troca as dimensões e aplica contraste na leitura', () => {
+  const app = loadApp();
+  app.state.image = { naturalWidth: 1200, naturalHeight: 800 };
+  app.state.photoRotation = 90;
+  app.state.photoContrast = 150;
+  const operations = [];
+  const context = {
+    translate: (...args) => operations.push(['translate', ...args]),
+    rotate: (angle) => operations.push(['rotate', angle]),
+    drawImage: () => operations.push(['drawImage', context.filter]),
+    setTransform: () => {},
+  };
+  const canvas = { getContext: () => context };
+  app.drawOrientedPhoto(canvas, 900);
+  assert.equal(canvas.width, 600);
+  assert.equal(canvas.height, 900);
+  assert.equal(operations.find(([name]) => name === 'rotate')[1], Math.PI / 2);
+  assert.deepEqual(operations.find(([name]) => name === 'drawImage'), ['drawImage', 'contrast(150%)']);
 });
 
 test('importação usa RPC transacional e nunca cria vínculo de jogador', async () => {
@@ -113,6 +155,7 @@ test('login administrativo carrega cadastros antes de abrir aprovações', async
         order: () => query,
         limit: () => query,
         eq: () => query,
+        not: () => query,
         maybeSingle: async () => ({ data: null, error: null }),
         then: (resolve) => resolve({ data: [], error: null }),
       };
@@ -126,6 +169,62 @@ test('login administrativo carrega cadastros antes de abrir aprovações', async
   assert.equal(app.state.profiles.length, 1);
   assert.ok(tables.includes('lanes'));
   assert.ok(tables.includes('score_changes'));
+});
+
+test('visitante vê foto aprovada ao lado do jogador no ranking', async () => {
+  const player = { id: 'matheus-player', nome: 'Matheus Muniz', apelido_placar: 'MATHEUS', pista: '1' };
+  const rows = {
+    players: [player], lanes: [{ name: '1' }],
+    games: [{ id: 'game-1', nome: 'Partida', status: 'final', created_at: '2026-11-13T20:00:00Z' }],
+    scores: [{ id: 'score-1', game_id: 'game-1', player_id: player.id, pontos: 213, finalizado: true }],
+    profiles: [{ player_id: player.id, foto_path: 'user-1/photo.jpg' }],
+  };
+  const filters = [];
+  const client = {
+    storage: { from: () => ({ createSignedUrl: async (path) => ({ data: { signedUrl: `https://example.test/${path}` }, error: null }) }) },
+    from: (table) => {
+      const query = {
+        select: () => query, order: () => query,
+        eq: (...args) => { filters.push([table, ...args]); return query; },
+        not: (...args) => { filters.push([table, ...args]); return query; },
+        then: (resolve) => resolve({ data: rows[table] || [], error: null }),
+      };
+      return query;
+    },
+  };
+  const app = loadApp(client);
+  await app.loadData();
+  app.renderLeaderboard();
+  assert.deepEqual(filters.filter(([table]) => table === 'profiles'), [
+    ['profiles', 'status', 'approved'], ['profiles', 'player_id', 'is', null],
+  ]);
+  assert.match(app.get('leaderboardBody').innerHTML, /<img class="ranking-avatar"[^>]+alt="Foto de Matheus Muniz"/);
+  assert.match(app.get('leaderboardBody').innerHTML, /213/);
+});
+
+test('cartão do resultado inclui o vencedor e salva PNG da classificação final', async () => {
+  const app = loadApp();
+  app.state.players = [{ id: 'matheus', nome: 'Matheus Muniz', pista: '2' }];
+  app.state.games = [{ id: 'game-1', status: 'final' }];
+  app.state.scores = [{ game_id: 'game-1', player_id: 'matheus', pontos: 213, finalizado: true }];
+  const written = [];
+  const context = {
+    fillRect() {}, strokeRect() {},
+    fillText: (text) => written.push(text),
+  };
+  let downloaded = false;
+  app.document.createElement = (tag) => tag === 'canvas'
+    ? { getContext: () => context, toBlob: (resolve) => resolve({}) }
+    : tag === 'a' ? { click: () => { downloaded = true; }, remove() {} }
+      : { textContent: '', remove() {} };
+  app.document.body = { append() {} };
+  app.context.navigator = {};
+  app.context.URL = { createObjectURL: () => 'blob:test', revokeObjectURL() {} };
+  app.context.File = class { constructor(_parts, name) { this.name = name; } };
+  await app.shareResultCard();
+  assert.ok(written.includes('Matheus Muniz'));
+  assert.ok(written.includes('213 pontos'));
+  assert.equal(downloaded, true);
 });
 
 for (const existing of [false, true, 'stale']) {
