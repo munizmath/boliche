@@ -45,7 +45,7 @@ O cadastro público usa `auth.users` + `public.profiles`: qualquer pessoa pode c
 - A foto do placar pode ser girada, ampliada e ter o contraste ajustado antes do recorte e da leitura OCR. No celular, o botão alterna entre mover a imagem ampliada e recortar; os pontos continuam sujeitos à conferência.
 - Alterações em `players`, `games` e `scores` chegam aos visitantes por Supabase Realtime.
 - O painel da partida exibe uma classificação provisória, separada do ranking oficial. O administrador pode corrigir pontos pelo celular sem foto e consultar/desfazer a última alteração de cada resultado.
-- O botão Compartilhar mostra um QR Code estático para o endereço público do placar.
+- O botão Compartilhar gera localmente um QR Code para o encontro selecionado; sem seleção, abre o placar geral.
 - O manifesto e o service worker permitem instalar a interface como PWA. O cache cobre apenas arquivos do site; resultados e autenticação continuam exigindo conexão com o Supabase.
 - O administrador pode renomear ou remover pistas vazias, editar participantes e partidas, limpar pontuações e excluir partidas/jogadores. O ranking oficial é calculado a partir dos pontos das partidas finalizadas; correções e exclusões o recalculam. Excluir um jogador ou partida apaga seus resultados e registros de alteração.
 - Cada encontro tem participantes, partidas e ranking próprios. O administrador prepara o encontro, inicia a competição, encerra com todas as partidas concluídas e pode reabrir para correções. A pista fica gravada em cada resultado da partida; mudar a pista padrão do cadastro não altera o histórico. A capacidade de cada pista é configurável, e o sorteio distribui jogadores de modo equilibrado sem ultrapassá-la.
