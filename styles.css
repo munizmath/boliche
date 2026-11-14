@@ -308,6 +308,20 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .admin-area-grid h3 { margin: 4px 0 14px; font-family: var(--font-heading); font-size: 22px; }
 .admin-action-list { display: grid; gap: 4px; border-top: 1px solid var(--color-divider); padding-top: 8px; }
 .mobile-bottom-nav { display: none; }
+.photo-steps { display: flex; gap: 0; margin: 0; padding: 0; list-style: none; border: 1px solid var(--color-divider); background: var(--color-surface-soft); }
+.photo-steps li { flex: 1; padding: 9px 10px; color: var(--color-muted); border-right: 1px solid var(--color-divider); font-size: 10px; font-weight: 800; letter-spacing: .08em; text-align: center; text-transform: uppercase; }
+.photo-steps li:last-child { border-right: 0; }
+.photo-steps li.is-active { color: var(--color-accent-700); background: color-mix(in srgb, var(--color-accent) 10%, transparent); }
+.photo-step-heading { display: flex; align-items: baseline; gap: 8px; margin-bottom: 9px; color: var(--color-text); }
+.photo-step-heading > span { display: inline-grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; color: var(--color-bg); background: var(--color-accent); font-size: 11px; font-weight: 800; }
+.photo-step-heading strong { font-size: 13px; }
+.photo-step-heading small { color: var(--color-muted); font-size: 11px; }
+.photo-step-heading--final { margin-top: 2px; margin-bottom: -3px; }
+.photo-adjustments { display: block; margin-top: 10px; border: 1px solid var(--color-divider); }
+.photo-adjustments summary { padding: 9px 10px; color: var(--color-text); cursor: pointer; font-size: 11px; font-weight: 800; list-style: none; }
+.photo-adjustments summary::-webkit-details-marker { display: none; }
+.photo-adjustments summary::after { float: right; content: "▾"; color: var(--color-accent-700); }
+.photo-adjustments-grid { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 0 10px 10px; }
 
 @media (max-width: 980px) {
   .admin-area-grid { grid-template-columns: 1fr; }
@@ -348,4 +362,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
   .mobile-more-menu { position: absolute; right: 6px; bottom: 64px; display: grid; min-width: 180px; padding: 5px; border: 1px solid var(--color-divider); background: var(--color-surface); box-shadow: var(--shadow-lg); }
   .mobile-more-menu button { min-height: 40px; padding: 0 12px; border: 0; color: var(--color-text); background: transparent; font-size: 12px; font-weight: 700; text-align: left; }
   .mobile-more-menu button:hover, .mobile-more-menu button:focus-visible { color: var(--color-accent-700); background: color-mix(in srgb, var(--color-accent) 10%, transparent); }
+  .photo-steps li { padding-right: 5px; padding-left: 5px; font-size: 9px; }
+  .photo-step-heading { align-items: flex-start; flex-wrap: wrap; gap: 6px; }
+  .photo-step-heading small { flex-basis: calc(100% - 30px); margin-left: 30px; }
 }

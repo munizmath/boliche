@@ -368,27 +368,29 @@
         <p class="eyebrow">importação assistida</p>
         <h2>Atualizar por foto</h2>
         <p class="modal-copy">A foto é opcional. Preencha os pontos manualmente ou use o OCR como sugestão. Confira sempre o total final da linha antes de salvar.</p>
+        <ol class="photo-steps" aria-label="Etapas da atualização"><li class="is-active">Captura</li><li>Conferência</li><li>Confirmação</li></ol>
         <div class="photo-config-grid">
           <label>Partida<select id="photoGame"></select></label>
           <label>Pista<select id="photoLane"></select></label>
         </div>
         <div class="photo-workspace">
           <div class="photo-column">
+            <div class="photo-step-heading"><span>1</span><strong>Captura</strong><small>Escolha a partida, a pista e a imagem.</small></div>
             <label class="upload-drop"><input id="photoInput" type="file" accept="image/*" capture="environment" /><span class="upload-icon">⌁</span><strong>Escolher foto do placar</strong><small>Toque para usar a câmera ou a galeria</small></label>
             <div class="canvas-frame"><canvas id="photoCanvas" aria-label="Prévia da foto; arraste para selecionar um recorte"></canvas><div id="canvasPlaceholder" class="canvas-placeholder">A prévia da foto aparece aqui</div></div>
-            <div class="photo-adjustments"><button id="rotatePhotoButton" class="button button--quiet" type="button" disabled>Girar 90°</button><button id="photoPanButton" class="button button--quiet" type="button" disabled>Mover imagem</button><label>Zoom <input id="photoZoom" type="range" min="100" max="200" step="25" value="100" disabled /></label><label>Contraste <input id="photoContrast" type="range" min="75" max="200" step="25" value="100" disabled /></label></div>
+            <details class="photo-adjustments"><summary>Ajustar imagem</summary><div class="photo-adjustments-grid"><button id="rotatePhotoButton" class="button button--quiet" type="button" disabled>Girar 90°</button><button id="photoPanButton" class="button button--quiet" type="button" disabled>Mover imagem</button><label>Zoom <input id="photoZoom" type="range" min="100" max="200" step="25" value="100" disabled /></label><label>Contraste <input id="photoContrast" type="range" min="75" max="200" step="25" value="100" disabled /></label></div></details>
             <div class="photo-tools"><span id="photoToolsHint">Arraste sobre nomes e totais para recortar</span><button id="clearCropButton" class="text-button" type="button">Usar imagem inteira</button></div>
             <button id="runOcrButton" class="button button--quiet button--wide" type="button" disabled>Ler sugestões com OCR</button>
             <p id="ocrStatus" class="ocr-status" aria-live="polite">Nenhuma imagem selecionada.</p>
           </div>
           <div class="review-column">
-            <div class="review-heading"><div><span class="eyebrow">conferência</span><h3>Pontos reconhecidos</h3></div><span id="reviewLaneLabel" class="section-meta">Selecione a pista</span></div>
+            <div class="photo-step-heading"><span>2</span><strong>Conferência</strong><small>OCR sugere; você confirma e corrige.</small></div><div class="review-heading"><div><span class="eyebrow">conferência</span><h3>Pontos reconhecidos</h3></div><span id="reviewLaneLabel" class="section-meta">Selecione a pista</span></div>
             <div id="reviewTable" class="review-table"></div>
             <p id="reviewPendingNote" class="review-note" hidden>Há alterações ainda não salvas neste formulário.</p>
             <p class="review-note">Use o total final da linha, não a soma dos acumulados por frame. Campo em branco continua pendente e não vira zero.</p>
           </div>
         </div>
-        <p id="photoConfirmHint" class="review-note">Preencha ao menos uma pontuação para confirmar a atualização.</p>
+        <div class="photo-step-heading photo-step-heading--final"><span>3</span><strong>Confirmação</strong><small>Revise anterior → novo valor antes de publicar.</small></div><p id="photoConfirmHint" class="review-note">Preencha ao menos uma pontuação para confirmar a atualização.</p>
         <p id="photoError" class="form-error" role="alert" hidden></p>
         <div class="modal-actions"><button class="button button--quiet" value="cancel">Cancelar</button><button id="confirmPhotoButton" class="button button--primary" type="submit">Confirmar atualização</button></div>
       </form>
