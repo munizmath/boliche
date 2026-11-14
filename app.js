@@ -18,6 +18,9 @@ const state = {
   predictionStandings: [],
   games: [],
   scores: [],
+  advancedFeeds: new Map(),
+  invalidAdvancedFeeds: new Set(),
+  advancedFeedErrors: new Map(),
   roundScores: [],
   roundScoresAvailable: true,
   roundScoreChanges: [],
@@ -43,6 +46,7 @@ const state = {
   activeEncounterId: null,
   editingEncounterId: null,
   encounterRequestId: null,
+  encounterRequestContent: null,
   gameRequestId: null,
   editingTeamId: null,
   lastUpdatedAt: null,
@@ -116,10 +120,22 @@ const BUILTIN_MODES = {
   quiz: { id: "quiz", name: "Quiz", unit: "pontos", roundBased: true, locationLabel: "Estação" },
   gincana: { id: "gincana", name: "Gincana", unit: "pontos", roundBased: true, locationLabel: "Estação" },
 };
-const SELECTABLE_GAME_TYPES = ["boliche", "quiz", "gincana"];
+const BUILTIN_GAME_TYPES = ["boliche", "quiz", "gincana"];
+let advancedModeController = null;
+let advancedFeedRequests = new Map();
+function advancedPresentation(id) { return window.GamePresentations?.getAdvanced?.(id) || null; }
+function advancedModeModulesReady(id) {
+  return Boolean(advancedPresentation(id) && window.AdvancedModeUI?.create
+    && window.AdvancedGameModes?.rankResults && window.GamePresentations?.advancedDom);
+}
+function selectableGameTypes() {
+  return [...BUILTIN_GAME_TYPES, ...(window.GamePresentations?.advanced || [])
+    .filter((mode) => advancedModeModulesReady(mode.id)).map((mode) => mode.id)];
+}
 function isModeReady(encounter = activeEncounter()) {
   const id = typeof encounter === "string" ? encounter : encounter?.game_type || "boliche";
-  return Object.prototype.hasOwnProperty.call(BUILTIN_MODES, id);
+  return Object.prototype.hasOwnProperty.call(BUILTIN_MODES, id)
+    || Boolean(advancedModeController && advancedModeModulesReady(id));
 }
 function requireReadyMode(encounter = activeEncounter()) {
   if (isModeReady(encounter)) return true;
@@ -127,13 +143,13 @@ function requireReadyMode(encounter = activeEncounter()) {
   return false;
 }
 function getGamePresentation(id = getGameMode().id) {
-  return window.GamePresentations?.get?.(id) || BUILTIN_MODES[id] || { id, name: id || "Modalidade", unit: "pontos", roundBased: false, locationLabel: "Local", progressKind: "preparing" };
+  return window.GamePresentations?.get?.(id) || advancedPresentation(id) || BUILTIN_MODES[id] || { id, name: id || "Modalidade", unit: "pontos", roundBased: false, locationLabel: "Local", progressKind: "preparing" };
 }
 function getGameMode(encounter = activeEncounter()) {
   const id = typeof encounter === "string" ? encounter : encounter?.game_type || "boliche";
   const fallback = BUILTIN_MODES[id] || { id, name: id || "Boliche", unit: "pontos", roundBased: false, locationLabel: "Local" };
   const configured = window.GameRules?.getMode?.(id) || {};
-  const presentation = window.GamePresentations?.get?.(id) || {};
+  const presentation = window.GamePresentations?.get?.(id) || advancedPresentation(id) || {};
   const mode = {
     ...fallback,
     ...configured,
@@ -145,6 +161,133 @@ function getGameMode(encounter = activeEncounter()) {
     locationLabel: presentation.locationLabel || configured.locationLabel || configured.placeLabel || fallback.locationLabel,
   };
   return { ...mode, ready: isModeReady(encounter), preparing: !isModeReady(encounter), readOnly: !isModeReady(encounter) };
+}
+function initializeAdvancedModeUI() {
+  if (advancedModeController) { advancedModeController.init?.(); return true; }
+  const sampleMode = (window.GamePresentations?.advanced || []).find((mode) => advancedModeModulesReady(mode.id));
+  if (!sampleMode || !client) return false;
+  try {
+    advancedModeController = window.AdvancedModeUI.create({
+      document, client, state,
+      getActive: () => activeEncounter(),
+      reload: async () => { await loadData(); },
+      isAdmin,
+      showToast,
+      logic: window.AdvancedGameModes,
+      presentations: window.GamePresentations,
+    });
+    advancedModeController.init();
+    for (const id of ["advancedScoreModal", "advancedStatusModal"]) {
+      $(id)?.addEventListener?.("close", () => {
+        const encounter = activeEncounter();
+        if (!encounter || !advancedPresentation(encounter.game_type) || !state.activeGameId) return;
+        refreshAdvancedFeed(encounter.game_type, state.activeGameId, true).catch(() => {});
+      });
+    }
+    return true;
+  } catch (error) {
+    advancedModeController = null;
+    console.error("Formulários avançados indisponíveis", error);
+    return false;
+  }
+}
+function advancedFeedKey(modeId, gameId) { return `${modeId}:${gameId}`; }
+function invalidateAdvancedFeeds(gameId = null) {
+  for (const game of state.games) {
+    const modeId = state.encounters.find((encounter) => encounter.id === game.encounter_id)?.game_type;
+    if (advancedPresentation(modeId) && (!gameId || game.id === gameId)) state.invalidAdvancedFeeds.add(advancedFeedKey(modeId, game.id));
+  }
+}
+function getAdvancedFeed(modeId, gameId) {
+  if (!modeId || !gameId) return null;
+  const key = advancedFeedKey(modeId, gameId);
+  if (state.invalidAdvancedFeeds.has(key)) return null;
+  const feed = advancedModeController?.getRankingFeed?.(modeId, gameId)
+    || state.advancedFeeds.get(key) || null;
+  if (feed) state.advancedFeeds.set(key, feed);
+  return feed;
+}
+function shouldRenderAdvancedFeed(modeId, gameId, encounterId) {
+  return Boolean(encounterId && activeEncounter()?.id === encounterId
+    && activeEncounter()?.game_type === modeId
+    && state.games.some((game) => game.id === gameId && game.encounter_id === encounterId));
+}
+function refreshAdvancedFeed(modeId, gameId, force = false, renderAfter = true) {
+  if (!advancedModeController || !advancedModeModulesReady(modeId) || !gameId) return Promise.resolve(null);
+  const key = advancedFeedKey(modeId, gameId);
+  const pending = advancedFeedRequests.get(key);
+  const stale = state.invalidAdvancedFeeds.has(key);
+  if (pending && !force && !stale) return pending;
+  const cached = getAdvancedFeed(modeId, gameId);
+  if (cached && !force && !stale) return Promise.resolve(cached);
+  const encounterId = state.games.find((game) => game.id === gameId)?.encounter_id;
+  const request = advancedModeController.refreshFeed(modeId, gameId).then((feed) => {
+    if (!feed || !Array.isArray(feed.rows)) throw new Error("O feed retornou uma resposta inválida.");
+    if (advancedFeedRequests.get(key) === request) {
+      state.advancedFeeds.set(key, feed);
+      state.invalidAdvancedFeeds.delete(key);
+      state.advancedFeedErrors.delete(key);
+      if (renderAfter && shouldRenderAdvancedFeed(modeId, gameId, encounterId)) render();
+    }
+    return feed;
+  }).catch((error) => {
+    if (advancedFeedRequests.get(key) === request) {
+      state.advancedFeedErrors.set(key, error?.message || "Falha ao carregar o feed.");
+      if (renderAfter && shouldRenderAdvancedFeed(modeId, gameId, encounterId)) render();
+    }
+    throw error;
+  }).finally(() => {
+    if (advancedFeedRequests.get(key) === request) advancedFeedRequests.delete(key);
+  });
+  advancedFeedRequests.set(key, request);
+  return request;
+}
+function ensureActiveAdvancedFeed() {
+  const modeId = activeEncounter()?.game_type;
+  if (advancedPresentation(modeId) && state.activeGameId && !getAdvancedFeed(modeId, state.activeGameId)) {
+    refreshAdvancedFeed(modeId, state.activeGameId).catch(() => {});
+  }
+}
+function advancedRosterRows(game, feed = getAdvancedFeed(activeEncounter()?.game_type, game?.id)) {
+  if (!game) return [];
+  const modeId = state.encounters.find((encounter) => encounter.id === game.encounter_id)?.game_type;
+  const mode = advancedPresentation(modeId);
+  if (!mode) return [];
+  const rows = [...(feed?.rows || [])];
+  const existing = new Set(rows.map((row) => row.player_id));
+  for (const score of gameScores(game.id)) {
+    if (existing.has(score.player_id)) continue;
+    const base = { game_id: game.id, player_id: score.player_id, status: "pending", finalized: false, version: null, pending: true };
+    if (mode.kind === "match") rows.push({ ...base, sets_won: 0 });
+    else if (mode.kind === "individual") rows.push({ ...base, metric_key: mode.rankMetric, unit: mode.unit, value_text: null });
+    else rows.push({ ...base, legs_won: 0, leg_no: null, balance: 501, match_complete: false, match_winner_player_id: null });
+  }
+  return rows.map((row) => ({ ...row, player: getPlayer(row.player_id) })).filter((row) => row.player);
+}
+function advancedRankedRows(game, feed = getAdvancedFeed(activeEncounter()?.game_type, game?.id)) {
+  if (!game) return [];
+  const rows = advancedRosterRows(game, feed);
+  const logic = window.AdvancedGameModes;
+  if (!logic?.rankResults) return [];
+  const modeId = state.encounters.find((encounter) => encounter.id === game.encounter_id)?.game_type;
+  return logic.rankResults(modeId, rows);
+}
+function isAdvancedEncounter(encounter = activeEncounter()) { return Boolean(advancedPresentation(encounter?.game_type)); }
+function advancedRankingMetric(modeId, requested = $("rankingMetric")?.value || "total") {
+  return ["total", "average", "best", "games"].includes(requested) ? requested : "total";
+}
+function advancedRankingLabel(modeId, metric) {
+  const mode = advancedPresentation(modeId);
+  if ((mode?.kind === "match" || mode?.kind === "darts") && metric === "total") return "Vitórias";
+  if ((mode?.kind === "match" || mode?.kind === "darts") && metric === "average") return "Média de vitórias";
+  if ((mode?.kind === "match" || mode?.kind === "darts") && metric === "best") return "Melhor resultado";
+  return ({ total: "Total", average: "Média", best: "Melhor resultado", games: "Partidas" })[metric] || "Total";
+}
+function isSpecialIndividualMode(encounter = activeEncounter()) {
+  return ["pinball", "minigolfe", "tempo"].includes(encounter?.game_type);
+}
+function isLegacyScoreMode(encounter = activeEncounter()) {
+  return Boolean(encounter && Object.prototype.hasOwnProperty.call(BUILTIN_MODES, encounter.game_type || "boliche"));
 }
 function isRoundBased(encounter = activeEncounter()) { return Boolean(getGameMode(encounter).roundBased); }
 function historicalModeKey(encounter) {
@@ -517,6 +660,7 @@ async function loadData() {
   const latest = [...state.scores, ...state.games].map((item) => item.updated_at || item.created_at).filter(Boolean).sort().at(-1);
   setUpdated(latest || new Date().toISOString());
   setConnection("Sincronizado", "success");
+  invalidateAdvancedFeeds();
 }
 
 async function loadProfile() {
@@ -635,6 +779,9 @@ function subscribeRealtime() {
     .on("postgres_changes", { event: "*", schema: "public", table: "teams" }, refreshFromRealtime)
     .on("postgres_changes", { event: "*", schema: "public", table: "team_players" }, refreshFromRealtime)
     .on("postgres_changes", { event: "*", schema: "public", table: "brackets" }, refreshFromRealtime);
+  for (const table of ["match_sets", "match_player_status", "mode_player_scores", "darts_legs", "darts_leg_players", "darts_turns"]) {
+    channel = channel.on("postgres_changes", { event: "*", schema: "public", table }, refreshFromRealtime);
+  }
   if (state.scoreDetailsAvailable) channel = channel
     .on("postgres_changes", { event: "*", schema: "public", table: "score_details" }, refreshFromRealtime)
     .on("postgres_changes", { event: "*", schema: "public", table: "throw_changes" }, refreshFromRealtime);
@@ -705,13 +852,16 @@ function renderEncounterBar() {
   $("closeEncounterButton").disabled = !activeEncounter() || activeEncounter()?.status === "preparing" || !modeReady;
   $("closeEncounterButton").textContent = encounterOpen() ? "Encerrar encontro" : "Reabrir encontro";
   $("deleteEncounterButton").disabled = !encounterOpen() || !modeReady;
-  $("manageTeamsButton").disabled = !encounterOpen() || !modeReady;
-  $("manageBracketButton").disabled = !encounterOpen() || !modeReady;
+  $("manageTeamsButton").disabled = !encounterOpen() || !modeReady || isAdvancedEncounter();
+  $("manageBracketButton").disabled = !encounterOpen() || !modeReady || isSpecialIndividualMode();
   if (document.body.classList.contains("tv-mode")) document.querySelector(".page-title h1").textContent = activeEncounter()?.nome || "Jogatina dos Amigos";
   $("newGameButton").disabled = !encounterOpen() || !modeReady;
   $("photoButton").disabled = !encounterActive() || !modeReady;
   if ($("tabletButton")) $("tabletButton").disabled = !encounterActive() || !modeReady;
-  if ($("updateScoreButton")) { $("updateScoreButton").disabled = !encounterActive() || !state.activeGameId || !modeReady; $("updateScoreButton").hidden = !modeReady; }
+  if ($("updateScoreButton")) {
+    $("updateScoreButton").disabled = !isAdmin() || state.recovering || !encounterActive() || !state.activeGameId || !modeReady;
+    $("updateScoreButton").hidden = !isAdmin() || state.recovering || !modeReady || isAdvancedEncounter();
+  }
   const bowling = ["boliche", "bowling"].includes(getGameMode().id);
   if ($("photoButton")) $("photoButton").hidden = !bowling || !modeReady;
   if ($("tabletButton")) $("tabletButton").hidden = !bowling || !modeReady;
@@ -723,17 +873,24 @@ function renderEncounterBar() {
 
 function renderGameSwitcher() {
   const list = $("gameSwitchList");
-  list.innerHTML = SELECTABLE_GAME_TYPES.map((id) => {
+  list.innerHTML = selectableGameTypes().map((id) => {
     const mode = getGamePresentation(id);
     const encounters = state.encounters.filter((item) => (item.game_type || "boliche") === id);
     const selected = activeEncounter()?.game_type === id;
-    return `<section class="game-choice${selected ? " game-choice--selected" : ""}" aria-label="${esc(mode.name)}"><div class="game-choice-heading"><strong>${esc(mode.name)}</strong><span>${encounters.length} ${encounters.length === 1 ? "encontro" : "encontros"}</span></div><p>${esc(mode.summary || "Placar do encontro.")}</p><div class="game-choice-encounters">${encounters.length ? encounters.map((encounter) => `<button type="button" data-select-encounter="${esc(encounter.id)}" ${encounter.id === state.activeEncounterId ? 'aria-current="true"' : ""}>${esc(encounter.nome)}<small>${encounter.status === "closed" ? "Encerrado" : encounter.status === "preparing" ? "Preparação" : "Em andamento"}</small></button>`).join("") : `<span class="empty-inline">Nenhum encontro de ${esc(mode.name)}.</span>`}</div>${isAdmin() ? `<button class="game-choice-create" type="button" data-create-game-type="${id}">+ Novo encontro de ${esc(mode.name)}</button>` : ""}</section>`;
+    const supported = isModeReady(id);
+    return `<section class="game-choice${selected ? " game-choice--selected" : ""}" aria-label="${esc(mode.name)}"><div class="game-choice-heading"><strong>${esc(mode.name)}</strong><span>${encounters.length} ${encounters.length === 1 ? "encontro" : "encontros"}</span></div><p>${esc(mode.summary || "Placar do encontro.")}</p><div class="game-choice-encounters">${encounters.length ? encounters.map((encounter) => `<button type="button" data-select-encounter="${esc(encounter.id)}" ${encounter.id === state.activeEncounterId ? 'aria-current="true"' : ""}>${esc(encounter.nome)}<small>${encounter.status === "closed" ? "Encerrado" : encounter.status === "preparing" ? "Preparação" : "Em andamento"}</small></button>`).join("") : `<span class="empty-inline">Nenhum encontro de ${esc(mode.name)}.</span>`}</div>${isAdmin() && supported ? `<button class="game-choice-create" type="button" data-create-game-type="${id}">+ Novo encontro de ${esc(mode.name)}</button>` : !supported ? `<small>Modalidade em preparação</small>` : ""}</section>`;
   }).join("");
-  $("gameProposalsList").textContent = (window.GamePresentations?.proposed || []).join(" · ");
+  const supportedNames = new Set((window.GamePresentations?.advanced || [])
+    .filter((mode) => isModeReady(mode.id)).map((mode) => mode.name));
+  const proposals = (window.GamePresentations?.proposed || []).filter((name) => !supportedNames.has(name));
+  $("gameProposalsList").textContent = proposals.join(" · ");
+  const proposalsPanel = $("gameProposalsList").closest?.("details");
+  if (proposalsPanel) proposalsPanel.hidden = proposals.length === 0;
 }
 
 function selectEncounter(id) {
   if (!state.encounters.some((item) => item.id === id)) return;
+  if (activeEncounter()?.id !== id && advancedModeController?.close?.() === false) return;
   state.activeEncounterId = id;
   state.activeGameId = encounterGames().find((game) => game.status === "partial")?.id || encounterGames()[0]?.id || null;
   const url = new URL(window.location.href);
@@ -741,18 +898,31 @@ function selectEncounter(id) {
   window.history.replaceState(null, "", url);
   render();
 }
+function selectGame(id) {
+  if (!encounterGames().some((game) => game.id === id)) return;
+  if (state.activeGameId !== id && isAdvancedEncounter() && advancedModeController?.close?.() === false) return;
+  state.activeGameId = id;
+  render();
+}
 
 function openEncounterModal(editing = false, preferredGameType = "boliche") {
+  if (advancedModeController?.close?.() === false) return;
   const encounter = editing ? activeEncounter() : null;
   if (editing && !requireReadyMode(encounter)) return;
   if (!editing && !isModeReady(preferredGameType)) return showToast("Esta modalidade está em preparação e ainda não pode ser criada.", "warning");
   if (editing && !encounterOpen()) return showToast("Reabra o encontro para editá-lo.", "error");
   state.editingEncounterId = encounter?.id || null;
   state.encounterRequestId = editing ? null : crypto.randomUUID();
+  state.encounterRequestContent = null;
   $("encounterModalTitle").textContent = editing ? "Editar encontro" : "Novo encontro";
   $("encounterName").value = encounter?.nome || "";
   $("encounterDate").value = encounter?.data || localIsoDate();
   const gameType = $("encounterGameType");
+  if (gameType) {
+    const selectedType = encounter?.game_type || preferredGameType;
+    gameType.innerHTML = selectableGameTypes().map((id) => `<option value="${esc(id)}">${esc(getGameMode(id).name)}</option>`).join("");
+    gameType.value = selectedType;
+  }
   if (gameType) { gameType.value = encounter?.game_type || preferredGameType; gameType.disabled = Boolean(editing); }
   const rules = encounterRules(encounter);
   const roundCount = $("encounterRoundCount");
@@ -771,11 +941,29 @@ function renderEncounterRules() {
   const mode = getGameMode(gameType);
   const settings = $("encounterRoundSettings");
   if (settings) settings.hidden = !mode.roundBased;
+  const advancedSettings = $("advancedRulesSettings");
+  const advancedMode = advancedPresentation(gameType);
+  if (advancedSettings) advancedSettings.hidden = !advancedMode;
+  for (const descriptor of window.GamePresentations?.advanced || []) {
+    const panel = $(`advanced-rules-${descriptor.id}`);
+    if (!panel) continue;
+    const selected = descriptor.id === gameType && Boolean(advancedMode);
+    panel.hidden = !selected;
+    panel.disabled = !selected || Boolean(state.editingEncounterId);
+    if (selected) {
+      const stored = state.editingEncounterId ? encounterRules(activeEncounter()) : {};
+      for (const rule of descriptor.rulesFields || []) {
+        const input = panel.querySelector?.(`[name="${rule.name}"]`);
+        if (input && !input.value) input.value = String(stored[rule.name] ?? rule.min);
+      }
+    }
+  }
   const count = $("encounterRoundCount")?.value;
   const max = $("encounterRoundMax")?.value;
   const version = state.editingEncounterId ? activeEncounter()?.rules_version : null;
   const summary = mode.roundBased
     ? `${mode.name}: maior total vence, somando ${count || "—"} rodadas. ${max === "" || Number(max) === 0 ? "Sem limite de pontos por rodada." : `Máximo de ${max} ${mode.unit} por rodada.`}${version ? ` Regras v${version}.` : ""}`
+    : advancedMode ? `${mode.summary} ${advancedMode.rulesFields?.length ? "Configure as regras antes de criar o encontro." : "Sem regras adicionais."}`
     : `${mode.name}: maior pontuação vence. Unidade: ${mode.unit}.${version ? ` Regras v${version}.` : ""}`;
   if ($("encounterRulesSummary")) $("encounterRulesSummary").textContent = summary;
 }
@@ -803,16 +991,39 @@ async function saveEncounter(event) {
     }
     rulesConfig = { round_count: Number(roundCountValue), max_points_per_round: roundMaxValue === "" ? 0 : Number(roundMaxValue) };
   }
+  const advancedMode = advancedPresentation(gameType);
+  if (!editing && advancedMode) {
+    const panel = $(`advanced-rules-${gameType}`);
+    const rawRules = Object.fromEntries((advancedMode.rulesFields || []).map((rule) => {
+      const raw = panel?.querySelector?.(`[name="${rule.name}"]`)?.value;
+      return [rule.name, raw === "" || raw == null ? rule.min : Number(raw)];
+    }));
+    try { rulesConfig = window.AdvancedGameModes.normalizeRules(gameType, rawRules); }
+    catch (error) { errorElement.textContent = error.message || "Confira as regras da modalidade."; errorElement.hidden = false; return; }
+    if (["pebolim", "sinuca", "tenis_mesa", "truco"].includes(gameType) && ids.length < 2) {
+      errorElement.textContent = "O encontro precisa ter pelo menos dois participantes para organizar confrontos."; errorElement.hidden = false; return;
+    }
+    if (gameType === "dardos_501" && ids.length < 2) {
+      errorElement.textContent = "O encontro precisa ter pelo menos dois participantes para organizar partidas de dardos."; errorElement.hidden = false; return;
+    }
+  }
   const legacyBowling = ["boliche", "bowling"].includes(gameType);
-  const rpcName = editing ? "save_encounter" : legacyBowling ? "create_encounter" : "create_multigame_encounter";
+  const rpcName = editing ? "save_encounter" : advancedMode ? "create_advanced_encounter" : legacyBowling ? "create_encounter" : "create_multigame_encounter";
   const args = editing
     ? { p_encounter_id: editing, p_name: name, p_date: date, p_player_ids: ids }
     : legacyBowling
       ? { p_name: name, p_date: date, p_player_ids: ids, p_request_id: state.encounterRequestId }
       : { p_name: name, p_date: date, p_player_ids: ids, p_request_id: state.encounterRequestId, p_game_type: gameType, p_rules_config: rulesConfig };
+  if (!editing && advancedMode) {
+    const content = JSON.stringify({ name, date, ids: [...ids].sort(), gameType, rulesConfig });
+    if (state.encounterRequestContent !== null && state.encounterRequestContent !== content) state.encounterRequestId = crypto.randomUUID();
+    state.encounterRequestContent = content;
+    args.p_request_id = state.encounterRequestId;
+  }
   const { data, error } = await client.rpc(rpcName, args);
   if (error) { errorElement.textContent = error.message; errorElement.hidden = false; return; }
   setModal("encounterModal", false);
+  state.encounterRequestContent = null;
   await loadData();
   selectEncounter(data.id);
   showToast(editing ? "Encontro atualizado." : "Encontro criado.", "success");
@@ -1081,9 +1292,11 @@ async function startEncounter() {
   await loadData(); render(); showToast("Encontro iniciado.", "success");
 }
 
-function downloadResults(format) {
+async function downloadResults(format) {
   if (!state.encounters.length) return showToast("Nenhum encontro para exportar.", "error");
-  const data = buildResultsExport();
+  let data;
+  try { data = await buildResultsExport(); }
+  catch (error) { showToast("Exportação incompleta: " + (error?.message || "não foi possível carregar resultados avançados") + ".", "error"); return; }
   let content;
   let mime;
   if (format === "json") { content = JSON.stringify(data, null, 2); mime = "application/json"; }
@@ -1097,7 +1310,8 @@ function downloadResults(format) {
       "schema_version", "tipo", "encontro_id", "encontro", "data", "partida_id", "partida", "status_partida",
       "jogador_id", "jogador", "pista", "pontos", "confirmado", "posicao", "pontos_total", "media", "melhor",
       "partidas", "modalidade", "rules_version", "unidade", "rodada", "pontos_rodada", "team_id", "equipe",
-      "metrica_equipe", "membro_jogador_id", "membro", "rules_config_json",
+      "metrica_equipe", "membro_jogador_id", "membro", "rules_config_json", "metric_key", "value_text",
+      "status_resultado", "finalizado", "match_complete", "criterio_ranking", "unidade_resultado", "feed_json",
     ];
     const records = [];
     const add = (type, fields = {}) => records.push({ schema_version: data.schema_version, tipo: type, ...fields });
@@ -1111,6 +1325,29 @@ function downloadResults(format) {
     data.team_rankings.forEach((row) => { const encounter = data.encounters.find((item) => item.id === row.encounter_id); add("ranking_equipe", { encontro_id: encounter?.id, encontro: encounter?.nome, data: encounter?.data, posicao: row.position, pontos_total: row.total, media: row.average?.toFixed(2).replace(".", ","), partidas: row.games_played, team_id: row.team_id, equipe: row.team_name, metrica_equipe: row.metric, ...modeFields(encounter), rules_config_json: JSON.stringify(encounter?.rules_config || {}) }); });
     data.teams.forEach((team) => { const encounter = data.encounters.find((item) => item.id === team.encounter_id); add("equipe", { encontro_id: encounter?.id, encontro: encounter?.nome, data: encounter?.data, team_id: team.id, equipe: team.name, metrica_equipe: team.metric, ...modeFields(encounter), rules_config_json: JSON.stringify(encounter?.rules_config || {}) }); });
     data.team_memberships.forEach((membership) => { const team = data.teams.find((item) => item.id === membership.team_id); const encounter = data.encounters.find((item) => item.id === team?.encounter_id); const player = data.players.find((item) => item.id === membership.player_id); add("membro_equipe", { encontro_id: encounter?.id, encontro: encounter?.nome, data: encounter?.data, team_id: team?.id, equipe: team?.name, metrica_equipe: team?.metric, jogador_id: player?.id, jogador: player?.nome, membro_jogador_id: player?.id, membro: player?.nome, ...modeFields(encounter), rules_config_json: JSON.stringify(encounter?.rules_config || {}) }); });
+    data.advanced_results.forEach((result) => {
+      const encounter = data.encounters.find((item) => item.id === result.encounter_id);
+      const game = data.games.find((item) => item.id === result.game_id);
+      add("feed_avancado", { encontro_id: encounter?.id, encontro: encounter?.nome, partida_id: game?.id, partida: game?.nome,
+        status_partida: game?.status, metric_key: result.metric_key, unidade_resultado: result.unit,
+        feed_json: JSON.stringify({ rows: result.rows, details: result.details }), ...modeFields(encounter) });
+      result.rows.forEach((row) => add("resultado_avancado", { encontro_id: encounter?.id, encontro: encounter?.nome,
+        partida_id: game?.id, partida: game?.nome, status_partida: game?.status, jogador_id: row.player_id,
+        jogador: data.players.find((player) => player.id === row.player_id)?.nome, metric_key: row.metric_key || result.metric_key,
+        value_text: row.value_text ?? "", status_resultado: row.status ?? "", finalizado: row.finalized ?? "",
+        match_complete: row.match_complete ?? "", criterio_ranking: result.metric_key, unidade_resultado: result.unit,
+        feed_json: JSON.stringify(row), ...modeFields(encounter) }));
+    });
+    data.advanced_rankings.forEach((ranking) => {
+      const encounter = data.encounters.find((item) => item.id === ranking.encounter_id);
+      add("ranking_avancado_status", { encontro_id: encounter?.id, encontro: encounter?.nome,
+        status_partida: ranking.status, criterio_ranking: ranking.metric_label, unidade_resultado: ranking.unit,
+        feed_json: JSON.stringify({ missing_game_ids: ranking.missing_game_ids }), ...modeFields(encounter) });
+      ranking.rows.forEach((row) => add("ranking_avancado", { encontro_id: encounter?.id, encontro: encounter?.nome,
+        jogador_id: row.player_id, jogador: row.player_name, posicao: row.position, value_text: row.value,
+        status_resultado: row.status, criterio_ranking: row.metric_label, unidade_resultado: row.unit,
+        feed_json: JSON.stringify(row), ...modeFields(encounter) }));
+    });
     content = `\uFEFF${[header, ...records.map((record) => header.map((key) => record[key] ?? ""))].map((row) => row.map(quote).join(";")).join("\r\n")}`; mime = "text/csv;charset=utf-8";
   }
   const url = URL.createObjectURL(new Blob([content], { type: mime }));
@@ -1119,8 +1356,28 @@ function downloadResults(format) {
   window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-function buildResultsExport() {
+async function buildResultsExport() {
+  const advancedGames = state.games.filter((game) => {
+    const encounter = state.encounters.find((item) => item.id === game.encounter_id);
+    return advancedPresentation(encounter?.game_type);
+  });
+  const feedFailures = [];
+  await Promise.all(advancedGames.map(async (game) => {
+    const encounter = state.encounters.find((item) => item.id === game.encounter_id);
+    if (getAdvancedFeed(encounter.game_type, game.id)) return;
+    try { await refreshAdvancedFeed(encounter.game_type, game.id, false, false); }
+    catch (error) { feedFailures.push((game.nome || game.id) + ": " + (error?.message || "feed indisponível")); }
+  }));
+  for (const game of advancedGames) {
+    const encounter = state.encounters.find((item) => item.id === game.encounter_id);
+    if (!getAdvancedFeed(encounter.game_type, game.id) && !feedFailures.some((item) => item.startsWith((game.nome || game.id) + ":"))) {
+      feedFailures.push((game.nome || game.id) + ": feed indisponível");
+    }
+  }
+  if (feedFailures.length) throw new Error(feedFailures.join("; "));
+
   const rankings = state.encounters.flatMap((encounter) => {
+    if (advancedPresentation(encounter.game_type)) return [];
     const finalIds = new Set(state.games.filter((game) => game.encounter_id === encounter.id && game.status === "final").map((game) => game.id));
     const rows = state.encounterPlayers.filter((item) => item.encounter_id === encounter.id).map((item) => {
       const scores = state.scores.filter((score) => score.player_id === item.player_id && finalIds.has(score.game_id) && score.finalizado && score.pontos != null);
@@ -1131,7 +1388,7 @@ function buildResultsExport() {
     const ranked = rankScoreRows(mode, rows, "total");
     return ranked.map((row) => ({ ...row, game_type: encounter.game_type || "boliche", rules_version: encounter.rules_version ?? null, unit: mode.unit, position: ranked.findIndex((other) => other.total === row.total) + 1 }));
   });
-  const team_rankings = state.encounters.flatMap((encounter) => teamStandings(encounter.id).map((row) => ({
+  const team_rankings = state.encounters.flatMap((encounter) => advancedPresentation(encounter.game_type) ? [] : teamStandings(encounter.id).map((row) => ({
     encounter_id: encounter.id, team_id: row.team.id, team_name: row.team.name, metric: row.metric,
     total: row.metric === "average" ? row.value * row.confirmedGames : row.value,
     average: row.metric === "average" ? row.value : row.value / row.confirmedGames,
@@ -1143,8 +1400,53 @@ function buildResultsExport() {
     rules_version: encounter.rules_version ?? null, rules_config: encounter.rules_config && typeof encounter.rules_config === "object" ? encounter.rules_config : {},
     mode_name: getGameMode(encounter).name, unit: getGameMode(encounter).unit,
   }));
+  const advanced_results = advancedGames.map((game) => {
+    const encounter = state.encounters.find((item) => item.id === game.encounter_id);
+    const mode = advancedPresentation(encounter.game_type);
+    const feed = getAdvancedFeed(encounter.game_type, game.id);
+    return {
+      encounter_id: encounter.id, game_id: game.id, game_name: game.nome,
+      game_status: game.status, game_type: encounter.game_type,
+      metric_key: mode.rankMetric || (mode.kind === "match" ? "match_wins" : mode.kind === "darts" ? "match_wins" : "value_text"),
+      unit: mode.unit, rows: feed.rows, details: feed.details || {},
+    };
+  });
+  const advanced_rankings = state.encounters.filter((encounter) => advancedPresentation(encounter.game_type)).map((encounter) => {
+    const modeId = encounter.game_type;
+    const mode = advancedPresentation(modeId);
+    const finalGames = state.games.filter((game) => game.encounter_id === encounter.id && game.status === "final");
+    const metric = advancedRankingMetric(modeId);
+    if (!finalGames.length) return { encounter_id: encounter.id, game_type: modeId, status: "no_final_games", metric, metric_label: advancedRankingLabel(modeId, metric), unit: mode.unit, rows: [], missing_game_ids: [] };
+    if (!window.AdvancedRanking?.aggregateOfficial) return { encounter_id: encounter.id, game_type: modeId, status: "unavailable", metric, metric_label: advancedRankingLabel(modeId, metric), unit: mode.unit, rows: [], missing_game_ids: finalGames.map((game) => game.id) };
+    const feedsByGame = new Map(finalGames.map((game) => [game.id, getAdvancedFeed(modeId, game.id)]).filter(([, feed]) => feed));
+    const aggregate = window.AdvancedRanking.aggregateOfficial(modeId, finalGames, feedsByGame, metric);
+    const missingIds = [...new Set(aggregate.missingGameIds || [])];
+    const aggregateRows = aggregate.rows || [];
+    const metricLabel = aggregateRows.find((row) => row.metricLabel)?.metricLabel || advancedRankingLabel(modeId, metric);
+    const unit = aggregateRows.find((row) => row.unitLabel)?.unitLabel || mode.unit;
+    if (missingIds.length) return { encounter_id: encounter.id, game_type: modeId, status: "incomplete", metric, metric_label: metricLabel, unit, rows: [], missing_game_ids: missingIds };
+    const sourceRows = new Map();
+    for (const game of finalGames) for (const row of feedsByGame.get(game.id)?.rows || []) sourceRows.set(row.player_id, row);
+    const rows = aggregateRows.map((row) => {
+      const source = sourceRows.get(row.player_id);
+      return { player_id: row.player_id, player_name: getPlayer(row.player_id)?.nome || null,
+        position: row.rank, value: row.displayValue, eligible: row.rank != null,
+        games_count: row.games_count, results_count: row.results_count,
+        status: row.rank != null ? "Oficial" : source?.status || "Pendente",
+        result_status: source?.status || null, metric_label: row.metricLabel || metricLabel,
+        unit: row.unitLabel || unit };
+    });
+    const included = new Set(rows.map((row) => row.player_id));
+    for (const game of finalGames) for (const score of state.scores.filter((item) => item.game_id === game.id)) {
+      if (included.has(score.player_id)) continue;
+      const player = getPlayer(score.player_id);
+      if (player) rows.push({ player_id: player.id, player_name: player.nome, position: null, value: "—", eligible: false, games_count: 0, results_count: 0, status: "Pendente", result_status: null, metric_label: metricLabel, unit });
+      included.add(score.player_id);
+    }
+    return { encounter_id: encounter.id, game_type: modeId, status: "official", metric, metric_label: metricLabel, unit, rows, missing_game_ids: [] };
+  });
   return {
-    schema_version: 3, exported_at: new Date().toISOString(), encounters,
+    schema_version: 4, exported_at: new Date().toISOString(), encounters,
     players: state.players.map((player) => ({ id: player.id, nome: player.nome, apelido_placar: player.apelido_placar ?? null, pista: player.pista ?? null })),
     participations: state.encounterPlayers.map((row) => ({ encounter_id: row.encounter_id, player_id: row.player_id })),
     games: state.games.map((game) => ({ id: game.id, nome: game.nome, status: game.status, encounter_id: game.encounter_id, created_at: game.created_at ?? null, updated_at: game.updated_at ?? null })),
@@ -1155,7 +1457,7 @@ function buildResultsExport() {
     team_memberships: state.teamPlayers.map((row) => ({ team_id: row.team_id, player_id: row.player_id })),
     brackets: state.brackets.map((bracket) => ({ encounter_id: bracket.encounter_id, seeds: bracket.seeds || [], round_games: bracket.round_games || [], tiebreak_rule: bracket.tiebreak_rule || "higher_seed" })),
     prediction_standings: state.predictionStandings.map((row) => ({ player_id: row.player_id, player_name: row.player_name, hits: row.hits, picks: row.picks })),
-    rankings, team_rankings,
+    rankings, team_rankings, advanced_results, advanced_rankings,
   };
 }
 
@@ -1172,6 +1474,8 @@ async function deleteEncounter() {
 
 function renderTeams() {
   if (!isModeReady()) { $("teamsList").innerHTML = `<p class="empty-inline">Modalidade em preparação · classificação de equipes somente para leitura.</p>`; return; }
+  if (isAdvancedEncounter()) { $("teamsList").innerHTML = `<p class="empty-inline">Classificação de equipes indisponível para esta modalidade.</p>`; return; }
+  if (isSpecialIndividualMode()) { $("teamsList").innerHTML = `<p class="empty-inline">Classificação de equipes indisponível para esta modalidade.</p>`; return; }
   const ranked = teamStandings(state.activeEncounterId);
   const metric = encounterTeamMetric(state.activeEncounterId);
   if (metric == null) { $("teamsList").innerHTML = `<p class="empty-inline">Critérios diferentes entre equipes. Padronize a métrica para liberar a classificação.</p>`; return; }
@@ -1188,6 +1492,8 @@ function encounterTeamMetric(encounterId = state.activeEncounterId) {
 }
 
 function teamStandings(encounterId = state.activeEncounterId) {
+  const encounter = state.encounters.find((item) => item.id === encounterId);
+  if (isAdvancedEncounter(encounter)) return [];
   const teams = state.teams.filter((team) => team.encounter_id === encounterId);
   const metric = encounterTeamMetric(encounterId);
   if (metric == null) return [];
@@ -1231,6 +1537,7 @@ function bracketRounds(bracket) {
 
 function renderBracket() {
   if (!isModeReady()) { $("bracketBoard").innerHTML = `<p class="empty-inline">Modalidade em preparação · chave somente para leitura.</p>`; return; }
+  if (isSpecialIndividualMode()) { $("bracketBoard").innerHTML = `<p class="empty-inline">Torneio eliminatório indisponível para esta modalidade.</p>`; return; }
   const bracket = state.brackets.find((item) => item.encounter_id === state.activeEncounterId);
   if (!bracket) { $("bracketBoard").innerHTML = `<p class="empty-inline">Chave ainda não criada.</p>`; return; }
   const rounds = bracketRounds(bracket);
@@ -1244,6 +1551,7 @@ function renderRecords() {
   const encounter = activeEncounter();
   const mode = getGameMode(encounter);
   if (!mode.ready) { $("groupRecords").innerHTML = `<p class="empty-inline">Modalidade em preparação · recordes ficam ocultos até a integração dos formulários.</p>`; return; }
+  if (isSpecialIndividualMode(encounter)) { $("groupRecords").innerHTML = `<p class="empty-inline">Recordes históricos indisponíveis para esta modalidade até a integração do feed oficial.</p>`; return; }
   const matchingEncounters = state.encounters.filter((item) => historicalModeKey(item) === historicalModeKey(encounter));
   const matchingEncounterIds = new Set(matchingEncounters.map((item) => item.id));
   const finalGames = state.games.filter((game) => game.status === "final" && matchingEncounterIds.has(game.encounter_id));
@@ -1295,6 +1603,14 @@ function renderPredictions() {
   const panel = $("predictionsSection");
   const encounter = activeEncounter();
   if (encounter && !isModeReady(encounter)) { panel.hidden = true; return; }
+  if (isSpecialIndividualMode(encounter)) {
+    panel.hidden = false;
+    $("predictionHint").textContent = "Palpites indisponíveis para esta modalidade.";
+    $("predictionPlayer").hidden = true; $("savePredictionButton").hidden = true;
+    $("predictionBoard").innerHTML = `<p class="empty-inline">Classificação de palpites indisponível para esta modalidade.</p>`;
+    $("predictionAccuracy").textContent = "";
+    return;
+  }
   const userId = state.session?.user?.id;
   const canPredict = Boolean(userId && state.profile?.status === "approved");
   panel.hidden = !encounter;
@@ -1326,6 +1642,7 @@ function renderTeamEditor() {
 
 function openTeamsModal() {
   if (!requireReadyMode()) return;
+  if (isAdvancedEncounter()) return showToast("Equipes indisponíveis para esta modalidade.", "warning");
   if (!encounterOpen()) return showToast("Reabra o encontro para editar equipes.", "error");
   state.editingTeamId = null;
   $("teamForm").reset();
@@ -1354,6 +1671,7 @@ function editTeam(id) {
 
 async function saveTeam(event) {
   if (!requireReadyMode()) return;
+  if (isAdvancedEncounter()) return showToast("Equipes indisponíveis para esta modalidade.", "warning");
   event.preventDefault();
   const playerIds = [...$("teamPlayerSelection").querySelectorAll("input:checked")].map((input) => input.value);
   if (!playerIds.length) { $("teamError").textContent = "Escolha pelo menos um jogador."; $("teamError").hidden = false; return; }
@@ -1367,15 +1685,17 @@ async function saveTeam(event) {
 }
 
 async function deleteTeam(id) {
+  if (!requireReadyMode()) return;
   const team = state.teams.find((item) => item.id === id);
   if (!team || !window.confirm(`Excluir a equipe ${team.name}?`)) return;
-  const { error } = await client.from("teams").delete().eq("id", id);
+  const { error } = await client.rpc("delete_team", { p_team_id: id });
   if (error) return showToast(error.message, "error");
   await loadData(); render(); renderTeamEditor(); showToast("Equipe excluída.", "success");
 }
 
 function openBracketModal() {
   if (!requireReadyMode()) return;
+  if (isSpecialIndividualMode()) return showToast("Torneios indisponíveis para esta modalidade.", "warning");
   if (!encounterOpen()) return showToast("Reabra o encontro para editar o torneio.", "error");
   const bracket = state.brackets.find((item) => item.encounter_id === state.activeEncounterId);
   const selected = new Set(bracket?.seeds || []);
@@ -1400,6 +1720,7 @@ function updateBracketRoundLabels() {
 async function saveBracket(event) {
   event.preventDefault();
   if (!requireReadyMode()) return;
+  if (isSpecialIndividualMode()) return showToast("Torneios indisponíveis para esta modalidade.", "warning");
   const seeds = [...$("bracketPlayerSelection").querySelectorAll("input:checked")].map((input) => input.value);
   if (![4, 8].includes(seeds.length)) { $("bracketError").textContent = "Escolha quatro ou oito jogadores."; $("bracketError").hidden = false; return; }
   const games = Array.from({ length: seeds.length === 4 ? 2 : 3 }, (_, round) => $(`bracketGame${round}`).value || null);
@@ -1411,6 +1732,7 @@ async function saveBracket(event) {
 
 async function deleteBracket() {
   if (!requireReadyMode()) return;
+  if (isSpecialIndividualMode()) return showToast("Torneios indisponíveis para esta modalidade.", "warning");
   if (!window.confirm("Excluir a chave eliminatória deste encontro?")) return;
   const { error } = await client.from("brackets").delete().eq("encounter_id", state.activeEncounterId);
   if (error) return showToast(error.message, "error");
@@ -1493,6 +1815,10 @@ function render() {
   if ($("approvalsModal").open) renderApprovals();
   if ($("historyModal").open) renderScoreHistory();
   if ($("roundModal")?.open) renderRoundModal();
+  if (isAdvancedEncounter() && isModeReady()) {
+    advancedModeController?.render?.();
+    ensureActiveAdvancedFeed();
+  }
 }
 
 function officialTotals(lane = "") {
@@ -1518,6 +1844,170 @@ function officialPosition(totals, index) {
   return totals.findIndex((item) => rankingValue(item, metric) === rankingValue(totals[index], metric)) + 1;
 }
 
+function formatAdvancedValue(modeId, row) {
+  const mode = advancedPresentation(modeId);
+  if (row?.displayValue != null && row.displayValue !== "") {
+    const exact = String(row.displayValue);
+    if (/^-?\d+$/.test(exact)) {
+      try { return BigInt(exact).toLocaleString("pt-BR"); } catch { return exact; }
+    }
+    if (/^-?\d+\.\d+$/.test(exact)) {
+      const [integer, fraction] = exact.split(".");
+      try { return BigInt(integer).toLocaleString("pt-BR") + "," + fraction; } catch { return exact.replace(".", ","); }
+    }
+    return exact.replace(".", ",");
+  }
+  const field = mode?.rankMetric;
+  const raw = field ? row?.[field] : null;
+  if (raw == null || raw === "") return "—";
+  if (modeId === "pinball" || modeId === "minigolfe" || modeId === "tempo") {
+    try { return window.AdvancedGameModes.parseExactBigInt(String(raw)).toLocaleString("pt-BR"); }
+    catch { return "—"; }
+  }
+  return Number(raw).toLocaleString("pt-BR");
+}
+
+function advancedResultStatus(modeId, row) {
+  const status = String(row?.status || "").toUpperCase();
+  if (status === "DNF") return "Não concluiu (DNF)";
+  if (status === "DNS") return "Não iniciou (DNS)";
+  if (row?.pending) return "Aguardando registro";
+  if (modeId === "dardos_501") return row?.match_complete ? "Final" : row?.leg_no ? `Perna ${row.leg_no} · ${row.balance ?? 501} restantes` : "Aguardando perna";
+  if (modeId === "pebolim" || modeId === "sinuca" || modeId === "tenis_mesa" || modeId === "truco") return row?.match_complete ? "Final" : "Parcial";
+  return row?.finalized ? "Final" : "Pendente";
+}
+
+function renderAdvancedLeaderboard() {
+  const modeId = activeEncounter()?.game_type;
+  const mode = advancedPresentation(modeId);
+  const game = getGame(state.activeGameId);
+  const view = $("rankingMode")?.value === "current" ? "current" : "official";
+  const requestedMetric = $("rankingMetric")?.value || "total";
+  const metric = advancedRankingMetric(modeId, requestedMetric);
+  const laneSelect = $("rankingLane");
+  const laneLabel = laneSelect?.closest?.("label");
+  if (laneLabel) laneLabel.hidden = true;
+  if (laneSelect) { laneSelect.innerHTML = `<option value="">Todos os locais</option>`; laneSelect.value = ""; }
+  const metricSelect = $("rankingMetric");
+  if (metricSelect) metricSelect.disabled = false;
+  const criterionLabel = advancedRankingLabel(modeId, metric);
+  $("rankingUnitLabel").textContent = `${mode.name} · ${criterionLabel}`;
+  $("rankingTitle").textContent = view === "current"
+    ? `Classificação da partida${game ? ` · ${game.nome}` : ""}`
+    : `Classificação oficial acumulada · ${mode.name}`;
+  $("podium").hidden = true; $("podium").innerHTML = "";
+  $("leaderboardEmpty").hidden = true;
+  const headers = document.querySelectorAll(".score-table thead th");
+  if (headers[0]) headers[0].textContent = mode.rankRow?.rank || "Posição";
+  if (headers[1]) headers[1].textContent = mode.rankRow?.participant || "Participante";
+  if (headers[2]) headers[2].textContent = "Situação";
+  if (headers[3]) headers[3].textContent = "—";
+  if (headers[4]) headers[4].textContent = mode.rankRow?.value || mode.unit;
+  if (headers[5]) headers[5].textContent = mode.rankRow?.status || "Resultado";
+  const renderRows = (ranked, confirmed, meta) => {
+    $("leaderboardBody").innerHTML = ranked.length ? ranked.map((row) => {
+    const player = row.player || getPlayer(row.player_id);
+    const name = player?.nome || "Jogador";
+    const photoUrl = state.playerPhotos.get(row.player_id);
+    const position = row.rank == null ? "—" : `${row.rank}º`;
+    const status = row.official
+      ? row.rank != null ? "Oficial" : advancedResultStatus(modeId, row)
+      : advancedResultStatus(modeId, row);
+    const value = formatAdvancedValue(modeId, row);
+    return `<tr><td class="rank-cell">${position}</td><td><div class="ranking-player">${photoUrl ? `<img class="ranking-avatar" src="${esc(photoUrl)}" alt="Foto de ${esc(name)}" loading="lazy" />` : ""}<span>${esc(name)}</span></div></td><td>—</td><td>—</td><td class="points-cell">${esc(value)}</td><td><span class="status-chip ${status === "Final" ? "status-chip--final" : "status-chip--partial"}">${esc(status)}</span></td></tr>`;
+  }).join("") : `<tr><td colspan="6">Nenhum participante vinculado a esta partida.</td></tr>`;
+    $("leaderboardEmpty").hidden = ranked.length > 0;
+    $("leaderboardMeta").textContent = meta || `${confirmed}/${ranked.length} resultados confirmados · ${mode.name} · ${criterionLabel}`;
+  };
+  const notice = (title, message, error = false, retry = null) => {
+    $("rankingTitle").textContent = title;
+    $("leaderboardMeta").textContent = message;
+    $("leaderboardBody").innerHTML = `<tr><td colspan="6">${esc(message)}${retry ? ` <button type="button" data-retry-advanced-ranking> Tentar novamente</button>` : ""}</td></tr>`;
+    $("leaderboardBody").querySelectorAll?.("[data-retry-advanced-ranking]").forEach((button) => button.addEventListener("click", retry));
+    $("leaderboardEmpty").hidden = !error;
+  };
+  if (view === "current") {
+    if (!game) { notice("Classificação da partida", `Selecione uma partida de ${mode.name}.`, true); return; }
+    const feed = getAdvancedFeed(modeId, game.id);
+    if (!feed) {
+      const error = state.advancedFeedErrors.get(advancedFeedKey(modeId, game.id));
+      if (error) {
+        notice("Resultados da partida indisponíveis", `Não foi possível carregar o placar de ${game.nome}: ${error}`, true,
+          () => refreshAdvancedFeed(modeId, game.id, true).catch(() => {}));
+      } else {
+        refreshAdvancedFeed(modeId, game.id).catch(() => {});
+        notice("Carregando placar da partida", `Carregando resultados de ${game.nome}…`);
+      }
+      return;
+    }
+    const ranked = advancedRankedRows(game, feed);
+    const confirmed = ranked.filter((row) => mode.kind === "individual"
+      ? row.finalized === true
+      : row.match_complete === true).length;
+    renderRows(ranked, confirmed, `${confirmed}/${ranked.length} resultados confirmados nesta partida · ${mode.name} · ${criterionLabel}`);
+    return;
+  }
+
+  const finalGames = encounterGames().filter((item) => item.status === "final");
+  if (!finalGames.length) { notice("Classificação oficial acumulada", `Nenhuma partida finalizada de ${mode.name}.`, true); return; }
+  const rankingModule = window.AdvancedRanking;
+  if (!rankingModule?.aggregateOfficial) {
+    notice("Classificação oficial indisponível", "O agregador oficial da modalidade não está carregado.", true);
+    return;
+  }
+  const feedsByGame = new Map(finalGames.map((item) => [item.id, getAdvancedFeed(modeId, item.id)]).filter(([, feed]) => feed));
+  let aggregate;
+  try { aggregate = rankingModule.aggregateOfficial(modeId, finalGames, feedsByGame, metric); }
+  catch (error) {
+    notice("Classificação oficial indisponível", `Não foi possível calcular o ranking: ${error?.message || "erro no feed"}.`, true);
+    return;
+  }
+  const missingIds = [...new Set(aggregate?.missingGameIds || [])];
+  if (missingIds.length) {
+    const errors = missingIds.map((id) => state.advancedFeedErrors.get(advancedFeedKey(modeId, id))).filter(Boolean);
+    const invalidLoadedIds = missingIds.filter((id) => feedsByGame.has(id));
+    if (invalidLoadedIds.length) {
+      invalidLoadedIds.forEach((id) => state.advancedFeedErrors.set(advancedFeedKey(modeId, id), "Feed carregado sem resultado final válido."));
+    }
+    if (errors.length || invalidLoadedIds.length) {
+      const message = errors[0] || "Um feed carregado não confirmou resultado final.";
+      notice("Classificação oficial indisponível", `Não foi possível carregar todos os feeds finais: ${message}`, true,
+        () => missingIds.forEach((id) => refreshAdvancedFeed(modeId, id, true).catch(() => {})));
+    } else {
+      const encounterId = activeEncounter()?.id;
+      missingIds.forEach((id) => refreshAdvancedFeed(modeId, id, false, false)
+        .then(() => { if (activeEncounter()?.id === encounterId) renderLeaderboard(); })
+        .catch(() => { if (activeEncounter()?.id === encounterId) renderLeaderboard(); }));
+      notice("Carregando classificação oficial", `Buscando resultados de ${missingIds.length} partida(s) finalizada(s)…`);
+    }
+    return;
+  }
+
+  const latestFeedRows = new Map();
+  for (const finalGame of finalGames) for (const row of feedsByGame.get(finalGame.id)?.rows || []) {
+    latestFeedRows.set(row.player_id, row);
+  }
+  const rows = [...(aggregate?.rows || [])].map((row) => {
+    const source = latestFeedRows.get(row.player_id);
+    return { ...row, player: getPlayer(row.player_id), official: true, status: source?.status,
+      finalized: source?.finalized, match_complete: source?.match_complete };
+  });
+  const present = new Set(rows.map((row) => row.player_id));
+  for (const finalGame of finalGames) for (const score of gameScores(finalGame.id)) {
+    if (present.has(score.player_id)) continue;
+    const player = getPlayer(score.player_id);
+    if (player) { rows.push({ player_id: player.id, player, rank: null, displayValue: "—", eligible: false, pending: true, finalized: false, match_complete: false }); present.add(player.id); }
+  }
+  const confirmed = finalGames.reduce((sum, finalGame) => sum
+    + (feedsByGame.get(finalGame.id)?.rows || []).filter((row) => mode.kind === "individual"
+      ? row.finalized === true : row.match_complete === true).length, 0);
+  const aggregateRow = (aggregate?.rows || []).find((row) => row.displayValue != null);
+  const aggregateMetricLabel = aggregateRow?.metricLabel || advancedRankingLabel(modeId, metric);
+  const aggregateUnitLabel = aggregateRow?.unitLabel || mode.unit;
+  $("rankingUnitLabel").textContent = `${mode.name} · ${aggregateMetricLabel} (${aggregateUnitLabel})`;
+  renderRows(rows, confirmed, `${confirmed} resultados confirmados · ${finalGames.length} partidas finalizadas · critério: ${aggregateMetricLabel} · unidade: ${aggregateUnitLabel}`);
+}
+
 function renderLeaderboard() {
   const body = $("leaderboardBody");
   const finalGames = encounterGames().filter((game) => game.status === "final");
@@ -1535,6 +2025,9 @@ function renderLeaderboard() {
     body.innerHTML = `<tr><td colspan="6">${esc(message)}</td></tr>`;
     return;
   }
+  if (isAdvancedEncounter()) { renderAdvancedLeaderboard(); return; }
+  const laneLabel = laneSelect?.closest?.("label");
+  if (laneLabel) laneLabel.hidden = false;
   const gameIds = new Set(encounterGames().map((game) => game.id));
   const observedLanes = [...new Set(state.scores.filter((score) => gameIds.has(score.game_id)).map(scoreLane).filter(Boolean))];
   const lanes = observedLanes.filter((lane) => isRoundBased() ? isVirtualStationLane(lane) : !isVirtualStationLane(lane))
@@ -1608,6 +2101,72 @@ function renderLaneProgress(scores, gameMode) {
   }).join("");
 }
 
+function renderAdvancedCurrentGame(game, modeId) {
+  const mode = advancedPresentation(modeId);
+  const body = $("currentGameBody");
+  $("laneProgress").hidden = true; $("roundProgress").hidden = true;
+  $("laneProgress").innerHTML = ""; $("roundProgress").innerHTML = "";
+  $("currentGameEyebrow").textContent = `${mode.name} · resultados da partida`;
+  if (!game) {
+    $("currentGameTitle").textContent = "Nenhuma partida aberta";
+    $("currentGameStatus").textContent = "Aguardando";
+    $("currentGameStatus").className = "status-pill status-pill--muted";
+    body.innerHTML = `<div class="empty-state"><strong>Nenhuma partida selecionada</strong><span>Abra uma partida para registrar e acompanhar os resultados de ${esc(mode.name)}.</span></div>`;
+    return;
+  }
+  $("currentGameTitle").textContent = game.nome;
+  $("currentGameStatus").textContent = game.status === "final" ? "Final" : "Parcial";
+  $("currentGameStatus").className = `status-pill status-pill--${game.status === "final" ? "success" : "warning"}`;
+  const feed = getAdvancedFeed(modeId, game.id);
+  if (!feed) {
+    const error = state.advancedFeedErrors.get(advancedFeedKey(modeId, game.id));
+    if (error) {
+      body.innerHTML = `<div class="empty-state"><strong>Resultados da partida indisponíveis</strong><span>${esc(error)}</span><button class="text-button" type="button" data-retry-advanced-current>Tentar novamente</button></div>`;
+      body.querySelectorAll("[data-retry-advanced-current]").forEach((button) => button.addEventListener("click", () =>
+        refreshAdvancedFeed(modeId, game.id, true).catch(() => {})));
+      return;
+    }
+    refreshAdvancedFeed(modeId, game.id).catch(() => {});
+    body.innerHTML = `<div class="empty-state"><strong>Carregando ${esc(mode.name)}</strong><span>Buscando resultados e detalhes desta partida.</span></div>`;
+    return;
+  }
+  const ranked = advancedRankedRows(game, feed);
+  const roster = advancedRosterRows(game, feed);
+  const adminActions = isAdmin() && encounterActive()
+    ? `<div class="current-score"><button class="text-button" type="button" data-advanced-score="${esc(game.id)}">${esc(mode.entry?.action || "Registrar resultado")}</button>${mode.statusRpc ? `<button class="text-button" type="button" data-advanced-status="${esc(game.id)}">Registrar DNF/DNS</button>` : ""}</div>` : "";
+  let detail = "";
+  if (mode.kind === "match") {
+    const sets = feed.details.match_sets || [];
+    const statuses = feed.details.match_player_status || [];
+    detail = sets.length ? `<div class="extras-list">${sets.map((set) => {
+      const first = getPlayer(set.player_a_id)?.nome || "Jogador A";
+      const second = getPlayer(set.player_b_id)?.nome || "Jogador B";
+      return `<div class="extra-row"><strong>${esc(mode.progress?.item || "Set")} ${set.set_no}${set.confirmed ? " · confirmado" : " · pendente"}</strong><span>${esc(first)} ${set.score_a} × ${set.score_b} ${esc(second)}</span></div>`;
+    }).join("")}</div>` : `<p class="empty-inline">Nenhum set registrado.</p>`;
+    if (statuses.length) detail += `<p class="section-meta">${statuses.map((row) => `${esc(getPlayer(row.player_id)?.nome || "Jogador")}: ${esc(row.status)}`).join(" · ")}</p>`;
+  } else if (mode.kind === "individual") {
+    detail = `<div class="extras-list">${ranked.map((row) => `<div class="extra-row"><strong>${esc(row.player?.nome || "Jogador")}</strong><span>${esc(formatAdvancedValue(modeId, row))} ${esc(mode.unit)} · ${esc(advancedResultStatus(modeId, row))}</span></div>`).join("")}</div>`;
+  } else {
+    const legs = feed.details.darts_legs || [];
+    const turns = feed.details.darts_turns || [];
+    const legPlayers = feed.details.darts_leg_players || [];
+    detail = legs.length ? legs.map((leg) => {
+      const players = legPlayers.filter((row) => Number(row.leg_no) === Number(leg.leg_no));
+      const turnsForLeg = turns.filter((row) => Number(row.leg_no) === Number(leg.leg_no));
+      return `<section class="extras-list"><strong>Perna ${leg.leg_no} · ${esc(leg.status)}</strong><div>${players.map((row) => `<div class="extra-row"><span>${esc(getPlayer(row.player_id)?.nome || "Jogador")}${row.status !== "active" ? ` · ${esc(row.status)}` : ""}</span><strong>${row.balance} restantes</strong></div>`).join("")}</div>${turnsForLeg.map((turn) => {
+        const throws = Array.isArray(turn.throws) ? turn.throws.map((dart) => `${dart.score}${dart.is_double ? " (D)" : ""}`).join(" · ") : "";
+        return `<small>${turn.turn_no}. ${esc(getPlayer(turn.player_id)?.nome || "Jogador")} · ${esc(throws)}</small>`;
+      }).join("")}</section>`;
+    }).join("") : `<p class="empty-inline">Nenhuma perna iniciada.</p>`;
+  }
+  const table = ranked.length ? `<div class="extras-list">${ranked.map((row) => `<div class="current-row"><div class="current-player"><span class="provisional-rank">${row.rank == null ? "—" : `${row.rank}º`}</span><strong>${esc(row.player?.nome || "Jogador")}</strong><span>${esc(advancedResultStatus(modeId, row))}</span></div><div class="current-score"><strong>${esc(formatAdvancedValue(modeId, row))}</strong></div></div>`).join("")}</div>` : `<p class="empty-inline">Nenhum participante vinculado a esta partida.</p>`;
+  body.innerHTML = `${adminActions}${table}${detail}`;
+  body.querySelectorAll("[data-advanced-score]").forEach((button) => button.addEventListener("click", () => advancedModeController?.openScore?.({ modeId, gameId: button.dataset.advancedScore })));
+  body.querySelectorAll("[data-advanced-status]").forEach((button) => button.addEventListener("click", () => advancedModeController?.openStatus?.({ modeId, gameId: button.dataset.advancedStatus })));
+  $("laneProgress").innerHTML = ""; $("roundProgress").innerHTML = "";
+  $("currentGameEyebrow").textContent = `${mode.name} · ${roster.length} participantes · placar da partida`;
+}
+
 function renderCurrentGame() {
   const game = getGame(state.activeGameId);
   const gameMode = getGameMode();
@@ -1625,6 +2184,7 @@ function renderCurrentGame() {
     body.innerHTML = `<div class="empty-state"><strong>Modalidade em preparação</strong><span>${esc(message)}</span></div>`;
     return;
   }
+  if (isAdvancedEncounter()) { renderAdvancedCurrentGame(game, gameMode.id); return; }
   $("currentGameEyebrow").textContent = hasRounds ? "rodadas do encontro · ao vivo" : "operação da partida · ao vivo";
   $("laneProgress").hidden = hasRounds;
   $("roundProgress").hidden = !hasRounds;
@@ -1729,7 +2289,7 @@ function renderGames() {
     const message = `Modalidade ${gameMode.name} em preparação · somente leitura`;
     $("gameCount").textContent = `${games.length} de ${allGames.length} partidas · ${message}`;
     $("gamesList").innerHTML = games.length ? `<div class="games-grid">${games.map((game) => `<article class="game-card ${game.id === state.activeGameId ? "game-card--active" : ""}"><button class="game-card-select" type="button" data-game-id="${esc(game.id)}"><div class="game-card-top"><span class="eyebrow">${message}</span><span class="status-pill status-pill--muted">${game.status === "final" ? "Finalizada" : "Em andamento"}</span></div><h4>${esc(game.nome)}</h4><p>Resultados disponíveis quando os formulários da modalidade estiverem integrados.</p></button></article>`).join("")}</div>` : `<div class="empty-state empty-state--wide"><strong>${message}</strong><span>Não há partidas para exibir.</span></div>`;
-    document.querySelectorAll("[data-game-id]").forEach((button) => button.addEventListener("click", () => { state.activeGameId = button.dataset.gameId; render(); }));
+    document.querySelectorAll("[data-game-id]").forEach((button) => button.addEventListener("click", () => selectGame(button.dataset.gameId)));
     return;
   }
   const games = allGames.filter((game) => {
@@ -1754,7 +2314,7 @@ function renderGames() {
   const live = games.filter((game) => game.status !== "final");
   const finished = games.filter((game) => game.status === "final");
   $("gamesList").innerHTML = games.length ? `${renderGroup("Em andamento", live)}${renderGroup("Finalizadas recentemente", finished)}` : `<div class="empty-state empty-state--wide"><strong>Nenhuma partida encontrada</strong><span>Ajuste o filtro ou abra uma nova partida.</span></div>`;
-  document.querySelectorAll("[data-game-id]").forEach((button) => button.addEventListener("click", () => { state.activeGameId = button.dataset.gameId; render(); }));
+  document.querySelectorAll("[data-game-id]").forEach((button) => button.addEventListener("click", () => selectGame(button.dataset.gameId)));
   document.querySelectorAll("[data-edit-game]").forEach((button) => button.addEventListener("click", () => editGame(button.dataset.editGame)));
   document.querySelectorAll("[data-delete-game]").forEach((button) => button.addEventListener("click", () => removeGame(button.dataset.deleteGame)));
 }
@@ -1856,11 +2416,15 @@ function renderPlayerSelection() {
   const container = $("playerSelection");
   const players = encounterPlayers();
   const location = getGameMode().locationLabel;
+  const advanced = isAdvancedEncounter();
   const locations = gameLocations();
+  $("drawLanesButton").hidden = advanced;
   $("drawLanesButton").textContent = location === "Pista" ? "Sortear pistas" : "Distribuir na estação";
-  $("gamePlayerHelp").textContent = location === "Pista" ? "Escolha a divisão real das pistas" : "Distribua os participantes na estação virtual";
-  $("gameLocationHelp").textContent = location === "Pista" ? "Respeita a capacidade de cada pista; você pode ajustar depois." : "Respeita a capacidade da estação virtual; você pode ajustar depois.";
-  container.innerHTML = players.map((player) => `<label class="selection-item"><input class="game-player-check" type="checkbox" value="${esc(player.id)}" checked /><span><strong>${esc(player.nome)}</strong><small>${esc(player.apelido_placar || "sem apelido")}</small></span><select class="game-player-lane" data-player-lane="${esc(player.id)}" aria-label="${esc(location)} de ${esc(player.nome)}">${locations.map((item) => `<option value="${esc(item.name)}" ${item.name === player.pista || locations.length === 1 ? "selected" : ""}>${esc(displayLocation(item.name))}</option>`).join("")}</select></label>`).join("");
+  $("gamePlayerHelp").textContent = advanced
+    ? ["pebolim", "sinuca", "tenis_mesa", "truco"].includes(getGameMode().id) ? "Selecione exatamente os dois participantes do confronto." : getGameMode().id === "dardos_501" ? "Selecione de dois a quatro participantes da partida." : "Selecione os participantes da partida."
+    : location === "Pista" ? "Escolha a divisão real das pistas" : "Distribua os participantes na estação virtual";
+  $("gameLocationHelp").textContent = advanced ? "O local físico não altera os resultados desta modalidade." : location === "Pista" ? "Respeita a capacidade de cada pista; você pode ajustar depois." : "Respeita a capacidade da estação virtual; você pode ajustar depois.";
+  container.innerHTML = players.map((player) => `<label class="selection-item"><input class="game-player-check" type="checkbox" value="${esc(player.id)}" checked /><span><strong>${esc(player.nome)}</strong><small>${esc(player.apelido_placar || "sem apelido")}</small></span>${advanced ? `<small>${esc(location)}</small>` : `<select class="game-player-lane" data-player-lane="${esc(player.id)}" aria-label="${esc(location)} de ${esc(player.nome)}">${locations.map((item) => `<option value="${esc(item.name)}" ${item.name === player.pista || locations.length === 1 ? "selected" : ""}>${esc(displayLocation(item.name))}</option>`).join("")}</select>`}</label>`).join("");
   $("playerSelectionEmpty").hidden = players.length > 0;
 }
 
@@ -2071,6 +2635,7 @@ function openAuth() {
 }
 
 async function signOut() {
+  if (advancedModeController?.close?.() === false) return;
   if (client) await client.auth.signOut();
   setSession(null);
   state.profile = null;
@@ -2326,7 +2891,13 @@ async function createGame(event) {
   if (!nome || !playerIds.length) return showToast("Informe um nome e selecione pelo menos um participante.", "error");
   if (!encounterOpen()) return showToast("Reabra o encontro para alterar partidas.", "error");
   if (!client) return showToast("Supabase não configurado.", "error");
-  const assignments = playerIds.map((player_id) => ({ player_id, pista: $("playerSelection").querySelector(`[data-player-lane="${player_id}"]`)?.value || "" }));
+  const modeId = activeEncounter()?.game_type || "boliche";
+  const advanced = Boolean(advancedPresentation(modeId));
+  const matchMode = ["pebolim", "sinuca", "tenis_mesa", "truco"].includes(modeId);
+  if (matchMode && playerIds.length !== 2) return showToast("Confrontos por sets precisam de exatamente dois participantes.", "error");
+  if (modeId === "dardos_501" && (playerIds.length < 2 || playerIds.length > 4)) return showToast("Dardos 501 precisa de dois a quatro participantes.", "error");
+  const assignments = playerIds.map((player_id) => ({ player_id, pista: advanced ? VIRTUAL_STATION_LANE : $("playerSelection").querySelector(`[data-player-lane="${player_id}"]`)?.value || "" }));
+  if (advanced && playerIds.length > 20) return showToast("A estação aceita até 20 participantes.", "error");
   if (assignments.some((item) => !item.pista)) return showToast("Escolha a pista de cada participante.", "error");
   const locations = gameLocations();
   if (assignments.some((item) => !locations.some((lane) => lane.name === item.pista))) return showToast(isRoundBased() ? "Selecione a estação virtual para todos os participantes." : "Selecione uma pista física para cada participante.", "error");
@@ -2354,6 +2925,7 @@ async function createGame(event) {
 }
 
 function drawLanes() {
+  if (isAdvancedEncounter()) return showToast("A modalidade não usa distribuição por pistas.", "info");
   const checked = [...$("playerSelection").querySelectorAll(".game-player-check:checked")];
   const locations = gameLocations();
   const assignments = balancedLaneDraw(checked.map((input) => input.value), locations);
@@ -2380,6 +2952,7 @@ function balancedLaneDraw(playerIds, lanes) {
 }
 
 function openGameModal() {
+  if (advancedModeController?.close?.() === false) return;
   if (!requireReadyMode()) return;
   if (!encounterOpen()) return showToast("Reabra o encontro para criar partidas.", "error");
   state.editingGameId = null;
@@ -2938,7 +3511,7 @@ function bindEvents() {
       return;
     }
     const createButton = event.target.closest("[data-create-game-type]");
-    if (createButton && isAdmin() && SELECTABLE_GAME_TYPES.includes(createButton.dataset.createGameType)) {
+    if (createButton && isAdmin() && selectableGameTypes().includes(createButton.dataset.createGameType)) {
       setModal("gameSwitchModal", false);
       openEncounterModal(false, createButton.dataset.createGameType);
     }
@@ -3021,7 +3594,18 @@ function bindEvents() {
   $("photoZoom").addEventListener("input", (event) => { state.photoZoom = Number(event.target.value); $("photoCanvas").style.width = `${state.photoZoom}%`; state.photoPanMode = state.photoZoom > 100; applyPhotoInteractionMode(); });
   $("photoContrast").addEventListener("input", (event) => { state.photoContrast = Number(event.target.value); updatePhotoPreview(); });
   const canvas = $("photoCanvas"); canvas.addEventListener("pointerdown", startCrop); canvas.addEventListener("pointermove", moveCrop); canvas.addEventListener("pointerup", endCrop); canvas.addEventListener("pointercancel", endCrop);
-  document.addEventListener("keydown", (event) => { if (event.key === "Escape" && !state.recovering) document.querySelectorAll("dialog[open]").forEach((dialog) => dialog.close()); });
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape" || state.recovering) return;
+    const dialogs = [...document.querySelectorAll("dialog[open]")];
+    const advancedDialog = dialogs.find((dialog) => ["advancedScoreModal", "advancedStatusModal"].includes(dialog.id));
+    if (advancedDialog) {
+      event.preventDefault();
+      event.stopImmediatePropagation?.();
+      advancedModeController?.close?.();
+      return;
+    }
+    dialogs.forEach((dialog) => dialog.close());
+  });
   $("playersButton").addEventListener("click", openPlayersModal);
   document.querySelectorAll("[data-area-target]").forEach((button) => button.addEventListener("click", () => setActiveArea(button.dataset.areaTarget)));
   document.querySelectorAll("[data-competition-tab]").forEach((button) => button.addEventListener("click", () => { state.activeCompetition = button.dataset.competitionTab; renderCompetitionArea(); }));
@@ -3060,7 +3644,8 @@ function bindEvents() {
 
 async function start() {
   bindEvents();
-  if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js').catch((error) => console.warn('PWA indisponível', error));
+  initializeAdvancedModeUI();
+  if (typeof navigator !== "undefined" && "serviceWorker" in navigator) navigator.serviceWorker.register("./sw.js").catch((error) => console.warn("PWA indisponível", error));
   if (client) {
     client.auth.onAuthStateChange((event, session) => {
       if (event === "PASSWORD_RECOVERY") state.recovering = true;

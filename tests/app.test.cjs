@@ -20,18 +20,274 @@ function loadApp(client = null) {
   get('toastContainer').append = () => {};
   const context = vm.createContext({
     window: { SUPABASE_CONFIG: client ? { url: 'https://example.test', publishableKey: 'test' } : {}, supabase: client ? { createClient: () => client } : null, GamePresentations: require('../game-presentations.js'), location: { hash: '', search: '', href: 'https://example.test/boliche/' }, history: { replaceState() {} }, setTimeout: () => {}, confirm: () => true },
-    document, URL, URLSearchParams, Intl, atob, console, sessionStorage: { getItem: () => null, setItem() {}, removeItem() {} }, crypto: { randomUUID: () => 'photo-id' },
+    document, URL, URLSearchParams, Intl, atob, console, navigator: {}, sessionStorage: { getItem: () => null, setItem() {}, removeItem() {} }, crypto: { randomUUID: () => 'photo-id' },
   });
   const source = fs.readFileSync(path.join(__dirname, '..', 'app.js'), 'utf8')
     .replace(/\nstart\(\);\s*$/, '\n');
   vm.runInContext(`${source}\nconst appRender = render;\nrender = () => {};\nrefreshAfterReconnect = async () => {};\nglobalThis.testApp = { state, loadData, renderApp: appRender, buildSuggestions, playersOnLane, updateReviewTable, updatePhotoConfirmState, captureReviewDraft, markRoundEdited, markReviewEdited, changeReviewContext, runOcr, drawOrientedPhoto, applyPhotoInteractionMode, canvasPoint, renderLeaderboard, renderCurrentGame, renderGames, renderLanes, renderPhotoOptions, removeGame, renderTeams, renderRecords, renderScoreHistory, loadMoreAuditHistory, shareResultCard, openShareModal, openPhotoModal, openTabletModal, openQuickScore, openStatsModal, confirmPhotoUpdate, submitAuth, submitProfile, prepareProfilePhoto, cleanupUnusedProfilePhotos, officialTotals, officialPosition, encounterGames, bracketRounds, bracketWinner, balancedLaneDraw, buildResultsExport, downloadResults, openEncounterModal, saveEncounter, renderEncounterRules, renderEncounterBar, renderGameSwitcher, selectEncounter, openGameModal, createGame, renderPlayerSelection, addPlayer, signOut, openRoundModal, renderRoundModal, renderRoundResults, saveRoundScores, clearRoundScore, undoRoundScoreChange, getGameMode, isRoundBased, configuredRoundMax, rankScoreRows, teamStandings, bowlingFrames, tabletStandingPins };`, context);
+  vm.runInContext('testApp.start = start; testApp.initializeAdvancedModeUI = initializeAdvancedModeUI; testApp.renderAdvancedLeaderboard = renderAdvancedLeaderboard;', context);
   return { ...context.testApp, get, rows, document, context };
+}
+
+function installAdvancedTestModules(app, feeds, aggregateOfficial = () => ({ rows: [], missingGameIds: [] })) {
+  const getFeed = (modeId, gameId) => feeds.get(`${modeId}:${gameId}`) || null;
+  app.context.window.AdvancedGameModes = {
+    rankResults: (_modeId, rows) => rows.map((row, index) => ({
+      ...row, rank: row.finalized === true || row.match_complete === true ? index + 1 : null,
+      eligible: row.finalized === true || row.match_complete === true,
+    })),
+    parseExactBigInt: (raw) => BigInt(raw),
+  };
+  app.context.window.AdvancedModeUI = {
+    create: () => ({
+      init() {},
+      render() {},
+      getRankingFeed: getFeed,
+      refreshFeed: async (modeId, gameId) => {
+        const feed = getFeed(modeId, gameId);
+        if (!feed) throw new Error(`Feed ausente: ${gameId}`);
+        return feed;
+      },
+    }),
+  };
+  app.context.window.AdvancedRanking = { aggregateOfficial };
+  assert.equal(app.initializeAdvancedModeUI(), true);
 }
 
 function adminSession() {
   const payload = Buffer.from(JSON.stringify({ amr: [{ method: 'password' }] })).toString('base64url');
   return { access_token: `header.${payload}.signature`, user: { id: 'admin', app_metadata: { role: 'admin' } } };
 }
+
+test("boot inicializa o controller avançado antes de carregar e renderizar", async () => {
+  let created = 0;
+  let initialized = 0;
+  const client = { auth: {
+    onAuthStateChange() {},
+    getSession: async () => ({ data: { session: null } }),
+  } };
+  const app = loadApp(client);
+  app.context.window.AdvancedGameModes = { rankResults: () => [], parseExactBigInt: (raw) => BigInt(raw) };
+  app.context.window.AdvancedModeUI = { create: () => {
+    created += 1;
+    return { init() { initialized += 1; }, render() {}, refreshFeed: async () => ({ rows: [], details: {} }) };
+  } };
+  app.context.bindEvents = () => {};
+  app.context.loadProfile = async () => {};
+  app.context.loadData = async () => {};
+  app.context.subscribeRealtime = () => {};
+  app.context.showProfileIfNeeded = () => {};
+  await app.start();
+  assert.equal(created, 1);
+  assert.equal(initialized, 1);
+});
+
+test("ranking oficial delega métrica e empate ao AdvancedRanking, só com partidas finais", () => {
+  const calls = [];
+  const feeds = new Map([
+    ["pebolim:g1", { rows: [{ player_id: "ana", status: "active", match_complete: true, sets_won: 1 }, { player_id: "bia", status: "active", match_complete: true, sets_won: 4 }], details: {} }],
+    ["pebolim:g2", { rows: [{ player_id: "ana", status: "DNF", match_complete: true, sets_won: 2 }, { player_id: "bia", status: "active", match_complete: true, sets_won: 0 }], details: {} }],
+    ["pebolim:g3", { rows: [{ player_id: "ana", status: "active", match_complete: false }], details: {} }],
+  ]);
+  const app = loadApp({});
+  installAdvancedTestModules(app, feeds, (modeId, games, feedsByGame, metric) => {
+    calls.push({ modeId, games: games.map((game) => game.id), feedIds: [...feedsByGame.keys()], metric });
+    return { rows: [
+      { player_id: "ana", rank: 1, displayValue: "2", eligible: true, games_count: 2, results_count: 2, metricLabel: "Total", unitLabel: "vitórias" },
+      { player_id: "bia", rank: 1, displayValue: "2", eligible: true, games_count: 2, results_count: 2, metricLabel: "Total", unitLabel: "vitórias" },
+    ], missingGameIds: [] };
+  });
+  app.state.activeEncounterId = "e";
+  app.state.activeGameId = "g3";
+  app.state.encounters = [{ id: "e", nome: "Pebolim", data: "2026-11-14", game_type: "pebolim", status: "active" }];
+  app.state.games = [
+    { id: "g1", encounter_id: "e", nome: "Final 1", status: "final" },
+    { id: "g2", encounter_id: "e", nome: "Final 2", status: "final" },
+    { id: "g3", encounter_id: "e", nome: "Em andamento", status: "partial" },
+  ];
+  app.state.players = [{ id: "ana", nome: "Ana" }, { id: "bia", nome: "Bia" }];
+  app.state.scores = ["g1", "g2", "g3"].flatMap((game_id) => ["ana", "bia"].map((player_id) => ({ game_id, player_id, pontos: 0 })));
+  app.state.teams = [{ id: "team", encounter_id: "e", name: "Dupla", metric: "sum" }];
+  app.state.teamPlayers = [{ team_id: "team", player_id: "ana" }];
+  app.get("rankingMode").value = "official";
+  app.renderLeaderboard();
+  const body = app.get("leaderboardBody").innerHTML;
+  assert.deepEqual(calls[0], { modeId: "pebolim", games: ["g1", "g2"], feedIds: ["g1", "g2"], metric: "total" });
+  assert.equal((body.match(/1º/g) || []).length, 2);
+  assert.match(body, /Oficial/);
+  assert.doesNotMatch(body, /DNF/);
+  app.renderEncounterBar();
+  assert.equal(app.get("updateScoreButton").hidden, true);
+  assert.equal(app.teamStandings().length, 0);
+  app.renderTeams();
+  assert.match(app.get("teamsList").innerHTML, /indisponível para esta modalidade/);
+});
+
+test("ranking oficial passa average e games e exibe displayValue e unidade do agregador", () => {
+  const metrics = [];
+  const feeds = new Map([["dardos_501:g1", { rows: [{ player_id: "ana", match_complete: true, match_winner_player_id: "ana" }], details: {} }]]);
+  const app = loadApp({});
+  installAdvancedTestModules(app, feeds, (_modeId, _games, _feedsByGame, metric) => {
+    metrics.push(metric);
+    const average = metric === "average";
+    return { rows: [{ player_id: "ana", rank: 1, displayValue: average ? "0.5" : "3",
+      eligible: true, games_count: 3, results_count: 2,
+      metricLabel: average ? "Média" : "Partidas", unitLabel: average ? "vitórias/partida" : "partidas" }], missingGameIds: [] };
+  });
+  app.state.activeEncounterId = "e";
+  app.state.activeGameId = "g1";
+  app.state.encounters = [{ id: "e", game_type: "dardos_501", status: "closed" }];
+  app.state.games = [{ id: "g1", encounter_id: "e", nome: "Final", status: "final" }];
+  app.state.players = [{ id: "ana", nome: "Ana" }];
+  app.state.scores = [{ game_id: "g1", player_id: "ana", pontos: null }];
+  app.get("rankingMode").value = "official";
+  app.get("rankingMetric").value = "average";
+  app.renderLeaderboard();
+  assert.match(app.get("leaderboardBody").innerHTML, /0,5/);
+  assert.match(app.get("leaderboardMeta").textContent, /Média/);
+  assert.match(app.get("leaderboardMeta").textContent, /vitórias\/partida/);
+  app.get("rankingMetric").value = "games";
+  app.renderLeaderboard();
+  assert.match(app.get("leaderboardBody").innerHTML, />3</);
+  assert.match(app.get("leaderboardMeta").textContent, /Partidas/);
+  assert.match(app.get("leaderboardMeta").textContent, /unidade: partidas/);
+  assert.deepEqual(metrics, ["average", "games"]);
+});
+
+test("ranking atual usa somente jogo selecionado e confirma apenas finalized/match_complete true", () => {
+  const calls = [];
+  const feeds = new Map([["pinball:g-live", { rows: [{ player_id: "ana", status: "active", finalized: false, value_text: "0" }], details: {} }]]);
+  const app = loadApp({});
+  installAdvancedTestModules(app, feeds, (...args) => { calls.push(args); return { rows: [], missingGameIds: [] }; });
+  app.state.activeEncounterId = "e";
+  app.state.activeGameId = "g-live";
+  app.state.encounters = [{ id: "e", game_type: "pinball", status: "active" }];
+  app.state.games = [
+    { id: "g-final", encounter_id: "e", nome: "Final", status: "final" },
+    { id: "g-live", encounter_id: "e", nome: "Atual", status: "partial" },
+  ];
+  app.state.players = [{ id: "ana", nome: "Ana" }];
+  app.state.scores = app.state.games.map((game) => ({ game_id: game.id, player_id: "ana", pontos: null }));
+  app.get("rankingMode").value = "current";
+  app.renderLeaderboard();
+  assert.equal(calls.length, 0);
+  assert.match(app.get("rankingTitle").textContent, /Atual/);
+  assert.match(app.get("leaderboardMeta").textContent, /0\/1 resultados confirmados/);
+  assert.match(app.get("leaderboardBody").innerHTML, /0/);
+  const darts = loadApp({});
+  const dartsFeeds = new Map([["dardos_501:d1", { rows: [{ player_id: "ana", match_complete: false, match_winner_player_id: null }], details: {} }]]);
+  installAdvancedTestModules(darts, dartsFeeds);
+  darts.state.activeEncounterId = "d";
+  darts.state.activeGameId = "d1";
+  darts.state.encounters = [{ id: "d", game_type: "dardos_501", status: "active" }];
+  darts.state.games = [{ id: "d1", encounter_id: "d", nome: "Perna", status: "partial" }];
+  darts.state.players = [{ id: "ana", nome: "Ana" }];
+  darts.state.scores = [{ game_id: "d1", player_id: "ana", pontos: null }];
+  darts.get("rankingMode").value = "current";
+  darts.renderLeaderboard();
+  assert.match(darts.get("leaderboardMeta").textContent, /0\/1 resultados confirmados/);
+});
+
+test("placar da partida exibe erro do feed e oferece retry explícito", async () => {
+  let attempts = 0;
+  let feed = null;
+  let retry;
+  const app = loadApp({});
+  app.context.window.AdvancedGameModes = { rankResults: () => [], parseExactBigInt: (raw) => BigInt(raw) };
+  app.context.window.AdvancedModeUI = { create: () => ({
+    init() {}, render() {}, getRankingFeed: () => null,
+    refreshFeed: async () => { attempts += 1; if (!feed) throw new Error("RPC indisponível"); return feed; },
+  }) };
+  app.context.window.AdvancedRanking = { aggregateOfficial: () => ({ rows: [], missingGameIds: [] }) };
+  assert.equal(app.initializeAdvancedModeUI(), true);
+  app.state.activeEncounterId = "e";
+  app.state.activeGameId = "g";
+  app.state.encounters = [{ id: "e", game_type: "pinball", status: "active" }];
+  app.state.games = [{ id: "g", encounter_id: "e", nome: "Pinball 1", status: "partial" }];
+  app.state.advancedFeedErrors.set("pinball:g", "RPC indisponível");
+  app.get("currentGameBody").querySelectorAll = (selector) => selector === "[data-retry-advanced-current]"
+    ? [{ addEventListener: (_event, handler) => { retry = handler; } }] : [];
+  app.renderCurrentGame();
+  assert.match(app.get("currentGameBody").innerHTML, /Resultados da partida indisponíveis/);
+  assert.match(app.get("currentGameBody").innerHTML, /Tentar novamente/);
+  feed = { rows: [], details: {} };
+  await retry();
+  assert.equal(attempts, 1);
+  assert.equal(app.state.advancedFeeds.get("pinball:g"), feed);
+  assert.equal(app.state.advancedFeedErrors.has("pinball:g"), false);
+});
+
+test("ranking oficial trata feed final inválido como erro recuperável sem loop de busca", () => {
+  let attempts = 0;
+  let retry;
+  const feed = { rows: [{ player_id: "ana", finalized: false, value_text: "9" }], details: {} };
+  const app = loadApp({});
+  app.context.window.AdvancedGameModes = { rankResults: () => [], parseExactBigInt: (raw) => BigInt(raw) };
+  app.context.window.AdvancedModeUI = { create: () => ({
+    init() {}, render() {}, getRankingFeed: () => feed,
+    refreshFeed: async () => { attempts += 1; return feed; },
+  }) };
+  app.context.window.AdvancedRanking = { aggregateOfficial: () => ({ rows: [], missingGameIds: ["g"] }) };
+  assert.equal(app.initializeAdvancedModeUI(), true);
+  app.state.activeEncounterId = "e";
+  app.state.activeGameId = "g";
+  app.state.encounters = [{ id: "e", game_type: "pinball", status: "closed" }];
+  app.state.games = [{ id: "g", encounter_id: "e", nome: "Final", status: "final" }];
+  app.state.players = [{ id: "ana", nome: "Ana" }];
+  app.state.scores = [{ game_id: "g", player_id: "ana", pontos: null }];
+  app.get("rankingMode").value = "official";
+  app.get("leaderboardBody").querySelectorAll = (selector) => selector === "[data-retry-advanced-ranking]"
+    ? [{ addEventListener: (_event, handler) => { retry = handler; } }] : [];
+  app.renderLeaderboard();
+  assert.match(app.get("rankingTitle").textContent, /indisponível/);
+  assert.match(app.get("leaderboardBody").innerHTML, /Tentar novamente/);
+  assert.equal(app.state.advancedFeedErrors.has("pinball:g"), true);
+  assert.equal(attempts, 0);
+  assert.equal(typeof retry, "function");
+});
+
+test("export inclui feeds e ranking avançado autoritativos e omite rankings/equipes legados", async () => {
+  const feeds = new Map([
+    ["pinball:g-final", { rows: [{ player_id: "ana", metric_key: "pinball_points", value_text: "9223372036854775807", status: "active", finalized: true }], details: { source: "mode_player_scores" } }],
+    ["pinball:g-live", { rows: [{ player_id: "ana", metric_key: "pinball_points", value_text: "42", status: "active", finalized: false }], details: {} }],
+  ]);
+  const app = loadApp({});
+  installAdvancedTestModules(app, feeds, (_modeId, games, feedsByGame, metric) => ({
+    rows: games.filter((game) => feedsByGame.has(game.id)).map(() => ({
+      player_id: "ana", rank: 1, displayValue: "9223372036854775807", eligible: true,
+      games_count: 1, results_count: 1, metricLabel: "Total", unitLabel: "pontos",
+    })), missingGameIds: [],
+  }));
+  app.state.activeEncounterId = "e";
+  app.state.encounters = [{ id: "e", nome: "Pinball", data: "2026-11-14", status: "active", game_type: "pinball", rules_config: {} }];
+  app.state.games = [
+    { id: "g-final", encounter_id: "e", nome: "Final", status: "final" },
+    { id: "g-live", encounter_id: "e", nome: "Atual", status: "partial" },
+  ];
+  app.state.players = [{ id: "ana", nome: "Ana" }];
+  app.state.encounterPlayers = [{ encounter_id: "e", player_id: "ana" }];
+  app.state.scores = app.state.games.map((game) => ({ game_id: game.id, player_id: "ana", pontos: null, finalizado: false }));
+  app.state.teams = [{ id: "team", encounter_id: "e", name: "Equipe", metric: "sum" }];
+  app.state.teamPlayers = [{ team_id: "team", player_id: "ana" }];
+  const exported = await app.buildResultsExport();
+  assert.equal(exported.rankings.length, 0);
+  assert.equal(exported.team_rankings.length, 0);
+  assert.equal(exported.advanced_results.length, 2);
+  assert.equal(exported.advanced_results[0].rows[0].value_text, "9223372036854775807");
+  assert.equal(exported.advanced_results[0].details.source, "mode_player_scores");
+  assert.equal(exported.advanced_rankings[0].status, "official");
+  assert.equal(exported.advanced_rankings[0].rows[0].value, "9223372036854775807");
+  assert.equal(exported.advanced_rankings[0].rows[0].eligible, true);
+  assert.doesNotMatch(JSON.stringify(exported), /user_id|auth_user|access_token/);
+  const files = [];
+  app.context.Blob = class { constructor(parts) { files.push(parts.join("")); } };
+  app.context.URL = { createObjectURL: () => "blob:advanced", revokeObjectURL() {} };
+  app.document.createElement = () => ({ click() {} });
+  await app.downloadResults("csv");
+  assert.match(files[0], /resultado_avancado/);
+  assert.match(files[0], /9223372036854775807/);
+  assert.match(files[0], /feed_avancado/);
+});
 
 function roundRow(playerId, points, finalized) {
   const pointsInput = { value: String(points) };
@@ -635,7 +891,7 @@ test('classificação de equipes aplica métrica comum, média por jogos confirm
   assert.doesNotMatch(app.get('teamsList').innerHTML, /Sem resultado/);
 });
 
-test('métricas misturadas bloqueiam classificação e export até padronização explícita', () => {
+test('métricas misturadas bloqueiam classificação e export até padronização explícita', async () => {
   const app = loadApp();
   app.state.activeEncounterId = 'e';
   app.state.encounters = [{ id: 'e', game_type: 'boliche' }];
@@ -653,7 +909,7 @@ test('métricas misturadas bloqueiam classificação e export até padronizaçã
   assert.equal(app.teamStandings().length, 0);
   app.renderTeams();
   assert.match(app.get('teamsList').innerHTML, /Critérios diferentes entre equipes/);
-  assert.equal(app.buildResultsExport().team_rankings.length, 0);
+  assert.equal((await app.buildResultsExport()).team_rankings.length, 0);
   app.state.teams[1].metric = 'average';
   assert.deepEqual(Array.from(app.teamStandings(), (row) => [row.team.name, row.value]), [['B', 120], ['A', 100]]);
 });
@@ -1321,7 +1577,7 @@ test('chave eliminatória avança só com resultados finais e desempata pela ord
   assert.equal(app.bracketWinner('f','a','e'), null);
 });
 
-test('exportação inclui jogadores, partidas e pista histórica no CSV e no JSON', () => {
+test('exportação inclui jogadores, partidas e pista histórica no CSV e no JSON', async () => {
   const app = loadApp();
   app.state.encounters = [{ id: 'meet-1', nome: 'Noite', data: '2026-11-13', game_type: 'quiz', rules_version: 1, rules_config: { round_count: 1, max_points_per_round: 0 } }];
   app.state.activeEncounterId = 'meet-1';
@@ -1338,8 +1594,8 @@ test('exportação inclui jogadores, partidas e pista histórica no CSV e no JSO
   app.context.Blob = class { constructor(parts) { exports.push(parts.join('')); } };
   app.context.URL = { createObjectURL: () => 'blob:export', revokeObjectURL() {} };
   app.document.createElement = () => ({ click() {} });
-  app.downloadResults('csv');
-  app.downloadResults('json');
+  await app.downloadResults('csv');
+  await app.downloadResults('json');
   assert.ok(exports[0].startsWith('\uFEFF'));
   const csvLines = exports[0].slice(1).split('\r\n');
   const csvHeader = csvLines[0].split(';').map((value) => value.replace(/^"|"$/g, ''));
@@ -1355,7 +1611,7 @@ test('exportação inclui jogadores, partidas e pista histórica no CSV e no JSO
   assert.ok(csvLines.some((line) => line.includes('"membro_equipe"') && line.includes('"Ana"')));
   assert.ok(csvLines.every((line) => line.split(';').length === csvHeader.length));
   const json = JSON.parse(exports[1]);
-  assert.equal(json.schema_version, 3);
+  assert.equal(json.schema_version, 4);
   assert.equal(json.encounters[0].rules_config.round_count, 1);
   assert.equal(json.scores[0].pista, '__estacao_virtual__');
   assert.equal(json.players[0].pista, '2');
@@ -1453,7 +1709,7 @@ test('chave de quatro usa semifinal e final sem antecipar resultados pendentes',
   assert.equal(app.bracketWinner('f', 'a', 'c'), null);
 });
 
-test('exportação protege texto de fórmulas e conserva zero', () => {
+test('exportação protege texto de fórmulas e conserva zero', async () => {
   const app = loadApp();
   app.state.encounters = [{ id: 'e', nome: '=IMPORTXML("x")', data: '2026-11-13' }];
   app.state.players = [{ id: 'p', nome: '+SUM(1)', pista: '1' }];
@@ -1464,11 +1720,11 @@ test('exportação protege texto de fórmulas e conserva zero', () => {
   app.context.Blob = class { constructor(parts) { written.push(parts.join('')); } };
   app.context.URL = { createObjectURL: () => 'blob:test', revokeObjectURL() {} };
   app.document.createElement = () => ({ click() {} });
-  app.downloadResults('csv');
+  await app.downloadResults('csv');
   assert.match(written[0], /"'=IMPORTXML/);
   assert.match(written[0], /"'\+SUM\(1\)"/);
   assert.match(written[0], /"0";"true"/);
-  assert.equal(app.buildResultsExport().rankings[0].average, 0);
+  assert.equal((await app.buildResultsExport()).rankings[0].average, 0);
 });
 
 test('limpeza remove só foto antiga não referenciada após confirmar perfil', async () => {
