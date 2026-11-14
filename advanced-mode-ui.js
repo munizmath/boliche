@@ -540,7 +540,10 @@
       dialog.setAttribute('inert', '');
     }
 
-    function close() {
+    function close({ force = false } = {}) {
+      if (active?.saving && !force) return false;
+      if (active?.dirty && !force
+          && document.defaultView?.confirm?.('Descartar as alterações não salvas deste resultado?') !== true) return false;
       active = null;
       hideDialog(scoreDialog);
       hideDialog(statusDialog);
@@ -556,6 +559,7 @@
       statusSave.disabled = true;
       scoreSave.textContent = scoreSaveLabel;
       statusSave.textContent = statusSaveLabel;
+      return true;
     }
 
     async function open(kind, { modeId = current()?.modeId, gameId = state.activeGameId } = {}) {
@@ -567,7 +571,7 @@
         showToast('Encontro ativo e acesso de administrador são necessários.', 'error');
         return null;
       }
-      close();
+      if (!close()) return null;
       const dialog = kind === 'score' ? scoreDialog : statusDialog;
       const form = kind === 'score' ? scoreForm : statusForm;
       const save = kind === 'score' ? scoreSave : statusSave;
@@ -597,12 +601,11 @@
     }
 
     async function finishWrite(view, saved, gameId) {
-      view.dirty = false;
       let updateError = null;
       try { await reload(); } catch (error) { updateError = error; }
       let feed = null;
       try { feed = await refreshFeed(view.modeId, gameId); } catch (error) { updateError ||= error; }
-      close();
+      close({ force: true });
       showToast(updateError ? 'Resultado salvo. Atualize a página para conferir o placar.' : 'Resultado salvo.', updateError ? 'error' : 'success');
       return { ok: true, data: saved, feed, refreshError: updateError };
     }
@@ -613,6 +616,7 @@
       let payload;
       try { payload = buildScore(view); } catch (error) { return { ok: false, error }; }
       const gameId = value(view.panel, 'p_game_id');
+      view.saving = true;
       setBusy(view, true, 'Salvando…');
       announceError('');
       try {
@@ -630,7 +634,10 @@
           showToast('Não foi possível salvar o resultado.', 'error');
         }
         return { ok: false, error };
-      } finally { if (active === view) setBusy(view, false); }
+      } finally {
+        view.saving = false;
+        if (active === view) setBusy(view, false);
+      }
     }
 
     async function submitStatus() {
@@ -639,6 +646,7 @@
       let payload;
       try { payload = buildStatus(view); } catch (error) { return { ok: false, error }; }
       const gameId = payload.p_game_id;
+      view.saving = true;
       setBusy(view, true, 'Salvando…');
       announceError('');
       try {
@@ -651,7 +659,10 @@
           showToast('Não foi possível salvar a situação.', 'error');
         }
         return { ok: false, error };
-      } finally { if (active === view) setBusy(view, false); }
+      } finally {
+        view.saving = false;
+        if (active === view) setBusy(view, false);
+      }
     }
 
     function init() {
@@ -664,32 +675,48 @@
           form.addEventListener(eventName, handler);
           listeners.push([form, eventName, handler]);
         }
-        const cancel = form.querySelector('[data-close-modal]');
-        if (cancel) {
-          const onCancel = () => close();
-          cancel.addEventListener('click', onCancel);
-          listeners.push([cancel, 'click', onCancel]);
+        for (const button of form.querySelectorAll('[data-close-modal]')) {
+          const onButtonClose = (event) => {
+            event.preventDefault();
+            event.stopImmediatePropagation();
+            close();
+          };
+          button.addEventListener('click', onButtonClose, true);
+          listeners.push([button, 'click', onButtonClose, true]);
         }
       }
       for (const dialog of [scoreDialog, statusDialog]) {
+        const onCancel = (event) => {
+          if (active?.dialog !== dialog) return;
+          event.preventDefault();
+          close();
+        };
         const onClose = () => {
-          if (active?.dialog === dialog) close();
+          if (active?.dialog === dialog && !close()) {
+            // Defensive fallback for code that calls dialog.close() directly.
+            // The cancel event and close() are the paths that guard before close.
+            dialog.showModal();
+            return;
+          }
           dialog.hidden = true;
           dialog.inert = true;
           dialog.setAttribute('inert', '');
         };
+        dialog.addEventListener('cancel', onCancel);
         dialog.addEventListener('close', onClose);
+        listeners.push([dialog, 'cancel', onCancel]);
         listeners.push([dialog, 'close', onClose]);
       }
       initialized = true;
       return controller;
     }
 
-    function destroy() {
-      close();
-      for (const [target, type, handler] of listeners) target.removeEventListener(type, handler);
+    function destroy({ force = false } = {}) {
+      if (!close({ force })) return false;
+      for (const [target, type, handler, options] of listeners) target.removeEventListener(type, handler, options);
       listeners.length = 0;
       initialized = false;
+      return true;
     }
 
     const controller = Object.freeze({

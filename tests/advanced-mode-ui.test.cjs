@@ -24,6 +24,7 @@ class Element {
     this.attributes = new Map();
   }
   querySelector(selector) { return this.fields.get(selector.match(/^\[name="([^"]+)"\]$/)?.[1]) || null; }
+  querySelectorAll(selector) { return selector === '[data-close-modal]' ? this.closeButtons || [] : []; }
   replaceChildren(...children) {
     this.children = children;
     this.value = children[0]?.value || '';
@@ -34,7 +35,14 @@ class Element {
   }
   removeEventListener(type, handler) { this.listeners.get(type)?.delete(handler); }
   emit(type, target = this) {
-    for (const handler of this.listeners.get(type) || []) handler({ type, target, currentTarget: this, preventDefault() {} });
+    const event = { type, target, currentTarget: this, defaultPrevented: false, immediateStopped: false,
+      preventDefault() { this.defaultPrevented = true; },
+      stopImmediatePropagation() { this.immediateStopped = true; } };
+    for (const handler of this.listeners.get(type) || []) {
+      handler(event);
+      if (event.immediateStopped) break;
+    }
+    return event;
   }
   setAttribute(key, value) { this.attributes.set(key, value); }
   removeAttribute(key) { this.attributes.delete(key); }
@@ -63,6 +71,12 @@ function fixture(modeId, overrides = {}) {
   scoreDialog.hidden = statusDialog.hidden = true;
   const scoreForm = add('advancedScoreForm', 'FORM');
   const statusForm = add('advancedStatusForm', 'FORM');
+  const scoreCancel = new Element('BUTTON');
+  const scoreClose = new Element('BUTTON');
+  const statusCancel = new Element('BUTTON');
+  const statusClose = new Element('BUTTON');
+  scoreForm.closeButtons = [scoreClose, scoreCancel];
+  statusForm.closeButtons = [statusClose, statusCancel];
   const scoreSave = add('advancedScoreSaveButton', 'BUTTON');
   const statusSave = add('advancedStatusSaveButton', 'BUTTON');
   scoreSave.textContent = 'Salvar resultado';
@@ -174,6 +188,7 @@ function fixture(modeId, overrides = {}) {
     form(kind).emit('change', item);
   };
   return { nodes, state, encounter, feeds, tables, calls, reads, confirmCalls, controller, panel, control, set, check,
+    scoreCancel, scoreClose, statusCancel, statusClose,
     toasts, get reloads() { return reloads; }, setAdmin: (value) => { admin = value; },
     setConfirm: (value) => { confirmResult = value; }, setReadFailure: (error) => { readFailure = error; },
     setWriteFailure: (error) => { writeFailure = error; }, setReadGate: (promise) => { readGate = promise; } };
@@ -239,7 +254,7 @@ test('match RPC prerequisites disable sets out of sequence and DNS after a confi
   f.set('p_score_a', '4');
   f.set('p_score_b', '1');
   assert.equal(f.nodes.get('advancedScoreSaveButton').disabled, true);
-  f.controller.close();
+  f.controller.close({ force: true });
   f.tables.match_sets[0].confirmed = true;
   await f.controller.openStatus();
   f.set('p_player_id', 'p1', 'status');
@@ -487,4 +502,76 @@ test('CAS conflict retains unsaved score and blocks retry', async () => {
   assert.equal(f.calls.filter(([name]) => name === 'save_mode_player_score').length, 1);
   assert.equal((await f.controller.submitScore()).ok, false);
   assert.equal(f.calls.filter(([name]) => name === 'save_mode_player_score').length, 1);
+});
+
+test('close returns false and keeps dirty dialog intact when discard is declined', async () => {
+  const f = fixture('pinball');
+  await f.controller.openScore();
+  f.set('p_player_id', 'p1');
+  f.set('p_value', '123');
+  assert.equal(f.controller.close(), false);
+  assert.equal(f.nodes.get('advancedScoreModal').open, true);
+  assert.equal(f.panel().hidden, false);
+  assert.equal(f.control('p_value').value, '123');
+  assert.equal(f.confirmCalls.length, 1);
+  f.setConfirm(true);
+  assert.equal(f.controller.close(), true);
+  assert.equal(f.nodes.get('advancedScoreModal').open, false);
+  assert.equal(f.panel().hidden, true);
+});
+
+test('opening another panel aborts on discard cancel and opens after acceptance', async () => {
+  const f = fixture('sinuca');
+  await f.controller.openScore();
+  f.set('p_set_no', '1');
+  f.set('p_score_a', '4');
+  assert.equal(await f.controller.openStatus(), null);
+  assert.equal(f.nodes.get('advancedScoreModal').open, true);
+  assert.equal(f.nodes.get('advancedStatusModal').open, false);
+  assert.equal(f.control('p_score_a').value, '4');
+  f.setConfirm(true);
+  const feed = await f.controller.openStatus();
+  assert.equal(feed.modeId, 'sinuca');
+  assert.equal(f.nodes.get('advancedScoreModal').open, false);
+  assert.equal(f.nodes.get('advancedStatusModal').open, true);
+});
+
+test('native Escape cancel prevents close on decline and closes on acceptance', async () => {
+  const f = fixture('pinball');
+  await f.controller.openScore();
+  f.set('p_player_id', 'p1');
+  f.set('p_value', '456');
+  const blocked = f.nodes.get('advancedScoreModal').emit('cancel');
+  assert.equal(blocked.defaultPrevented, true);
+  assert.equal(f.nodes.get('advancedScoreModal').open, true);
+  assert.equal(f.control('p_value').value, '456');
+  f.setConfirm(true);
+  const accepted = f.nodes.get('advancedScoreModal').emit('cancel');
+  assert.equal(accepted.defaultPrevented, true);
+  assert.equal(f.nodes.get('advancedScoreModal').open, false);
+});
+
+test('form close buttons intercept global dialog.close handlers', async () => {
+  const f = fixture('pinball');
+  await f.controller.openScore();
+  f.set('p_player_id', 'p1');
+  f.set('p_value', '789');
+  let globalCalls = 0;
+  f.scoreCancel.addEventListener('click', () => { globalCalls += 1; f.nodes.get('advancedScoreModal').close(); });
+  const event = f.scoreCancel.emit('click');
+  assert.equal(event.defaultPrevented, true);
+  assert.equal(event.immediateStopped, true);
+  assert.equal(globalCalls, 0);
+  assert.equal(f.nodes.get('advancedScoreModal').open, true);
+  assert.equal(f.control('p_value').value, '789');
+});
+
+test('successful save force closes without discard confirmation', async () => {
+  const f = fixture('pinball');
+  await f.controller.openScore();
+  f.set('p_player_id', 'p1');
+  f.set('p_value', '42');
+  assert.equal((await f.controller.submitScore()).ok, true);
+  assert.equal(f.nodes.get('advancedScoreModal').open, false);
+  assert.equal(f.confirmCalls.length, 0);
 });
