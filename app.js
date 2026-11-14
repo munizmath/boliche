@@ -18,6 +18,14 @@ const state = {
   predictionStandings: [],
   games: [],
   scores: [],
+  roundScores: [],
+  roundScoresAvailable: true,
+  roundScoreChanges: [],
+  roundScoreChangesAvailable: true,
+  roundDraft: new Map(),
+  roundConflict: false,
+  roundGameId: null,
+  roundNo: null,
   profile: null,
   profiles: [],
   playerPhotos: new Map(),
@@ -82,6 +90,109 @@ const encounterOpen = () => Boolean(activeEncounter() && activeEncounter().statu
 const encounterActive = () => activeEncounter()?.status === "active";
 const scoreLane = (score) => score?.pista || getPlayer(score?.player_id)?.pista || "";
 const gameLaneForPlayer = (gameId, playerId) => scoreLane(state.scores.find((score) => score.game_id === gameId && score.player_id === playerId));
+const BUILTIN_MODES = {
+  boliche: { id: "boliche", name: "Boliche", unit: "pontos", roundBased: false, locationLabel: "Pista" },
+  bowling: { id: "bowling", name: "Boliche", unit: "pontos", roundBased: false, locationLabel: "Pista" },
+  quiz: { id: "quiz", name: "Quiz", unit: "pontos", roundBased: true, locationLabel: "Estação" },
+  gincana: { id: "gincana", name: "Gincana", unit: "pontos", roundBased: true, locationLabel: "Estação" },
+};
+function getGameMode(encounter = activeEncounter()) {
+  const id = typeof encounter === "string" ? encounter : encounter?.game_type || "boliche";
+  const fallback = BUILTIN_MODES[id] || { id, name: id || "Boliche", unit: "pontos", roundBased: false, locationLabel: "Local" };
+  const configured = window.GameRules?.getMode?.(id);
+  if (!configured) return fallback;
+  return {
+    ...fallback,
+    ...configured,
+    id: configured.id || id,
+    name: configured.name || configured.label || configured.title || fallback.name,
+    unit: configured.unit || configured.scoreUnit || fallback.unit,
+    roundBased: configured.roundBased ?? configured.hasRounds ?? fallback.roundBased,
+    locationLabel: configured.locationLabel || configured.placeLabel || fallback.locationLabel,
+  };
+}
+function isRoundBased(encounter = activeEncounter()) { return Boolean(getGameMode(encounter).roundBased); }
+function historicalModeKey(encounter) {
+  const mode = getGameMode(encounter);
+  const family = ["boliche", "bowling"].includes(mode.id) ? "boliche" : mode.id;
+  return `${family}:${mode.unit}`;
+}
+function encounterRules(encounter = activeEncounter()) { return encounter?.rules_config && typeof encounter.rules_config === "object" ? encounter.rules_config : {}; }
+function configuredRoundCount(encounter = activeEncounter()) {
+  const value = encounterRules(encounter).round_count ?? encounterRules(encounter).rounds;
+  return Number.isInteger(Number(value)) && Number(value) > 0 ? Number(value) : 0;
+}
+function configuredRoundMax(encounter = activeEncounter()) {
+  const rules = encounterRules(encounter);
+  const value = rules.max_points_per_round ?? rules.round_max;
+  return value === null || value === undefined || value === "" ? 0 : (Number.isInteger(Number(value)) && Number(value) >= 0 ? Number(value) : 0);
+}
+function roundPoints(row) { return row?.points ?? row?.pontos ?? null; }
+function roundFinalized(row) { return Boolean(row?.finalized ?? row?.finalizado); }
+function roundScoreKey(gameId, roundNo, playerId) { return `${gameId}:${roundNo}:${playerId}`; }
+function reconcileRoundDrafts(roundScores = state.roundScores) {
+  const gameId = state.roundGameId || $("roundGame")?.value;
+  const roundNo = Number(state.roundNo || $("roundNumber")?.value);
+  let conflict = false;
+  for (const draft of state.roundDraft.values()) {
+    if (!draft.manual || draft.gameId !== gameId || Number(draft.roundNo) !== roundNo) continue;
+    const fresh = roundScores.find((row) => roundScoreKey(row.game_id, row.round_no, row.player_id) === draft.key);
+    const freshPoints = fresh ? String(roundPoints(fresh) ?? "") : "";
+    const freshFinalized = roundFinalized(fresh);
+    if (freshPoints === String(draft.points ?? "") && freshFinalized === Boolean(draft.finalized)) {
+      state.roundDraft.delete(draft.key);
+      continue;
+    }
+    if (freshPoints !== String(draft.basePoints ?? "") || freshFinalized !== Boolean(draft.baseFinalized)) conflict = true;
+  }
+  state.roundConflict = conflict;
+}
+function upsertRoundScoreLocal(gameId, roundNo, playerId, points, finalized) {
+  const existingIndex = state.roundScores.findIndex((row) => row.game_id === gameId && Number(row.round_no) === Number(roundNo) && row.player_id === playerId);
+  const saved = { game_id: gameId, round_no: Number(roundNo), player_id: playerId, points, finalized };
+  if (existingIndex < 0) state.roundScores.push(saved);
+  else state.roundScores[existingIndex] = { ...state.roundScores[existingIndex], ...saved };
+}
+function rankScoreRows(mode, rows, metric = "total", valueOf = (row) => row.total) {
+  const ranker = window.GameRules?.rankScores;
+  const modeId = typeof mode === "string" ? mode : mode?.id || "boliche";
+  const metricValue = (row) => {
+    if (row?.[metric] !== undefined && row?.[metric] !== null) return row[metric];
+    if (metric === "total") return row?.points ?? row?.score?.pontos ?? valueOf(row);
+    if (metric === "points") return row?.score?.pontos ?? row?.total ?? valueOf(row);
+    if (metric === "average") return row?.average ?? valueOf(row);
+    if (metric === "best") return row?.best ?? valueOf(row);
+    if (metric === "games") return row?.gamesPlayed ?? row?.games_played ?? valueOf(row);
+    return valueOf(row);
+  };
+  if (typeof ranker === "function") {
+    try {
+      const eligible = [];
+      const ineligible = [];
+      rows.forEach((row, index) => {
+        const value = metricValue(row);
+        if (value === null || value === undefined || !Number.isFinite(Number(value))) { ineligible.push(row); return; }
+        eligible.push({ ...row, [metric]: Number(value), __rankScoreIndex: index });
+      });
+      const ranked = ranker(modeId, eligible, metric);
+      if (Array.isArray(ranked)) {
+        const ordered = [];
+        const seen = new Set();
+        ranked.forEach((row) => {
+          const index = Number(row?.__rankScoreIndex);
+          if (Number.isInteger(index) && rows[index] && !seen.has(index)) { ordered.push(rows[index]); seen.add(index); }
+        });
+        eligible.forEach((row) => {
+          const index = row.__rankScoreIndex;
+          if (!seen.has(index)) { ordered.push(rows[index]); seen.add(index); }
+        });
+        return [...ordered, ...ineligible.sort((a, b) => String(a.player?.nome || "").localeCompare(String(b.player?.nome || ""), "pt-BR"))];
+      }
+    } catch (error) { console.warn("GameRules.rankScores indisponível; usando classificação local", error); }
+  }
+  return [...rows].sort((a, b) => Number(metricValue(b) ?? -Infinity) - Number(metricValue(a) ?? -Infinity)
+    || String(a.player?.nome || a.player_name || a.player_id || "").localeCompare(String(b.player?.nome || b.player_name || b.player_id || ""), "pt-BR"));
+}
 const isAdmin = () => {
   if (state.session?.user?.app_metadata?.role !== "admin") return false;
   try {
@@ -211,17 +322,18 @@ function setModal(id, open) {
 
 async function loadData() {
   if (isDemoMode) {
-    state.players = []; state.lanes = []; state.encounters = []; state.encounterPlayers = []; state.games = []; state.scores = []; state.playerPhotos = new Map(); state.activeGameId = null;
+    state.players = []; state.lanes = []; state.encounters = []; state.encounterPlayers = []; state.games = []; state.scores = []; state.roundScores = []; state.playerPhotos = new Map(); state.activeGameId = null;
     setConnection("Supabase não configurado", "error");
     $("demoBanner").hidden = false;
     $("demoBanner").innerHTML = "<strong>Supabase não configurado</strong><span>Configure a URL e a Publishable Key antes de usar o placar. Nenhum dado fictício será exibido.</span>";
     return;
   }
   setConnection("Sincronizando…", "muted");
-  const [playersResult, lanesResult, encountersResult, rosterResult, gamesResult, scoresResult, scoreDetailsResult, throwChangesResult, teamsResult, teamPlayersResult, bracketsResult, predictionsResult, standingsResult, profilesResult, changesResult, publicPhotosResult] = await Promise.all([
+  if ($("roundModal")?.open) captureRoundDraft();
+  let [playersResult, lanesResult, encountersResult, rosterResult, gamesResult, scoresResult, scoreDetailsResult, throwChangesResult, teamsResult, teamPlayersResult, bracketsResult, predictionsResult, standingsResult, profilesResult, changesResult, publicPhotosResult, roundScoresResult, roundScoreChangesResult] = await Promise.all([
     client.from("players").select("id,nome,apelido_placar,pista").order("nome"),
     client.from("lanes").select("name,capacity").order("name"),
-    client.from("encounters").select("id,nome,data,status,closed_at,prediction_closes_at,created_at").order("data", { ascending: false }),
+    client.from("encounters").select("id,nome,data,status,closed_at,prediction_closes_at,created_at,game_type,rules_version,rules_config").order("data", { ascending: false }),
     client.from("encounter_players").select("encounter_id,player_id"),
     client.from("games").select("id,nome,status,encounter_id,created_at,updated_at").order("created_at", { ascending: false }),
     client.from("scores").select("id,game_id,player_id,pista,pontos,finalizado,updated_at"),
@@ -235,10 +347,16 @@ async function loadData() {
     isAdmin() ? client.rpc("list_registered_accounts") : Promise.resolve({ data: [] }),
     isAdmin() ? client.from("score_changes").select("id,score_id,game_id,player_id,previous_points,new_points,previous_finalized,new_finalized,changed_at,actor_id").order("id", { ascending: false }).limit(100) : Promise.resolve({ data: [] }),
     client.from("profiles").select("player_id,foto_path").eq("status", "approved").eq("photo_public_opt_in", true).not("player_id", "is", null),
+    client.from("round_scores").select("game_id,player_id,round_no,points,finalized"),
+    isAdmin() ? client.from("round_score_changes").select("*").order("id", { ascending: false }).limit(100) : Promise.resolve({ data: [] }),
   ]);
   const migrationMissing = (result) => result?.error && ["42P01", "PGRST205"].includes(result.error.code);
   const optionalMigrationError = (result) => migrationMissing(result) ? null : result?.error;
-  const error = playersResult.error || lanesResult.error || encountersResult.error || rosterResult.error || gamesResult.error || scoresResult.error || optionalMigrationError(scoreDetailsResult) || optionalMigrationError(throwChangesResult) || teamsResult.error || teamPlayersResult.error || bracketsResult.error || predictionsResult.error || standingsResult.error || profilesResult.error || changesResult.error || publicPhotosResult.error;
+  if (encountersResult.error && ["42703", "PGRST204"].includes(encountersResult.error.code)) {
+    const legacyEncounters = await client.from("encounters").select("id,nome,data,status,closed_at,prediction_closes_at,created_at").order("data", { ascending: false });
+    if (!legacyEncounters.error) encountersResult = { ...legacyEncounters, data: (legacyEncounters.data || []).map((item) => ({ ...item, game_type: "boliche", rules_version: null, rules_config: {} })) };
+  }
+  const error = playersResult.error || lanesResult.error || encountersResult.error || rosterResult.error || gamesResult.error || scoresResult.error || optionalMigrationError(scoreDetailsResult) || optionalMigrationError(throwChangesResult) || teamsResult.error || teamPlayersResult.error || bracketsResult.error || predictionsResult.error || standingsResult.error || profilesResult.error || changesResult.error || publicPhotosResult.error || optionalMigrationError(roundScoresResult) || optionalMigrationError(roundScoreChangesResult);
   if (error) throw error;
   if ($("photoModal")?.open) {
     captureReviewDraft();
@@ -247,12 +365,18 @@ async function loadData() {
       if (String(fresh?.pontos ?? "") !== row.dataset.oldScore || Boolean(fresh?.finalizado) !== (row.dataset.oldFinal === "true")) state.reviewConflict = true;
     }
   }
+  const incomingRoundScores = migrationMissing(roundScoresResult) ? [] : (roundScoresResult.data || []);
+  if ($("roundModal")?.open) reconcileRoundDrafts(incomingRoundScores);
   state.players = playersResult.data || [];
   state.lanes = lanesResult.data || [];
   state.encounters = encountersResult.data || [];
   state.encounterPlayers = rosterResult.data || [];
   state.games = gamesResult.data || [];
   state.scores = scoresResult.data || [];
+  state.roundScores = incomingRoundScores;
+  state.roundScoresAvailable = !migrationMissing(roundScoresResult);
+  state.roundScoreChanges = isAdmin() && !migrationMissing(roundScoreChangesResult) ? (roundScoreChangesResult.data || []) : [];
+  state.roundScoreChangesAvailable = !migrationMissing(roundScoreChangesResult);
   state.scoreDetails = migrationMissing(scoreDetailsResult) ? [] : (scoreDetailsResult.data || []);
   state.scoreDetailsAvailable = !migrationMissing(scoreDetailsResult);
   state.throwChanges = migrationMissing(throwChangesResult) ? [] : (throwChangesResult.data || []);
@@ -409,6 +533,10 @@ function subscribeRealtime() {
   if (state.scoreDetailsAvailable) channel = channel
     .on("postgres_changes", { event: "*", schema: "public", table: "score_details" }, refreshFromRealtime)
     .on("postgres_changes", { event: "*", schema: "public", table: "throw_changes" }, refreshFromRealtime);
+  if (state.roundScoresAvailable) channel = channel
+    .on("postgres_changes", { event: "*", schema: "public", table: "round_scores" }, refreshFromRealtime);
+  if (isAdmin() && state.roundScoreChangesAvailable) channel = channel
+    .on("postgres_changes", { event: "*", schema: "public", table: "round_score_changes" }, refreshFromRealtime);
   channel
     .subscribe((status) => {
       if (status === "SUBSCRIBED") {
@@ -457,7 +585,7 @@ function applyAuthUi() {
 
 function renderEncounterBar() {
   const selected = state.activeEncounterId;
-  $("encounterSelect").innerHTML = state.encounters.map((item) => `<option value="${esc(item.id)}">${esc(item.nome)} · ${esc(new Intl.DateTimeFormat("pt-BR", { timeZone: "UTC" }).format(new Date(`${item.data}T12:00:00Z`)))}</option>`).join("");
+  $("encounterSelect").innerHTML = state.encounters.map((item) => `<option value="${esc(item.id)}">${esc(item.nome)} · ${esc(getGameMode(item).name)} · ${esc(new Intl.DateTimeFormat("pt-BR", { timeZone: "UTC" }).format(new Date(`${item.data}T12:00:00Z`)))}</option>`).join("");
   $("encounterSelect").value = selected || "";
   $("encounterStatus").textContent = !activeEncounter() ? "Sem encontro" : activeEncounter().status === "closed" ? "Encerrado" : activeEncounter().status === "preparing" ? "Preparação" : "Ativo";
   $("encounterStatus").className = `status-pill status-pill--${!activeEncounter() ? "muted" : encounterOpen() ? "warning" : "success"}`;
@@ -473,6 +601,13 @@ function renderEncounterBar() {
   $("photoButton").disabled = !encounterActive();
   if ($("tabletButton")) $("tabletButton").disabled = !encounterActive();
   if ($("updateScoreButton")) $("updateScoreButton").disabled = !encounterActive() || !state.activeGameId;
+  const bowling = ["boliche", "bowling"].includes(getGameMode().id);
+  if ($("photoButton")) $("photoButton").hidden = !bowling;
+  if ($("tabletButton")) $("tabletButton").hidden = !bowling;
+  document.querySelectorAll('[data-score-action="photo"], [data-score-action="tablet"], [data-admin-action="photo"], [data-admin-action="tablet"]').forEach((button) => { button.hidden = !bowling; });
+  if ($("updateScoreButton")) $("updateScoreButton").textContent = isRoundBased() ? "Atualizar rodadas" : "Atualizar placar";
+  const updateMenu = $("scoreUpdateMenu");
+  if (updateMenu && !bowling) updateMenu.hidden = true;
 }
 
 function selectEncounter(id) {
@@ -493,10 +628,32 @@ function openEncounterModal(editing = false) {
   $("encounterModalTitle").textContent = editing ? "Editar encontro" : "Novo encontro";
   $("encounterName").value = encounter?.nome || "";
   $("encounterDate").value = encounter?.data || localIsoDate();
+  const gameType = $("encounterGameType");
+  if (gameType) { gameType.value = encounter?.game_type || "boliche"; gameType.disabled = Boolean(editing); }
+  const rules = encounterRules(encounter);
+  const roundCount = $("encounterRoundCount");
+  const roundMax = $("encounterRoundMax");
+  if (roundCount) { roundCount.value = editing ? (rules.round_count ?? rules.rounds ?? "") : ""; roundCount.disabled = Boolean(editing); }
+  if (roundMax) { const configuredMax = rules.max_points_per_round ?? rules.round_max; roundMax.value = editing && Number(configuredMax) > 0 ? configuredMax : ""; roundMax.disabled = Boolean(editing); }
+  renderEncounterRules();
   const roster = new Set(state.encounterPlayers.filter((row) => row.encounter_id === encounter?.id).map((row) => row.player_id));
   $("encounterPlayerSelection").innerHTML = state.players.map((player) => `<label class="selection-item"><input type="checkbox" value="${esc(player.id)}" ${!editing || roster.has(player.id) ? "checked" : ""} /><span><strong>${esc(player.nome)}</strong><small>${esc(player.apelido_placar || "sem apelido")}</small></span></label>`).join("");
   $("encounterFormError").hidden = true;
   setModal("encounterModal", true);
+}
+
+function renderEncounterRules() {
+  const gameType = $("encounterGameType")?.value || "boliche";
+  const mode = getGameMode(gameType);
+  const settings = $("encounterRoundSettings");
+  if (settings) settings.hidden = !mode.roundBased;
+  const count = $("encounterRoundCount")?.value;
+  const max = $("encounterRoundMax")?.value;
+  const version = state.editingEncounterId ? activeEncounter()?.rules_version : null;
+  const summary = mode.roundBased
+    ? `${mode.name}: maior total vence, somando ${count || "—"} rodadas. ${max === "" || Number(max) === 0 ? "Sem limite de pontos por rodada." : `Máximo de ${max} ${mode.unit} por rodada.`}${version ? ` Regras v${version}.` : ""}`
+    : `${mode.name}: maior pontuação vence. Unidade: ${mode.unit}.${version ? ` Regras v${version}.` : ""}`;
+  if ($("encounterRulesSummary")) $("encounterRulesSummary").textContent = summary;
 }
 
 async function saveEncounter(event) {
@@ -507,14 +664,249 @@ async function saveEncounter(event) {
   const errorElement = $("encounterFormError");
   if (!name || !date) { errorElement.textContent = "Informe o nome e a data."; errorElement.hidden = false; return; }
   const editing = state.editingEncounterId;
-  const { data, error } = await client.rpc(editing ? "save_encounter" : "create_encounter", editing
+  const gameType = editing ? activeEncounter()?.game_type || "boliche" : $("encounterGameType")?.value || "boliche";
+  let rulesConfig = editing ? encounterRules(activeEncounter()) : {};
+  if (!editing && isRoundBased(gameType)) {
+    const roundCountValue = $("encounterRoundCount")?.value?.trim() || "";
+    const roundMaxValue = $("encounterRoundMax")?.value?.trim() || "";
+    if (!/^\d+$/.test(roundCountValue) || Number(roundCountValue) < 1) {
+      errorElement.textContent = "Informe uma quantidade de rodadas maior que zero."; errorElement.hidden = false; return;
+    }
+    if (roundMaxValue !== "" && (!/^\d+$/.test(roundMaxValue) || !Number.isSafeInteger(Number(roundMaxValue)))) {
+      errorElement.textContent = "O limite por rodada deve ser um inteiro não negativo."; errorElement.hidden = false; return;
+    }
+    rulesConfig = { round_count: Number(roundCountValue), max_points_per_round: roundMaxValue === "" ? 0 : Number(roundMaxValue) };
+  }
+  const legacyBowling = ["boliche", "bowling"].includes(gameType);
+  const rpcName = editing ? "save_encounter" : legacyBowling ? "create_encounter" : "create_multigame_encounter";
+  const args = editing
     ? { p_encounter_id: editing, p_name: name, p_date: date, p_player_ids: ids }
-    : { p_name: name, p_date: date, p_player_ids: ids, p_request_id: state.encounterRequestId });
+    : legacyBowling
+      ? { p_name: name, p_date: date, p_player_ids: ids, p_request_id: state.encounterRequestId }
+      : { p_name: name, p_date: date, p_player_ids: ids, p_request_id: state.encounterRequestId, p_game_type: gameType, p_rules_config: rulesConfig };
+  const { data, error } = await client.rpc(rpcName, args);
   if (error) { errorElement.textContent = error.message; errorElement.hidden = false; return; }
   setModal("encounterModal", false);
   await loadData();
   selectEncounter(data.id);
   showToast(editing ? "Encontro atualizado." : "Encontro criado.", "success");
+}
+
+function captureRoundDraft(gameIdOverride = null, roundNoOverride = null) {
+  const results = $("roundResults");
+  if (!results) return;
+  const gameId = gameIdOverride || $("roundGame")?.value || state.roundGameId;
+  const roundNo = Number(roundNoOverride || $("roundNumber")?.value || state.roundNo);
+  if (!gameId || !Number.isInteger(roundNo) || roundNo < 1) return;
+  results.querySelectorAll("[data-round-player]").forEach((row) => {
+    const playerId = row.dataset.roundPlayer;
+    const pointsInput = row.querySelector(".round-points");
+    const finalizedInput = row.querySelector(".round-final");
+    if (!playerId || !pointsInput || !finalizedInput) return;
+    const key = roundScoreKey(gameId, roundNo, playerId);
+    const existing = state.roundScores.find((item) => roundScoreKey(item.game_id, item.round_no, item.player_id) === key);
+    const prior = state.roundDraft.get(key);
+    const points = pointsInput.value;
+    const finalized = Boolean(finalizedInput.checked);
+    const basePoints = prior?.manual ? prior.basePoints : (existing ? roundPoints(existing) : null);
+    const baseFinalized = prior?.manual ? prior.baseFinalized : roundFinalized(existing);
+    const changedFromServer = String(points) !== String(basePoints ?? "") || finalized !== Boolean(baseFinalized);
+    if (!prior?.manual && !changedFromServer) { state.roundDraft.delete(key); return; }
+    state.roundDraft.set(key, { key, gameId, roundNo, points, finalized, manual: Boolean(prior?.manual || changedFromServer), basePoints, baseFinalized });
+  });
+}
+
+function markRoundEdited(event) {
+  const input = event.target;
+  if (!input?.matches?.(".round-points, .round-final")) return;
+  const row = input.closest("[data-round-player]");
+  if (!row) return;
+  const gameId = $("roundGame")?.value || state.roundGameId;
+  const roundNo = Number($("roundNumber")?.value || state.roundNo);
+  const playerId = row.dataset.roundPlayer;
+  if (!gameId || !playerId || !Number.isInteger(roundNo)) return;
+  const existing = state.roundScores.find((item) => item.game_id === gameId && Number(item.round_no) === roundNo && item.player_id === playerId);
+  const key = roundScoreKey(gameId, roundNo, playerId);
+  const previousDraft = state.roundDraft.get(key);
+  state.roundDraft.set(key, {
+    key, gameId, roundNo, points: row.querySelector(".round-points")?.value ?? "",
+    finalized: Boolean(row.querySelector(".round-final")?.checked), manual: true,
+    basePoints: previousDraft?.manual ? previousDraft.basePoints : (existing ? roundPoints(existing) : null),
+    baseFinalized: previousDraft?.manual ? previousDraft.baseFinalized : roundFinalized(existing),
+  });
+  if ($("roundError")) $("roundError").hidden = true;
+}
+
+function openRoundModal(gameId = state.activeGameId, roundNo = state.roundNo) {
+  if (!isAdmin()) return showToast("Entre como administrador para registrar resultados.", "error");
+  if (!encounterActive()) return showToast("Inicie ou reabra o encontro para registrar rodadas.", "error");
+  if (!isRoundBased()) return showToast("Este encontro não usa pontuação por rodadas.", "error");
+  const games = encounterGames();
+  state.roundGameId = games.some((game) => game.id === gameId) ? gameId : games[0]?.id || null;
+  const configuredCount = configuredRoundCount();
+  state.roundNo = Number.isInteger(Number(roundNo)) && Number(roundNo) > 0 && Number(roundNo) <= configuredCount ? Number(roundNo) : 1;
+  reconcileRoundDrafts(state.roundScores);
+  renderRoundModal();
+  setModal("roundModal", true);
+}
+
+function renderRoundModal(capture = true) {
+  if (capture && $("roundModal")?.open) captureRoundDraft(state.roundGameId, state.roundNo);
+  const gameSelect = $("roundGame");
+  const games = encounterGames();
+  if (gameSelect) {
+    gameSelect.innerHTML = games.map((game) => `<option value="${esc(game.id)}">${esc(game.nome)}</option>`).join("");
+    if (games.some((game) => game.id === state.roundGameId)) gameSelect.value = state.roundGameId;
+  }
+  const roundSelect = $("roundNumber");
+  const count = configuredRoundCount();
+  if (roundSelect?.tagName === "SELECT") {
+    roundSelect.innerHTML = count
+      ? Array.from({ length: count }, (_, index) => `<option value="${index + 1}">Rodada ${index + 1}</option>`).join("")
+      : `<option value="">Regras sem quantidade de rodadas</option>`;
+  } else if (roundSelect) {
+    roundSelect.min = "1"; roundSelect.max = String(count || ""); roundSelect.step = "1";
+  }
+  if (roundSelect) roundSelect.value = count ? String(state.roundNo || 1) : "";
+  if ($("roundGame")) state.roundGameId = $("roundGame").value || state.roundGameId;
+  if ($("roundNumber")) state.roundNo = Number($("roundNumber").value) || null;
+  renderRoundResults();
+}
+
+function renderRoundResults() {
+  const gameId = $("roundGame")?.value || state.roundGameId;
+  const roundNo = Number($("roundNumber")?.value || state.roundNo);
+  state.roundGameId = gameId || null;
+  state.roundNo = Number.isInteger(roundNo) ? roundNo : null;
+  const mode = getGameMode();
+  const game = getGame(gameId);
+  const max = configuredRoundMax();
+  const rulesCount = configuredRoundCount();
+  const rows = game ? gameScores(game.id).map((score) => ({ score, player: getPlayer(score.player_id) })).filter((item) => item.player) : [];
+  const results = $("roundResults");
+  if (results) results.innerHTML = rows.length && rulesCount && roundNo
+    ? rows.map(({ score, player }) => {
+      const key = roundScoreKey(game.id, roundNo, player.id);
+      const existing = state.roundScores.find((item) => item.game_id === game.id && Number(item.round_no) === roundNo && item.player_id === player.id);
+      const draft = state.roundDraft.get(key);
+      const value = draft?.manual ? draft.points : existing ? String(roundPoints(existing) ?? "") : "";
+      const finalized = draft?.manual ? draft.finalized : roundFinalized(existing);
+      const gameTotal = score.pontos == null ? "aguardando banco" : `${Number(score.pontos).toLocaleString("pt-BR")} ${mode.unit}`;
+      const clearButton = existing && isAdmin() && encounterActive() ? `<button class="text-button text-button--danger" type="button" data-clear-round="${esc(player.id)}">Limpar rodada</button>` : "";
+      return `<div class="round-result-row" data-round-player="${esc(player.id)}"><div class="round-result-player"><strong>${esc(player.nome)}</strong><small>Total do jogo: ${esc(gameTotal)}</small></div><label>Pontos da rodada ${roundNo}<input class="round-points" type="number" min="0"${max > 0 ? ` max="${max}"` : ""} step="1" inputmode="numeric" value="${value === "" ? "" : esc(value)}" aria-label="Pontos da rodada ${roundNo} de ${esc(player.nome)}" /></label><label class="round-confirm"><input class="round-final" type="checkbox" ${finalized ? "checked" : ""} /> Confirmar</label>${clearButton}</div>`;
+    }).join("")
+    : `<p class="empty-inline">${!rulesCount ? "Configure a quantidade de rodadas para este encontro." : !game ? "Crie uma partida e vincule participantes antes de lançar resultados." : "Nenhum participante vinculado à partida."}</p>`;
+  const error = $("roundError");
+  if (error) {
+    if (state.roundConflict) {
+      error.textContent = "Os resultados mudaram em outro aparelho. Seus rascunhos foram preservados; confira antes de salvar.";
+      error.hidden = false;
+    } else if (!error.hidden && /mudaram em outro aparelho/.test(error.textContent)) error.hidden = true;
+  }
+  const button = $("roundSaveButton");
+  if (button) button.disabled = !isAdmin() || !encounterActive() || !rulesCount || !gameId || !roundNo;
+}
+
+async function saveRoundScores(event) {
+  event?.preventDefault?.();
+  captureRoundDraft();
+  const errorElement = $("roundError");
+  const fail = (message) => { if (errorElement) { errorElement.textContent = message; errorElement.hidden = false; } };
+  const gameId = $("roundGame")?.value || state.roundGameId;
+  const roundNo = Number($("roundNumber")?.value || state.roundNo);
+  const max = configuredRoundMax();
+  const resultRows = [...($("roundResults")?.querySelectorAll("[data-round-player]") || [])];
+  if (!gameId || !Number.isInteger(roundNo) || roundNo < 1 || roundNo > configuredRoundCount()) return fail("Escolha uma partida e uma rodada válida.");
+  if (!resultRows.length) return fail("Não há participantes para salvar nesta rodada.");
+  const updates = [];
+  for (const row of resultRows) {
+    const raw = row.querySelector(".round-points")?.value?.trim() ?? "";
+    if (raw === "") continue;
+    const points = Number(raw);
+    if (!/^\d+$/.test(raw) || !Number.isSafeInteger(points) || (max > 0 && points > max)) {
+      return fail(max > 0 ? `Use pontos inteiros entre 0 e ${max}.` : "Use pontos inteiros não negativos.");
+    }
+    const playerId = row.dataset.roundPlayer;
+    const finalized = Boolean(row.querySelector(".round-final")?.checked);
+    const existing = state.roundScores.find((item) => item.game_id === gameId && Number(item.round_no) === roundNo && item.player_id === playerId);
+    const existingPoints = roundPoints(existing);
+    if (existing && existingPoints != null && Number(existingPoints) === points && roundFinalized(existing) === finalized) continue;
+    updates.push({ playerId, points, finalized, key: roundScoreKey(gameId, roundNo, playerId) });
+  }
+  if (!updates.length) return fail("Nenhuma alteração nova nesta rodada.");
+  if (state.roundConflict && !window.confirm("Os resultados mudaram em outro aparelho. Salvar seus valores locais sobre os atuais?")) return;
+  if (!client) return fail("Supabase não configurado.");
+  const button = $("roundSaveButton");
+  if (button) { button.disabled = true; button.textContent = "Salvando…"; }
+  let saved = 0;
+  try {
+    if (client.auth?.getSession) {
+      const { data, error: authError } = await client.auth.getSession();
+      state.session = data?.session || null;
+      if (authError || !isAdmin()) return fail("Sua sessão de administrador expirou. Entre novamente para salvar resultados.");
+    } else if (!isAdmin()) return fail("Entre como administrador para salvar resultados.");
+    for (const update of updates) {
+      const { error } = await client.rpc("save_round_score", {
+        p_game_id: gameId, p_player_id: update.playerId, p_round_no: roundNo,
+        p_points: update.points, p_finalized: update.finalized,
+      });
+      if (error) {
+        const message = `Falha após ${saved} resultado(s): ${error.message || "não foi possível salvar a rodada"}.`;
+        if (saved) {
+          try { await loadData(); render(); }
+          catch (refreshError) { console.error(refreshError); }
+        }
+        return fail(message);
+      }
+      saved += 1;
+      upsertRoundScoreLocal(gameId, roundNo, update.playerId, update.points, update.finalized);
+      state.roundDraft.delete(update.key);
+    }
+    state.roundConflict = false;
+    state.activeGameId = gameId;
+    setModal("roundModal", false);
+    try {
+      await loadData(); render();
+      showToast(`${saved} resultado(s) da rodada salvos. O total do jogo é atualizado pelo banco.`, "success");
+    } catch (refreshError) {
+      console.error(refreshError);
+      showToast(`${saved} resultado(s) salvos. A atualização da tela falhou; recarregue os dados.`, "warning");
+    }
+  } catch (error) {
+    console.error(error);
+    if (saved) {
+      try { await loadData(); render(); }
+      catch (refreshError) { console.error(refreshError); }
+    }
+    fail(`Falha após ${saved} resultado(s): ${error.message || "verifique a conexão e tente novamente"}.`);
+  } finally {
+    if (button) { button.disabled = false; button.textContent = "Salvar rodada"; }
+  }
+}
+
+async function clearRoundScore(playerId) {
+  const gameId = $("roundGame")?.value || state.roundGameId;
+  const roundNo = Number($("roundNumber")?.value || state.roundNo);
+  const player = getPlayer(playerId);
+  if (!gameId || !Number.isInteger(roundNo) || !state.roundScores.some((row) => row.game_id === gameId && Number(row.round_no) === roundNo && row.player_id === playerId)) return;
+  if (!window.confirm(`Limpar a pontuação de ${player?.nome || "este jogador"} na rodada ${roundNo}? O banco recalculará o total do jogo.`)) return;
+  const { error } = await client.rpc("clear_round_score", { p_game_id: gameId, p_player_id: playerId, p_round_no: roundNo });
+  if (error) {
+    if ($("roundError")) { $("roundError").textContent = error.message || "Não foi possível limpar esta rodada."; $("roundError").hidden = false; }
+    return;
+  }
+  state.roundDraft.delete(roundScoreKey(gameId, roundNo, playerId));
+  state.roundScores = state.roundScores.filter((row) => !(row.game_id === gameId && Number(row.round_no) === roundNo && row.player_id === playerId));
+  $("roundResults")?.querySelectorAll("[data-round-player]").forEach((row) => {
+    if (row.dataset.roundPlayer !== playerId) return;
+    const pointsInput = row.querySelector(".round-points");
+    const finalizedInput = row.querySelector(".round-final");
+    if (pointsInput) pointsInput.value = "";
+    if (finalizedInput) finalizedInput.checked = false;
+  });
+  state.roundConflict = false;
+  try { await loadData(); render(); showToast("Pontuação da rodada limpa; total atualizado pelo banco.", "success"); }
+  catch (refreshError) { console.error(refreshError); showToast("Rodada limpa, mas a tela não atualizou. Recarregue a página.", "error"); }
 }
 
 async function toggleEncounterClosed() {
@@ -557,13 +949,18 @@ function downloadResults(format) {
       const safe = /^[\s]*[=+@\-\t\r]/.test(raw) && !/^-?\d+(?:[.,]\d+)?$/.test(raw) ? `'${raw}` : raw;
       return `"${safe.replace(/"/g, '""')}"`;
     };
-    const header = ["tipo", "encontro_id", "encontro", "data", "partida_id", "partida", "status_partida", "jogador_id", "jogador", "pista", "pontos", "confirmado", "posicao", "pontos_total", "media", "melhor", "partidas"];
+    const header = ["tipo", "encontro_id", "encontro", "data", "partida_id", "partida", "status_partida", "jogador_id", "jogador", "pista", "pontos", "confirmado", "posicao", "pontos_total", "media", "melhor", "partidas", "modalidade", "rules_version", "unidade", "rodada", "pontos_rodada"];
+    const modeFields = (encounter) => {
+      const mode = getGameMode(encounter);
+      return [mode.name, encounter?.rules_version ?? "", mode.unit];
+    };
     const rows = [
-      ...data.encounters.map((encounter) => ["encontro", encounter.id, encounter.nome, encounter.data]),
-      ...data.participations.map((row) => { const encounter = data.encounters.find((item) => item.id === row.encounter_id); const player = getPlayer(row.player_id); return ["participante", encounter.id, encounter.nome, encounter.data, "", "", "", row.player_id, player?.nome, player?.pista]; }),
-      ...data.games.map((game) => { const encounter = data.encounters.find((item) => item.id === game.encounter_id); return ["partida", encounter?.id, encounter?.nome, encounter?.data, game.id, game.nome, game.status]; }),
-      ...data.scores.map((score) => { const game = getGame(score.game_id); const encounter = data.encounters.find((item) => item.id === game?.encounter_id); return ["pontuacao", encounter?.id, encounter?.nome, encounter?.data, game?.id, game?.nome, game?.status, score.player_id, getPlayer(score.player_id)?.nome, score.pista, score.pontos, score.finalizado]; }),
-      ...data.rankings.map((row) => { const encounter = data.encounters.find((item) => item.id === row.encounter_id); return ["ranking", encounter?.id, encounter?.nome, encounter?.data, "", "", "", row.player_id, getPlayer(row.player_id)?.nome, "", "", "", row.position, row.total, row.average?.toFixed(2).replace(".", ","), row.best, row.games_played]; }),
+      ...data.encounters.map((encounter) => ["encontro", encounter.id, encounter.nome, encounter.data, "", "", "", "", "", "", "", "", "", "", "", "", "", ...modeFields(encounter)]),
+      ...data.participations.map((row) => { const encounter = data.encounters.find((item) => item.id === row.encounter_id); const player = getPlayer(row.player_id); return ["participante", encounter?.id, encounter?.nome, encounter?.data, "", "", "", row.player_id, player?.nome, player?.pista, "", "", "", "", "", "", "", ...modeFields(encounter)]; }),
+      ...data.games.map((game) => { const encounter = data.encounters.find((item) => item.id === game.encounter_id); return ["partida", encounter?.id, encounter?.nome, encounter?.data, game.id, game.nome, game.status, "", "", "", "", "", "", "", "", "", "", ...modeFields(encounter)]; }),
+      ...data.scores.map((score) => { const game = getGame(score.game_id); const encounter = data.encounters.find((item) => item.id === game?.encounter_id); return ["pontuacao", encounter?.id, encounter?.nome, encounter?.data, game?.id, game?.nome, game?.status, score.player_id, getPlayer(score.player_id)?.nome, score.pista, score.pontos, score.finalizado, "", "", "", "", "", ...modeFields(encounter)]; }),
+      ...data.round_scores.map((score) => { const game = getGame(score.game_id); const encounter = data.encounters.find((item) => item.id === game?.encounter_id); return ["rodada", encounter?.id, encounter?.nome, encounter?.data, game?.id, game?.nome, game?.status, score.player_id, getPlayer(score.player_id)?.nome, score.pista || "", "", score.finalized, "", "", "", "", "", ...modeFields(encounter), score.round_no, roundPoints(score)]; }),
+      ...data.rankings.map((row) => { const encounter = data.encounters.find((item) => item.id === row.encounter_id); return ["ranking", encounter?.id, encounter?.nome, encounter?.data, "", "", "", row.player_id, getPlayer(row.player_id)?.nome, "", "", "", row.position, row.total, row.average?.toFixed(2).replace(".", ","), row.best, row.games_played, ...modeFields(encounter)]; }),
     ];
     content = `\uFEFF${[header, ...rows].map((row) => row.map(quote).join(";")).join("\r\n")}`; mime = "text/csv;charset=utf-8";
   }
@@ -580,10 +977,12 @@ function buildResultsExport() {
       const scores = state.scores.filter((score) => score.player_id === item.player_id && finalIds.has(score.game_id) && score.finalizado && score.pontos != null);
       const total = scores.reduce((sum, score) => sum + Number(score.pontos), 0);
       return { encounter_id: encounter.id, player_id: item.player_id, total, average: scores.length ? total / scores.length : null, best: scores.length ? Math.max(...scores.map((score) => Number(score.pontos))) : null, games_played: scores.length };
-    }).filter((item) => item.games_played).sort((a, b) => b.total - a.total || (getPlayer(a.player_id)?.nome || "").localeCompare(getPlayer(b.player_id)?.nome || "", "pt-BR"));
-    return rows.map((row, index) => ({ ...row, position: rows.findIndex((other) => other.total === row.total) + 1 }));
+    }).filter((item) => item.games_played);
+    const mode = getGameMode(encounter);
+    const ranked = rankScoreRows(mode, rows, "total");
+    return ranked.map((row) => ({ ...row, game_type: encounter.game_type || "boliche", rules_version: encounter.rules_version ?? null, unit: mode.unit, position: ranked.findIndex((other) => other.total === row.total) + 1 }));
   });
-  return { schema_version: 1, exported_at: new Date().toISOString(), encounters: state.encounters, players: state.players, participations: state.encounterPlayers, games: state.games, scores: state.scores, rankings };
+  return { schema_version: 2, exported_at: new Date().toISOString(), encounters: state.encounters.map((encounter) => ({ ...encounter, game_type: encounter.game_type || "boliche", mode_name: getGameMode(encounter).name, unit: getGameMode(encounter).unit })), players: state.players, participations: state.encounterPlayers, games: state.games, scores: state.scores, round_scores: state.roundScores, rankings };
 }
 
 async function deleteEncounter() {
@@ -639,34 +1038,53 @@ function renderBracket() {
 }
 
 function renderRecords() {
-  const finalGames = state.games.filter((game) => game.status === "final");
+  const encounter = activeEncounter();
+  const mode = getGameMode(encounter);
+  const matchingEncounters = state.encounters.filter((item) => historicalModeKey(item) === historicalModeKey(encounter));
+  const matchingEncounterIds = new Set(matchingEncounters.map((item) => item.id));
+  const finalGames = state.games.filter((game) => game.status === "final" && matchingEncounterIds.has(game.encounter_id));
   const finalIds = new Set(finalGames.map((game) => game.id));
   const scores = state.scores.filter((score) => finalIds.has(score.game_id) && score.finalizado && score.pontos != null);
-  const high = [...scores].sort((a, b) => b.pontos - a.pontos)[0];
+  const highValue = scores.length ? Math.max(...scores.map((score) => Number(score.pontos))) : null;
+  const highRows = highValue == null ? [] : scores.filter((score) => Number(score.pontos) === highValue);
   const byEncounterPlayer = new Map();
   scores.forEach((score) => {
-    const key = `${getGame(score.game_id)?.encounter_id}:${score.player_id}`;
-    if (!byEncounterPlayer.has(key)) byEncounterPlayer.set(key, []);
-    byEncounterPlayer.get(key).push(score);
+    const game = getGame(score.game_id);
+    const key = `${game?.encounter_id}:${score.player_id}`;
+    if (!byEncounterPlayer.has(key)) byEncounterPlayer.set(key, { player: getPlayer(score.player_id), encounter: matchingEncounters.find((item) => item.id === game?.encounter_id), items: [] });
+    byEncounterPlayer.get(key).items.push(score);
   });
-  const bestAverage = [...byEncounterPlayer.entries()].map(([key, items]) => ({ player: getPlayer(key.split(":")[1]), encounter: state.encounters.find((item) => item.id === key.split(":")[0]), average: items.reduce((sum, item) => sum + item.pontos, 0) / items.length })).sort((a, b) => b.average - a.average)[0];
-  const biggestTotal = [...byEncounterPlayer.entries()].map(([key, items]) => ({ player: getPlayer(key.split(":")[1]), encounter: state.encounters.find((item) => item.id === key.split(":")[0]), total: items.reduce((sum, item) => sum + Number(item.pontos), 0) })).sort((a, b) => b.total - a.total)[0];
-  const growth = [...byEncounterPlayer.values()].flatMap((items) => {
+  const perEncounterPlayer = [...byEncounterPlayer.values()].map(({ player, encounter: recordEncounter, items }) => ({ player, encounter: recordEncounter, items, average: items.reduce((sum, item) => sum + Number(item.pontos), 0) / items.length, total: items.reduce((sum, item) => sum + Number(item.pontos), 0) }));
+  const bestAverageValue = perEncounterPlayer.length ? Math.max(...perEncounterPlayer.map((item) => item.average)) : null;
+  const bestAverage = perEncounterPlayer.filter((item) => item.average === bestAverageValue);
+  const biggestTotalValue = perEncounterPlayer.length ? Math.max(...perEncounterPlayer.map((item) => item.total)) : null;
+  const biggestTotal = perEncounterPlayer.filter((item) => item.total === biggestTotalValue);
+  const growthRows = [...byEncounterPlayer.values()].flatMap(({ items, encounter: recordEncounter }) => {
     const ordered = [...items].sort((a, b) => new Date(getGame(a.game_id)?.created_at) - new Date(getGame(b.game_id)?.created_at));
-    return ordered.slice(1).map((score, index) => ({ score, diff: score.pontos - ordered[index].pontos }));
-  }).sort((a, b) => b.diff - a.diff)[0];
+    return ordered.slice(1).map((score, index) => ({ score, encounter: recordEncounter, diff: Number(score.pontos) - Number(ordered[index].pontos) }));
+  });
+  const growthValue = growthRows.length ? Math.max(...growthRows.map((item) => item.diff)) : null;
+  const growth = growthValue == null ? [] : growthRows.filter((item) => item.diff === growthValue);
   const wins = new Map();
   finalGames.forEach((game) => {
     const results = scores.filter((score) => score.game_id === game.id);
-    const highest = Math.max(...results.map((score) => Number(score.pontos)));
-    const leaders = results.filter((score) => score.pontos === highest);
+    const highest = results.length ? Math.max(...results.map((score) => Number(score.pontos))) : null;
+    const leaders = highest == null ? [] : results.filter((score) => Number(score.pontos) === highest);
     if (leaders.length === 1) wins.set(leaders[0].player_id, (wins.get(leaders[0].player_id) || 0) + 1);
   });
-  const winLeader = [...wins].sort((a, b) => b[1] - a[1])[0];
-  const appearances = new Map();
-  scores.forEach((score) => appearances.set(score.player_id, (appearances.get(score.player_id) || 0) + 1));
-  const appearanceLeader = [...appearances].sort((a, b) => b[1] - a[1])[0];
-  $("groupRecords").innerHTML = high ? `<div class="extra-row"><strong>Maior pontuação</strong><span>${high.pontos} · ${esc(getPlayer(high.player_id)?.nome)}</span></div><div class="extra-row"><strong>Maior total em um encontro</strong><span>${biggestTotal.total} · ${esc(biggestTotal.player?.nome)}</span><small>${esc(biggestTotal.encounter?.nome)}</small></div><div class="extra-row"><strong>Melhor média em um encontro</strong><span>${bestAverage.average.toFixed(1).replace(".", ",")} · ${esc(bestAverage.player?.nome)}</span><small>${esc(bestAverage.encounter?.nome)}</small></div><div class="extra-row"><strong>Maior evolução</strong><span>${growth && growth.diff > 0 ? `+${growth.diff} · ${esc(getPlayer(growth.score.player_id)?.nome)}` : "Aguardando duas partidas"}</span></div><div class="extra-row"><strong>Mais vitórias</strong><span>${winLeader ? `${winLeader[1]} · ${esc(getPlayer(winLeader[0])?.nome)}` : "Nenhuma vitória isolada"}</span></div><div class="extra-row"><strong>Mais participações</strong><span>${appearanceLeader[1]} · ${esc(getPlayer(appearanceLeader[0])?.nome)}</span></div><small>Somente partidas finais e pontos confirmados. Vitória exige maior pontuação isolada na partida; empate não conta vitória. Participação é uma partida concluída por jogador.</small>` : `<p class="empty-inline">Os recordes aparecerão após a primeira partida concluída.</p>`;
+  const winHigh = wins.size ? Math.max(...wins.values()) : null;
+  const winLeaders = winHigh == null ? [] : [...wins].filter(([, count]) => count === winHigh);
+  const recordNames = (rows) => rows.map((row) => {
+    const game = getGame(row.game_id);
+    const recordEncounter = matchingEncounters.find((item) => item.id === game?.encounter_id);
+    return `${esc(getPlayer(row.player_id)?.nome || "Jogador")} · ${esc(recordEncounter?.nome || "Encontro")}${game?.nome ? ` · ${esc(game.nome)}` : ""}`;
+  }).join(", ");
+  const encounterPlayerNames = (rows) => rows.map((row) => `${esc(row.player?.nome || "Jogador")} · ${esc(row.encounter?.nome || "Encontro")}`).join(", ");
+  const appearanceByPlayer = new Map();
+  scores.forEach((score) => appearanceByPlayer.set(score.player_id, (appearanceByPlayer.get(score.player_id) || 0) + 1));
+  const appearanceTop = appearanceByPlayer.size ? Math.max(...appearanceByPlayer.values()) : null;
+  const appearanceRows = appearanceTop == null ? [] : [...appearanceByPlayer].filter(([, count]) => count === appearanceTop);
+  $("groupRecords").innerHTML = scores.length ? `<p class="section-meta">Histórico de ${esc(mode.name)} · unidade: ${esc(mode.unit)} · ${matchingEncounters.length} ${matchingEncounters.length === 1 ? "encontro" : "encontros"} compatíveis</p><div class="extra-row"><strong>Maior pontuação em uma partida</strong><span>${highValue} ${esc(mode.unit)} · ${recordNames(highRows)}</span></div><div class="extra-row"><strong>Maior total em um encontro</strong><span>${biggestTotalValue} ${esc(mode.unit)} · ${encounterPlayerNames(biggestTotal)}</span></div><div class="extra-row"><strong>Melhor média em um encontro</strong><span>${bestAverageValue.toFixed(1).replace(".", ",")} ${esc(mode.unit)} · ${encounterPlayerNames(bestAverage)}</span></div><div class="extra-row"><strong>Maior evolução</strong><span>${growth.length && growthValue > 0 ? `+${growthValue} ${esc(mode.unit)} · ${growth.map(({ score, encounter: recordEncounter }) => `${esc(getPlayer(score.player_id)?.nome || "Jogador")} · ${esc(recordEncounter?.nome || "Encontro")}`).join(", ")}` : "Aguardando duas partidas no mesmo encontro"}</span></div><div class="extra-row"><strong>Mais vitórias isoladas</strong><span>${winLeaders.length ? `${winHigh} · ${winLeaders.map(([id]) => esc(getPlayer(id)?.nome || "Jogador")).join(", ")}` : "Nenhuma vitória isolada"}</span></div><div class="extra-row"><strong>Mais participações</strong><span>${appearanceRows.length ? `${appearanceTop} · ${appearanceRows.map(([id]) => esc(getPlayer(id)?.nome || "Jogador")).join(", ")}` : "—"}</span></div><small>Somente partidas finais e pontos confirmados de encontros da mesma modalidade e unidade. Empates permanecem compartilhados; vitórias contam apenas quando há líder isolado.</small>` : `<p class="empty-inline">${encounter ? `Ainda não há resultados finais de ${esc(mode.name)} (${esc(mode.unit)}).` : "Selecione um encontro para ver os recordes."}</p>`;
 }
 
 function renderPredictions() {
@@ -850,18 +1268,21 @@ function render() {
   if ($("playersModal").open) renderPlayers();
   if ($("approvalsModal").open) renderApprovals();
   if ($("historyModal").open) renderScoreHistory();
+  if ($("roundModal")?.open) renderRoundModal();
 }
 
 function officialTotals(lane = "") {
   const finalGameIds = new Set(encounterGames().filter((game) => game.status === "final").map((game) => game.id));
   const metric = $("rankingMetric")?.value || "total";
-  return (finalGameIds.size ? encounterPlayers() : []).map((player) => {
+  const rows = (finalGameIds.size ? encounterPlayers() : []).map((player) => {
     const results = state.scores.filter((score) => score.player_id === player.id && finalGameIds.has(score.game_id) && score.finalizado && score.pontos != null && (!lane || scoreLane(score) === lane));
     const points = results.reduce((sum, score) => sum + Number(score.pontos), 0);
     const gamesPlayed = results.length;
     const current = state.scores.find((score) => score.game_id === state.activeGameId && score.player_id === player.id);
     return { player, points, gamesPlayed, average: gamesPlayed ? points / gamesPlayed : null, best: gamesPlayed ? Math.max(...results.map((score) => Number(score.pontos))) : null, current, lane: results.at(-1)?.pista || current?.pista || player.pista };
-  }).filter((item) => item.gamesPlayed > 0).sort((a, b) => rankingValue(b, metric) - rankingValue(a, metric) || b.points - a.points || a.player.nome.localeCompare(b.player.nome, "pt-BR"));
+  }).filter((item) => item.gamesPlayed > 0);
+  return isRoundBased() ? rankScoreRows(getGameMode(), rows, metric, (item) => rankingValue(item, metric))
+    : rows.sort((a, b) => rankingValue(b, metric) - rankingValue(a, metric) || b.points - a.points || a.player.nome.localeCompare(b.player.nome, "pt-BR"));
 }
 
 function rankingValue(item, metric = $("rankingMetric")?.value || "total") {
@@ -878,29 +1299,34 @@ function renderLeaderboard() {
   const finalGames = encounterGames().filter((game) => game.status === "final");
   const laneSelect = $("rankingLane");
   const selectedLane = laneSelect?.value || "";
+  const gameMode = getGameMode();
   const gameIds = new Set(encounterGames().map((game) => game.id));
   const lanes = [...new Set(state.scores.filter((score) => gameIds.has(score.game_id)).map(scoreLane).filter(Boolean))].sort((a, b) => a.localeCompare(b, "pt-BR", { numeric: true }));
   if (laneSelect) {
-    laneSelect.innerHTML = `<option value="">Todas as pistas</option>${lanes.map((lane) => `<option value="${esc(lane)}">Pista ${esc(lane)}</option>`).join("")}`;
+    laneSelect.innerHTML = `<option value="">Todos os locais</option>${lanes.map((lane) => `<option value="${esc(lane)}">${esc(gameMode.locationLabel)} ${esc(lane)}</option>`).join("")}`;
     if (lanes.includes(selectedLane)) laneSelect.value = selectedLane;
   }
   const mode = $("rankingMode")?.value || "official";
   const metric = $("rankingMetric")?.value || "total";
   const podium = $("podium");
   const currentGame = getGame(state.activeGameId);
-  const currentItems = currentGame ? gameScores(currentGame.id).map((score) => ({ score, player: getPlayer(score.player_id) })).filter((item) => item.player && (!selectedLane || scoreLane(item.score) === selectedLane)).sort((a, b) => (b.score.pontos ?? -1) - (a.score.pontos ?? -1) || a.player.nome.localeCompare(b.player.nome, "pt-BR")) : [];
+  let currentItems = currentGame ? gameScores(currentGame.id).map((score) => ({ score, player: getPlayer(score.player_id) })).filter((item) => item.player && (!selectedLane || scoreLane(item.score) === selectedLane)) : [];
+  currentItems = isRoundBased() ? rankScoreRows(gameMode, currentItems, "total", (item) => item.score.pontos)
+    : currentItems.sort((a, b) => (b.score.pontos ?? -1) - (a.score.pontos ?? -1) || a.player.nome.localeCompare(b.player.nome, "pt-BR"));
   const totals = officialTotals(laneSelect?.value || "");
   const items = mode === "current" ? currentItems : totals;
   const isCurrent = mode === "current";
   const rankingTitle = $("rankingTitle");
   const valueHeader = $("rankingValueHeader");
-  if (valueHeader) valueHeader.textContent = isCurrent ? "Pontos" : metric === "average" ? "Média" : metric === "best" ? "Melhor" : metric === "games" ? "Partidas" : "Pontos";
-  if (rankingTitle) rankingTitle.textContent = isCurrent ? `Partida atual${currentGame ? ` · ${currentGame.nome}` : ""}` : metric === "average" ? "Classificação por média" : metric === "best" ? "Melhor partida" : metric === "games" ? "Participações" : "Classificação acumulada";
+  if (valueHeader) valueHeader.textContent = isCurrent ? `${gameMode.unit}` : metric === "average" ? `Média (${gameMode.unit})` : metric === "best" ? `Melhor (${gameMode.unit})` : metric === "games" ? "Partidas" : `Total (${gameMode.unit})`;
+  if (rankingTitle) rankingTitle.textContent = `${isCurrent ? `Partida atual${currentGame ? ` · ${currentGame.nome}` : ""}` : metric === "average" ? "Classificação por média" : metric === "best" ? "Melhor partida" : metric === "games" ? "Participações" : "Classificação acumulada"} · ${gameMode.name}`;
+  const tableHeaders = document.querySelectorAll(".score-table thead th");
+  if (tableHeaders[2]) tableHeaders[2].textContent = gameMode.locationLabel;
   const encounterClosed = activeEncounter()?.status === "closed";
   podium.hidden = isCurrent || !encounterClosed || totals.length === 0;
   podium.innerHTML = totals.slice(0, 3).map((item, index) => {
     const photoUrl = state.playerPhotos.get(item.player.id);
-    return `<div class="podium-place podium-place--${index + 1}"><span class="podium-medal">${officialPosition(totals, index)}º</span>${photoUrl ? `<img class="podium-avatar" src="${esc(photoUrl)}" alt="Foto de ${esc(item.player.nome)}" loading="lazy" />` : `<span class="podium-avatar podium-avatar--empty" aria-hidden="true">${esc(item.player.nome.slice(0, 1))}</span>`}<strong>${esc(item.player.nome)}</strong><small>${metric === "average" ? item.average.toFixed(1).replace(".", ",") + " média" : rankingValue(item, metric).toLocaleString("pt-BR") + (metric === "games" ? " partidas" : " pontos")}</small></div>`;
+    return `<div class="podium-place podium-place--${index + 1}"><span class="podium-medal">${officialPosition(totals, index)}º</span>${photoUrl ? `<img class="podium-avatar" src="${esc(photoUrl)}" alt="Foto de ${esc(item.player.nome)}" loading="lazy" />` : `<span class="podium-avatar podium-avatar--empty" aria-hidden="true">${esc(item.player.nome.slice(0, 1))}</span>`}<strong>${esc(item.player.nome)}</strong><small>${metric === "average" ? item.average.toFixed(1).replace(".", ",") + ` ${gameMode.unit} de média` : rankingValue(item, metric).toLocaleString("pt-BR") + (metric === "games" ? " partidas" : ` ${gameMode.unit}`)}</small></div>`;
   }).join("");
   let previousValue = null;
   let previousPosition = 0;
@@ -908,7 +1334,7 @@ function renderLeaderboard() {
     const player = isCurrent ? item.player : item.player;
     const score = isCurrent ? item.score : item.current;
     const value = isCurrent ? score?.pontos : rankingValue(item, metric);
-    const position = value === previousValue ? previousPosition : index + 1;
+    const position = value == null ? "—" : value === previousValue ? previousPosition : index + 1;
     previousValue = value;
     previousPosition = position;
     const situation = isCurrent ? (score?.finalizado ? "Final" : (score?.pontos != null ? "Pendente" : "Sem pontos")) : (item.current?.finalizado ? "Final" : (item.current ? "Parcial" : "—"));
@@ -920,11 +1346,12 @@ function renderLeaderboard() {
   }).join("");
   body.querySelectorAll("[data-stats-player]").forEach((button) => button.addEventListener("click", () => openStatsModal(button.dataset.statsPlayer)));
   $("leaderboardEmpty").hidden = items.length > 0;
-  $("leaderboardMeta").textContent = isCurrent ? (currentGame ? `${currentItems.filter((item) => item.score.pontos != null).length}/${currentItems.length} pontuações informadas` : "Nenhuma partida aberta") : finalGames.length ? `${finalGames.length} ${finalGames.length === 1 ? "partida finalizada" : "partidas finalizadas"}` : "Nenhuma partida finalizada";
+  $("leaderboardMeta").textContent = `${isCurrent ? (currentGame ? `${currentItems.filter((item) => item.score.pontos != null).length}/${currentItems.length} totais informados pelo banco` : "Nenhuma partida aberta") : finalGames.length ? `${finalGames.length} ${finalGames.length === 1 ? "partida finalizada" : "partidas finalizadas"}` : "Nenhuma partida finalizada"} · ${gameMode.name} · unidade: ${gameMode.unit}`;
 }
 
 function renderCurrentGame() {
   const game = getGame(state.activeGameId);
+  const gameMode = getGameMode();
   const body = $("currentGameBody");
   if (!game) {
     $("currentGameTitle").textContent = "Nenhuma partida aberta";
@@ -938,11 +1365,16 @@ function renderCurrentGame() {
   $("currentGameTitle").textContent = game.nome;
   $("currentGameStatus").textContent = game.status === "final" ? "Final" : "Parcial";
   $("currentGameStatus").className = `status-pill status-pill--${game.status === "final" ? "success" : "warning"}`;
-  const ranked = [...scores].sort((a, b) => (b.score.pontos ?? -1) - (a.score.pontos ?? -1) || a.player.nome.localeCompare(b.player.nome, "pt-BR"));
+  const ranked = isRoundBased() ? rankScoreRows(gameMode, scores, "total", (item) => item.score.pontos)
+    : [...scores].sort((a, b) => (b.score.pontos ?? -1) - (a.score.pontos ?? -1) || a.player.nome.localeCompare(b.player.nome, "pt-BR"));
   body.innerHTML = ranked.length ? ranked.map(({ score, player }) => {
     const position = score.pontos == null ? "—" : `${ranked.findIndex((item) => item.score.pontos === score.pontos) + 1}º`;
     const photoUrl = state.playerPhotos.get(player.id);
-    return `<div class="current-row"><div class="current-player${photoUrl ? " current-player--with-photo" : ""}"><span class="provisional-rank">${position}</span>${photoUrl ? `<img class="ranking-avatar" src="${esc(photoUrl)}" alt="Foto de ${esc(player.nome)}" loading="lazy" />` : ""}<button class="player-stats-link current-stats-link" type="button" data-stats-player="${esc(player.id)}">${esc(player.nome)}</button><span>Pista ${esc(scoreLane(score) || "—")}</span></div><div class="current-score"><strong>${score.pontos == null ? "—" : Number(score.pontos).toLocaleString("pt-BR")}</strong><span class="status-chip ${score.finalizado ? "status-chip--final" : "status-chip--partial"}">${score.finalizado ? "Final" : "Pendente"}</span>${isAdmin() && encounterActive() ? `<button class="text-button" type="button" data-quick-score="${esc(player.id)}">Corrigir</button>${score.pontos != null ? `<button class="text-button text-button--danger" type="button" data-clear-score="${esc(player.id)}">Limpar</button>` : ""}` : ""}</div></div>`;
+    const scoreActions = isAdmin() && encounterActive() ? (isRoundBased()
+      ? `<button class="text-button" type="button" data-quick-score="${esc(player.id)}">Rodadas</button>`
+      : `<button class="text-button" type="button" data-quick-score="${esc(player.id)}">Corrigir</button>${score.pontos != null ? `<button class="text-button text-button--danger" type="button" data-clear-score="${esc(player.id)}">Limpar</button>` : ""}`) : "";
+    const location = `${gameMode.locationLabel} ${scoreLane(score) || "—"}`;
+    return `<div class="current-row"><div class="current-player${photoUrl ? " current-player--with-photo" : ""}"><span class="provisional-rank">${position}</span>${photoUrl ? `<img class="ranking-avatar" src="${esc(photoUrl)}" alt="Foto de ${esc(player.nome)}" loading="lazy" />` : ""}<button class="player-stats-link current-stats-link" type="button" data-stats-player="${esc(player.id)}">${esc(player.nome)}</button><span>${isRoundBased() ? esc(location) : `Pista ${esc(scoreLane(score) || "—")}`}</span></div><div class="current-score"><strong>${score.pontos == null ? "—" : Number(score.pontos).toLocaleString("pt-BR")}${isRoundBased() && score.pontos != null ? ` ${esc(gameMode.unit)}` : ""}</strong><span class="status-chip ${score.finalizado ? "status-chip--final" : "status-chip--partial"}">${score.finalizado ? "Final" : "Pendente"}</span>${scoreActions}</div></div>`;
   }).join("") : `<div class="empty-state"><span>Partida sem participantes.</span></div>`;
   body.querySelectorAll("[data-stats-player]").forEach((button) => button.addEventListener("click", () => openStatsModal(button.dataset.statsPlayer)));
   body.querySelectorAll("[data-quick-score]").forEach((button) => button.addEventListener("click", () => openQuickScore(button.dataset.quickScore)));
@@ -953,7 +1385,7 @@ function renderCurrentGame() {
     const confirmed = laneScores.filter(({ score }) => score.finalizado && score.pontos != null).length;
     const pending = laneScores.length - confirmed;
     const percent = Math.round(100 * confirmed / laneScores.length);
-    return `<div class="lane-progress-card"><strong>Pista ${esc(lane)} · ${confirmed}/${laneScores.length} confirmados</strong><small>${laneScores.length} participantes · ${informed} informados · ${pending} pendentes · ${percent}% concluído</small><progress max="100" value="${percent}" aria-label="Conclusão da pista ${esc(lane)}"></progress></div>`;
+    return `<div class="lane-progress-card"><strong>${esc(gameMode.locationLabel)} ${esc(lane || "—")} · ${confirmed}/${laneScores.length} confirmados</strong><small>${laneScores.length} participantes · ${informed} informados · ${pending} pendentes · ${percent}% concluído</small><progress max="100" value="${percent}" aria-label="Conclusão de ${esc(gameMode.locationLabel)} ${esc(lane || "—")}"></progress></div>`;
   }).join("");
 }
 
@@ -968,6 +1400,7 @@ async function clearScore(playerId) {
 function openQuickScore(playerId) {
   const player = getPlayer(playerId);
   if (!player) return;
+  if (isRoundBased()) return openRoundModal(state.activeGameId);
   openPhotoModal();
   $("photoGame").value = state.activeGameId;
   renderPhotoOptions();
@@ -980,6 +1413,7 @@ function openQuickScore(playerId) {
 function openStatsModal(playerId) {
   const player = getPlayer(playerId);
   if (!player) return;
+  const mode = getGameMode();
   const finalGames = encounterGames().filter((game) => game.status === "final").sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
   const results = finalGames.map((game) => ({ game, score: state.scores.find((score) => score.game_id === game.id && score.player_id === playerId) })).filter((item) => item.score?.finalizado && item.score.pontos != null);
   const points = results.map((item) => Number(item.score.pontos));
@@ -989,16 +1423,17 @@ function openStatsModal(playerId) {
   const position = playerIndex < 0 ? 0 : officialPosition(totals, playerIndex);
   const photoUrl = state.playerPhotos.get(playerId);
   $("statsTitle").textContent = player.nome;
-  $("statsHero").innerHTML = `${photoUrl ? `<img src="${esc(photoUrl)}" alt="Foto de ${esc(player.nome)}" />` : `<span class="stats-avatar-empty" aria-hidden="true">${esc(player.nome.slice(0, 1))}</span>`}<div><strong>${position ? `${position}º no ranking` : "Ainda sem posição oficial"}</strong><span>${points.length} ${points.length === 1 ? "partida concluída" : "partidas concluídas"} neste encontro</span></div>`;
-  $("statsSummary").innerHTML = `<div><strong>${points.length ? Math.max(...points) : "—"}</strong><span>recorde</span></div><div><strong>${points.length ? (points.reduce((sum, value) => sum + value, 0) / points.length).toFixed(1).replace(".", ",") : "—"}</strong><span>média</span></div><div><strong>${wins}</strong><span>vitórias</span></div>`;
+  $("statsHero").innerHTML = `${photoUrl ? `<img src="${esc(photoUrl)}" alt="Foto de ${esc(player.nome)}" />` : `<span class="stats-avatar-empty" aria-hidden="true">${esc(player.nome.slice(0, 1))}</span>`}<div><strong>${position ? `${position}º no ranking` : "Ainda sem posição oficial"}</strong><span>${points.length} ${points.length === 1 ? "partida concluída" : "partidas concluídas"} neste encontro · ${esc(mode.name)} · ${esc(mode.unit)}</span></div>`;
+  $("statsSummary").innerHTML = `<div><strong>${points.length ? Math.max(...points) : "—"}</strong><span>recorde (${esc(mode.unit)})</span></div><div><strong>${points.length ? (points.reduce((sum, value) => sum + value, 0) / points.length).toFixed(1).replace(".", ",") : "—"}</strong><span>média (${esc(mode.unit)})</span></div><div><strong>${wins}</strong><span>vitórias</span></div>`;
   const coords = points.map((value, index) => `${points.length === 1 ? 240 : 20 + index * 440 / (points.length - 1)},${115 - value * .3}`);
   $("statsEvolution").innerHTML = points.length ? `<strong>Evolução por partida</strong><svg viewBox="0 0 480 140" role="img" aria-label="Pontuações: ${points.join(", ")}"><line x1="20" y1="115" x2="460" y2="115" stroke="currentColor" opacity=".25" /><polyline points="${coords.join(" ")}" fill="none" stroke="var(--color-accent)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" />${coords.map((point) => `<circle cx="${point.split(",")[0]}" cy="${point.split(",")[1]}" r="5" fill="var(--color-accent)" />`).join("")}</svg>` : "";
-  $("statsGames").innerHTML = results.length ? results.map(({ game, score }) => `<div class="history-row"><div><strong>${esc(game.nome)}</strong><small>${fmtDate(game.created_at)}</small></div><span>${score.pontos} pontos</span></div>`).join("") : `<p class="empty-inline">Nenhuma partida finalizada para este jogador.</p>`;
+  $("statsGames").innerHTML = results.length ? results.map(({ game, score }) => `<div class="history-row"><div><strong>${esc(game.nome)}</strong><small>${fmtDate(game.created_at)} · ${esc(mode.name)}</small></div><span>${score.pontos} ${esc(mode.unit)}</span></div>`).join("") : `<p class="empty-inline">Nenhuma partida finalizada para este jogador.</p>`;
   setModal("statsModal", true);
 }
 
 function renderGames() {
   const allGames = encounterGames();
+  const gameMode = getGameMode();
   const filter = $("gameHistoryFilter")?.value || "all";
   const search = normalize($("gameHistorySearch")?.value || "");
   const games = allGames.filter((game) => {
@@ -1008,14 +1443,16 @@ function renderGames() {
     const matchesFilter = filter === "live" ? game.status !== "final" : filter === "final" ? game.status === "final" : filter === "winner" ? game.status === "final" && scores.length > 0 && leaders === 1 : filter === "tie" ? game.status === "final" && scores.length > 0 && leaders > 1 : true;
     return matchesFilter && (!search || normalize(`${game.nome} ${game.status}`).includes(search));
   });
-  $("gameCount").textContent = `${games.length} de ${allGames.length} ${allGames.length === 1 ? "partida" : "partidas"}`;
+  $("gameCount").textContent = `${games.length} de ${allGames.length} ${allGames.length === 1 ? "partida" : "partidas"} · ${gameMode.name} · ${gameMode.unit}`;
   const renderGroup = (title, group) => {
     if (!group.length) return "";
     return `<div class="games-group"><div class="games-group-heading"><strong>${title}</strong><span>${group.length}</span></div><div class="games-grid">${group.map((game) => {
     const scores = gameScores(game.id);
     const done = scores.filter((score) => score.finalizado && score.pontos != null).length;
     const total = scores.length;
-    return `<article class="game-card ${game.id === state.activeGameId ? "game-card--active" : ""}"><button class="game-card-select" type="button" data-game-id="${esc(game.id)}"><div class="game-card-top"><span class="eyebrow">${fmtDate(game.created_at)}</span><span class="status-pill status-pill--${game.status === "final" ? "success" : "warning"}">${game.status === "final" ? "Final" : "Parcial"}</span></div><h4>${esc(game.nome)}</h4><p>${done} de ${total} resultados confirmados</p><div class="game-progress"><span style="width:${total ? (done / total) * 100 : 0}%"></span></div></button>${isAdmin() && encounterOpen() ? `<div class="game-card-actions"><button class="text-button" type="button" data-edit-game="${esc(game.id)}">Editar</button><button class="text-button text-button--danger" type="button" data-delete-game="${esc(game.id)}">Excluir</button></div>` : ""}</article>`;
+    const resultValues = scores.filter((score) => score.pontos != null).map((score) => Number(score.pontos));
+    const tieCount = resultValues.length ? resultValues.filter((value) => value === Math.max(...resultValues)).length : 0;
+    return `<article class="game-card ${game.id === state.activeGameId ? "game-card--active" : ""}"><button class="game-card-select" type="button" data-game-id="${esc(game.id)}"><div class="game-card-top"><span class="eyebrow">${fmtDate(game.created_at)} · ${esc(gameMode.name)}</span><span class="status-pill status-pill--${game.status === "final" ? "success" : "warning"}">${game.status === "final" ? tieCount > 1 ? "Empate" : "Final" : "Parcial"}</span></div><h4>${esc(game.nome)}</h4><p>${done} de ${total} resultados confirmados · total em ${esc(gameMode.unit)}</p><div class="game-progress"><span style="width:${total ? (done / total) * 100 : 0}%"></span></div></button>${isAdmin() && encounterOpen() ? `<div class="game-card-actions"><button class="text-button" type="button" data-edit-game="${esc(game.id)}">Editar</button><button class="text-button text-button--danger" type="button" data-delete-game="${esc(game.id)}">Excluir</button></div>` : ""}</article>`;
     }).join("")}</div></div>`;
   };
   const live = games.filter((game) => game.status !== "final");
@@ -1027,6 +1464,7 @@ function renderGames() {
 }
 
 function openTabletModal(gameId = state.activeGameId, playerId = null) {
+  if (!["boliche", "bowling"].includes(getGameMode().id)) return showToast("O registro por tablet está disponível apenas no boliche.", "error");
   if (!isAdmin()) return showToast("Entre como administrador para lançar os frames.", "error");
   if (!encounterActive()) return showToast("Inicie ou reabra o encontro para lançar pontos.", "error");
   if (!state.scoreDetailsAvailable) return showToast("Aplique v13-throw-mode.sql para habilitar o tablet.", "error");
@@ -1708,15 +2146,17 @@ async function deleteAccount(id) {
 function openApprovalsModal() { renderApprovals(); setModal("approvalsModal", true); }
 
 function renderScoreHistory() {
+  const mode = getGameMode();
   const gameIds = new Set(encounterGames().map((game) => game.id));
   const changes = state.scoreChanges.filter((change) => gameIds.has(change.game_id));
   const throwChanges = state.throwChanges.filter((change) => gameIds.has(change.game_id));
+  const roundChanges = state.roundScoreChanges.filter((change) => gameIds.has(change.game_id));
   const scoreRows = changes.map((change, index) => {
     const player = getPlayer(change.player_id);
     const game = getGame(change.game_id);
     const actor = state.profiles.find((profile) => profile.id === change.actor_id)?.nome || (change.actor_id === state.session?.user?.id ? "Você" : "Administrador");
-    const canUndo = encounterActive() && !changes.slice(0, index).some((newer) => newer.score_id === change.score_id);
-    return `<div class="history-row"><div><strong>${esc(player?.nome || "Jogador")}</strong><small>${esc(game?.nome || "Partida")} · ${fmtDate(change.changed_at)} · ${esc(actor)}</small><span>${change.previous_points ?? "—"} → ${change.new_points ?? "—"}${change.previous_finalized !== change.new_finalized ? ` · ${change.new_finalized ? "confirmado" : "pendente"}` : ""}</span></div>${canUndo ? `<button class="text-button" type="button" data-undo-change="${change.id}">Desfazer</button>` : ""}</div>`;
+    const canUndo = !isRoundBased() && encounterActive() && !changes.slice(0, index).some((newer) => newer.score_id === change.score_id);
+    return `<div class="history-row"><div><strong>${esc(player?.nome || "Jogador")}</strong><small>${esc(game?.nome || "Partida")} · ${fmtDate(change.changed_at)} · ${esc(actor)} · ${esc(mode.name)} · ${esc(mode.unit)}</small><span>${change.previous_points ?? "—"} → ${change.new_points ?? "—"}${change.previous_finalized !== change.new_finalized ? ` · ${change.new_finalized ? "confirmado" : "pendente"}` : ""}</span></div>${canUndo ? `<button class="text-button" type="button" data-undo-change="${change.id}">Desfazer</button>` : ""}</div>`;
   });
   const throwRows = throwChanges.map((change) => {
     const player = getPlayer(change.player_id);
@@ -1724,9 +2164,27 @@ function renderScoreHistory() {
     const actor = state.profiles.find((profile) => profile.id === change.actor_id)?.nome || (change.actor_id === state.session?.user?.id ? "Você" : "Administrador");
     return `<div class="history-row"><div><strong>${esc(player?.nome || "Jogador")}</strong><small>${esc(game?.nome || "Partida")} · ${fmtDate(change.changed_at)} · ${esc(actor)}</small><span>Arremessos: ${change.previous_throws?.length || 0} → ${change.new_throws?.length || 0} · ${esc(change.reason || "Correção")}</span></div></div>`;
   });
-  const rows = [...scoreRows, ...throwRows];
-  $("scoreHistoryList").innerHTML = rows.length ? rows.join("") : `<p class="empty-inline">Nenhuma alteração registrada.</p>`;
+  const roundRows = state.roundScores.filter((row) => gameIds.has(row.game_id)).map((row) => {
+    const game = getGame(row.game_id);
+    const player = getPlayer(row.player_id);
+    const value = roundPoints(row);
+    return `<div class="history-row"><div><strong>${esc(player?.nome || "Jogador")}</strong><small>${esc(game?.nome || "Partida")} · ${mode.name} · Rodada ${esc(row.round_no)}</small><span>${value == null ? "Sem pontuação" : `${esc(value)} ${esc(mode.unit)}`} · ${roundFinalized(row) ? "confirmado" : "pendente"}</span></div></div>`;
+  });
+  const roundChangeRows = roundChanges.map((change, index) => {
+    const player = getPlayer(change.player_id);
+    const game = getGame(change.game_id);
+    const roundNo = change.round_no ?? change.p_round_no ?? "—";
+    const actor = state.profiles.find((profile) => profile.id === change.actor_id)?.nome || (change.actor_id === state.session?.user?.id ? "Você" : "Administrador");
+    const previous = change.previous_points ?? change.old_points ?? "—";
+    const next = change.new_points ?? change.points ?? change.p_points ?? "—";
+    const key = `${change.game_id}:${roundNo}:${change.player_id}`;
+    const canUndo = isAdmin() && encounterActive() && change.id != null && !roundChanges.slice(0, index).some((newer) => `${newer.game_id}:${newer.round_no ?? newer.p_round_no ?? "—"}:${newer.player_id}` === key);
+    return `<div class="history-row"><div><strong>${esc(player?.nome || "Jogador")}</strong><small>${esc(game?.nome || "Partida")} · ${mode.name} · Rodada ${esc(roundNo)} · ${fmtDate(change.changed_at)} · ${esc(actor)}</small><span>${esc(previous)} → ${esc(next)} ${esc(mode.unit)}${change.previous_finalized !== undefined && change.previous_finalized !== change.new_finalized ? ` · ${change.new_finalized ? "confirmado" : "pendente"}` : ""}</span></div>${canUndo ? `<button class="text-button" type="button" data-undo-round-change="${esc(change.id)}">Desfazer</button>` : ""}</div>`;
+  });
+  const rows = [...scoreRows, ...throwRows, ...roundRows, ...roundChangeRows];
+  $("scoreHistoryList").innerHTML = `<p class="section-meta">${esc(activeEncounter()?.nome || "Encontro")} · ${esc(mode.name)} · unidade: ${esc(mode.unit)}</p>${rows.length ? rows.join("") : `<p class="empty-inline">Nenhuma alteração registrada.</p>`}`;
   $("scoreHistoryList").querySelectorAll("[data-undo-change]").forEach((button) => button.addEventListener("click", () => undoScoreChange(Number(button.dataset.undoChange))));
+  $("scoreHistoryList").querySelectorAll("[data-undo-round-change]").forEach((button) => button.addEventListener("click", () => undoRoundScoreChange(button.dataset.undoRoundChange)));
 }
 
 async function undoScoreChange(id) {
@@ -1734,6 +2192,16 @@ async function undoScoreChange(id) {
   const { error } = await client.rpc("undo_score_change", { p_change_id: id });
   if (error) return showToast("Não foi possível desfazer: o resultado pode ter sido alterado depois.", "error");
   await loadData(); render(); showToast("Alteração desfeita.", "success");
+}
+
+async function undoRoundScoreChange(id) {
+  const rawId = String(id ?? "");
+  if (!rawId || !window.confirm("Desfazer a última alteração desta pontuação por rodada? O total do jogo será recalculado pelo banco.")) return;
+  const numericId = Number(rawId);
+  const changeId = /^\d+$/.test(rawId) && Number.isSafeInteger(numericId) ? numericId : rawId;
+  const { error } = await client.rpc("undo_round_score_change", { p_change_id: changeId });
+  if (error) return showToast(`Não foi possível desfazer: ${error.message || "a rodada pode ter sido alterada depois"}.`, "error");
+  await loadData(); render(); showToast("Alteração da rodada desfeita.", "success");
 }
 
 function openHistoryModal() { renderScoreHistory(); setModal("historyModal", true); }
@@ -1808,6 +2276,7 @@ async function shareResultCard() {
 }
 
 function openPhotoModal() {
+  if (!["boliche", "bowling"].includes(getGameMode().id)) return showToast("A atualização por foto está disponível apenas no boliche.", "error");
   if (!encounterActive()) return showToast("Inicie ou reabra o encontro para atualizar os pontos.", "error");
   if (!encounterGames().length) return showToast("Abra uma partida antes de importar uma foto.", "error");
   resetPhotoState(); renderPhotoOptions(); setModal("photoModal", true);
@@ -2072,6 +2541,9 @@ function bindEvents() {
   initTheme();
   initTopbarMenu();
   $("encounterSelect").addEventListener("change", (event) => selectEncounter(event.target.value));
+  $("encounterGameType")?.addEventListener("change", renderEncounterRules);
+  $("encounterRoundCount")?.addEventListener("input", renderEncounterRules);
+  $("encounterRoundMax")?.addEventListener("input", renderEncounterRules);
   $("newEncounterButton").addEventListener("click", () => openEncounterModal(false));
   $("editEncounterButton").addEventListener("click", () => openEncounterModal(true));
   $("closeEncounterButton").addEventListener("click", toggleEncounterClosed);
@@ -2109,6 +2581,16 @@ function bindEvents() {
   $("recoveryModal").addEventListener("cancel", (event) => event.preventDefault());
   $("authButton").addEventListener("click", openAuth); $("registerButton").addEventListener("click", openRegister); $("profileButton").addEventListener("click", openProfileModal); $("photoButton").addEventListener("click", openPhotoModal); $("newGameButton").addEventListener("click", openGameModal);
   $("tabletButton").addEventListener("click", () => openTabletModal());
+  $("roundGame")?.addEventListener("change", (event) => { captureRoundDraft(state.roundGameId, state.roundNo); state.roundGameId = event.target.value; reconcileRoundDrafts(state.roundScores); renderRoundModal(false); });
+  $("roundNumber")?.addEventListener("change", (event) => { captureRoundDraft(state.roundGameId, state.roundNo); state.roundNo = Number(event.target.value) || null; reconcileRoundDrafts(state.roundScores); renderRoundResults(); });
+  $("roundResults")?.addEventListener("input", markRoundEdited);
+  $("roundResults")?.addEventListener("change", markRoundEdited);
+  $("roundResults")?.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-clear-round]");
+    if (button) clearRoundScore(button.dataset.clearRound);
+  });
+  $("roundSaveButton")?.form?.addEventListener("submit", saveRoundScores);
+  $("roundSaveButton")?.addEventListener("click", saveRoundScores);
   $("tabletGame").addEventListener("change", (event) => { state.tabletGameId = event.target.value; state.tabletPlayerId = null; state.tabletSelectedPins = []; renderTablet(); });
   $("tabletPlayer").addEventListener("change", (event) => { state.tabletPlayerId = event.target.value; state.tabletSelectedPins = []; renderTablet(); });
   $("tabletPinRack").addEventListener("click", (event) => { const button = event.target.closest("[data-pin]"); if (button) toggleTabletPin(Number(button.dataset.pin)); });
@@ -2158,6 +2640,7 @@ function bindEvents() {
   }));
   $("updateScoreButton")?.addEventListener("click", (event) => {
     event.stopPropagation();
+    if (isRoundBased()) return openRoundModal();
     const menu = $("scoreUpdateMenu");
     const open = menu.hidden;
     menu.hidden = !open;
@@ -2165,7 +2648,7 @@ function bindEvents() {
   });
   document.querySelectorAll("[data-score-action]").forEach((button) => button.addEventListener("click", () => {
     const action = button.dataset.scoreAction;
-    if (action === "tablet") openTabletModal(); else openPhotoModal();
+    if (isRoundBased()) openRoundModal(); else if (action === "tablet") openTabletModal(); else openPhotoModal();
     $("scoreUpdateMenu").hidden = true;
     $("updateScoreButton").setAttribute("aria-expanded", "false");
   }));
@@ -2181,14 +2664,16 @@ async function start() {
     client.auth.onAuthStateChange((event, session) => {
       if (event === "PASSWORD_RECOVERY") state.recovering = true;
       if (event === "SIGNED_OUT") {
-        const interrupted = $("profileModal").open || $("photoModal").open;
+        const interrupted = $("profileModal").open || $("photoModal").open || $("roundModal")?.open;
         state.recovering = false;
         sessionStorage.removeItem("boliche-recovery-user");
         state.profile = null;
         state.profiles = [];
         state.playerPhotos = new Map();
         state.scoreChanges = [];
-        ["approvalsModal", "historyModal", "playersModal", "gameModal", "photoModal", "profileModal", "tabletModal", "teamsModal", "bracketModal"].forEach((id) => setModal(id, false));
+        state.roundScoreChanges = [];
+        state.roundDraft.clear(); state.roundConflict = false;
+        ["approvalsModal", "historyModal", "playersModal", "gameModal", "photoModal", "profileModal", "tabletModal", "teamsModal", "bracketModal", "roundModal"].forEach((id) => setModal(id, false));
         if (interrupted) showToast("Sua sessão terminou. Entre novamente para salvar.", "error");
       }
       state.session = session;
