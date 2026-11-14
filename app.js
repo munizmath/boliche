@@ -557,13 +557,16 @@ function renderPredictions() {
   const panel = $("predictionsSection");
   const encounter = activeEncounter();
   const userId = state.session?.user?.id;
-  panel.hidden = !encounter || !userId || state.profile?.status !== "approved";
+  const canPredict = Boolean(userId && state.profile?.status === "approved");
+  panel.hidden = !encounter;
   if (panel.hidden) return;
   const started = encounter.status !== "preparing" || (encounter.prediction_closes_at && Date.now() >= new Date(encounter.prediction_closes_at).getTime());
   const existing = state.predictions.find((prediction) => prediction.encounter_id === encounter.id && prediction.user_id === userId);
-  $("predictionHint").textContent = started ? "Palpites deste encontro encerrados." : `Quem vencerá ${encounter.nome}? Seu palpite pode mudar até o início ou prazo definido.`;
+  $("predictionHint").textContent = started ? "Palpites deste encontro encerrados." : canPredict ? `Quem vencerá ${encounter.nome}? Seu palpite pode mudar até o início ou prazo definido.` : "Entre com um cadastro aprovado para registrar um palpite.";
   $("predictionPlayer").innerHTML = `<option value="">Escolha um jogador</option>${encounterPlayers().map((player) => `<option value="${esc(player.id)}">${esc(player.nome)}</option>`).join("")}`;
   $("predictionPlayer").value = existing?.predicted_player_id || "";
+  $("predictionPlayer").hidden = !canPredict;
+  $("savePredictionButton").hidden = !canPredict;
   $("predictionPlayer").disabled = started;
   $("savePredictionButton").disabled = started;
   const ownStanding = state.predictionStandings.find((row) => row.player_id === state.profile?.player_id);
