@@ -421,13 +421,17 @@ function subscribeRealtime() {
 }
 
 let realtimeRefreshTimer;
+let realtimeToastTimer;
 async function refreshFromRealtime() {
   window.clearTimeout(realtimeRefreshTimer);
   realtimeRefreshTimer = window.setTimeout(async () => {
     try {
       await loadData();
       render();
-      showToast("Placar atualizado em outro aparelho.", "info");
+      if (!realtimeToastTimer) {
+        showToast("Placar atualizado em outro aparelho.", "info");
+        realtimeToastTimer = window.setTimeout(() => { realtimeToastTimer = null; }, 3000);
+      }
     } catch (error) {
       setConnection("Erro de sincronização", "error");
       console.error(error);
@@ -2184,7 +2188,7 @@ async function start() {
         state.profiles = [];
         state.playerPhotos = new Map();
         state.scoreChanges = [];
-        ["approvalsModal", "historyModal", "playersModal", "gameModal", "photoModal", "profileModal"].forEach((id) => setModal(id, false));
+        ["approvalsModal", "historyModal", "playersModal", "gameModal", "photoModal", "profileModal", "tabletModal", "teamsModal", "bracketModal"].forEach((id) => setModal(id, false));
         if (interrupted) showToast("Sua sessão terminou. Entre novamente para salvar.", "error");
       }
       state.session = session;
