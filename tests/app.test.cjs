@@ -25,7 +25,7 @@ function loadApp(client = null) {
   const source = fs.readFileSync(path.join(__dirname, '..', 'app.js'), 'utf8')
     .replace(/\nstart\(\);\s*$/, '\n');
   vm.runInContext(`${source}\nconst appRender = render;\nrender = () => {};\nrefreshAfterReconnect = async () => {};\nglobalThis.testApp = { state, loadData, renderApp: appRender, buildSuggestions, playersOnLane, updateReviewTable, updatePhotoConfirmState, captureReviewDraft, markRoundEdited, markReviewEdited, changeReviewContext, runOcr, drawOrientedPhoto, applyPhotoInteractionMode, canvasPoint, renderLeaderboard, renderCurrentGame, renderGames, renderLanes, renderPhotoOptions, removeGame, renderTeams, renderRecords, renderScoreHistory, loadMoreAuditHistory, shareResultCard, openShareModal, openPhotoModal, openTabletModal, openQuickScore, openStatsModal, confirmPhotoUpdate, submitAuth, submitProfile, prepareProfilePhoto, cleanupUnusedProfilePhotos, officialTotals, officialPosition, encounterGames, bracketRounds, bracketWinner, balancedLaneDraw, buildResultsExport, downloadResults, openEncounterModal, saveEncounter, renderEncounterRules, renderEncounterBar, renderGameSwitcher, selectEncounter, openGameModal, createGame, renderPlayerSelection, addPlayer, signOut, openRoundModal, renderRoundModal, renderRoundResults, saveRoundScores, clearRoundScore, undoRoundScoreChange, getGameMode, isRoundBased, configuredRoundMax, rankScoreRows, teamStandings, bowlingFrames, tabletStandingPins };`, context);
-  vm.runInContext('testApp.start = start; testApp.initializeAdvancedModeUI = initializeAdvancedModeUI; testApp.renderAdvancedLeaderboard = renderAdvancedLeaderboard; testApp.probeAdvancedSchema = probeAdvancedSchema; testApp.isModeReady = isModeReady; testApp.selectableGameTypes = selectableGameTypes;', context);
+  vm.runInContext('testApp.start = start; testApp.initializeAdvancedModeUI = initializeAdvancedModeUI; testApp.renderAdvancedLeaderboard = renderAdvancedLeaderboard; testApp.probeAdvancedSchema = probeAdvancedSchema; testApp.isModeReady = isModeReady; testApp.selectableGameTypes = selectableGameTypes; testApp.applyAuthUi = applyAuthUi;', context);
   return { ...context.testApp, get, rows, document, context };
 }
 
@@ -79,6 +79,18 @@ function adminSession() {
   const payload = Buffer.from(JSON.stringify({ amr: [{ method: 'password' }] })).toString('base64url');
   return { access_token: `header.${payload}.signature`, user: { id: 'admin', app_metadata: { role: 'admin' } } };
 }
+
+test('menu da conta identifica a sessão sem sugerir novo login', () => {
+  const app = loadApp();
+  app.state.session = adminSession();
+  app.applyAuthUi();
+  assert.equal(app.get('accountMenuLabel').textContent, 'Conta');
+  assert.equal(app.get('authButton').textContent, 'Sair');
+  app.state.session = null;
+  app.applyAuthUi();
+  assert.equal(app.get('accountMenuLabel').textContent, 'Entrar');
+  assert.equal(app.get('authButton').textContent, 'Entrar');
+});
 
 test("boot inicializa o controller avançado antes de carregar e renderizar", async () => {
   let created = 0;

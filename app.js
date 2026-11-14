@@ -841,6 +841,7 @@ function applyAuthUi() {
     element.hidden = !admin;
   });
   $("authButton").textContent = state.session ? "Sair" : "Entrar";
+  $("accountMenuLabel").textContent = state.session ? "Conta" : "Entrar";
   $("authButton").title = state.session?.user?.email || "Acesso do administrador";
   $("registerButton").hidden = isAuthenticated();
   $("profileButton").hidden = !isAuthenticated() || state.recovering;
