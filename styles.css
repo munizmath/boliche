@@ -208,6 +208,26 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .share-card { justify-items: center; text-align: center; }.share-qr { width: 220px; height: 220px; max-width: 100%; border: 8px solid white; }.share-link { color: var(--color-accent-700); overflow-wrap: anywhere; }.share-card .modal-actions { justify-content: center; }
 .game-card-select { display: block; width: 100%; padding: 0; border: 0; color: inherit; background: transparent; text-align: left; }
 .game-card-actions { display: flex; gap: 14px; margin-top: 12px; padding-top: 9px; border-top: 1px solid var(--color-divider); }
+.games-group { display: grid; gap: 10px; margin-bottom: 22px; }
+.games-group-heading { display: flex; align-items: center; gap: 8px; color: var(--color-muted); font-size: 11px; letter-spacing: .08em; text-transform: uppercase; }
+.games-group-heading strong { color: var(--color-text); }
+.games-group-heading span { display: inline-grid; place-items: center; min-width: 20px; height: 20px; border: 1px solid var(--color-divider); border-radius: 50%; font-size: 10px; }
+.history-controls { display: flex; align-items: end; flex-wrap: wrap; gap: 8px; margin: -4px 0 16px; }
+.history-controls label { display: grid; gap: 5px; color: var(--color-muted); font-size: 10px; font-weight: 700; text-transform: uppercase; }
+.history-controls select, .history-controls input { min-height: 34px; padding: 0 9px; border: 1px solid var(--color-divider); border-radius: var(--radius); color: var(--color-text); background: var(--color-surface); font-size: 12px; text-transform: none; }
+.history-search { min-width: min(260px, 100%); }
+.tablet-selectors { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.tablet-score-head { display: flex; align-items: end; justify-content: space-between; gap: 12px; padding: 13px; border: 1px solid var(--color-divider); background: var(--color-surface-soft); }
+.tablet-score-head > div { display: grid; gap: 3px; }.tablet-score-head strong { font-family: var(--font-heading); font-size: 30px; }.tablet-score-head span { color: var(--color-muted); font-size: 11px; }
+.frame-scoreboard { display: grid; grid-template-columns: repeat(10, minmax(46px, 1fr)); gap: 4px; overflow-x: auto; }
+.frame-cell { display: grid; min-width: 46px; border: 1px solid var(--color-divider); background: var(--color-surface); text-align: center; }
+.frame-cell > span { padding: 4px; color: var(--color-muted); border-bottom: 1px solid var(--color-divider); font-size: 10px; }.frame-cell strong { min-height: 30px; padding: 7px 3px; font-size: 13px; }.frame-cell small { padding: 4px; border-top: 1px solid var(--color-divider); color: var(--color-accent-700); font-size: 10px; }.frame-cell--current { border-color: var(--color-accent); background: color-mix(in srgb, var(--color-accent) 8%, var(--color-surface)); }
+.tablet-entry-grid { display: grid; grid-template-columns: 1.15fr .85fr; gap: 12px; }.tablet-panel { display: grid; gap: 10px; padding: 13px; border: 1px solid var(--color-divider); }.tablet-panel-heading { display: grid; gap: 3px; }.tablet-panel-heading span { color: var(--color-muted); font-size: 11px; }
+.pin-rack { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; }.pin-button { min-height: 42px; border: 1px solid var(--color-divider); border-radius: 50%; color: var(--color-text); background: var(--color-surface); font-weight: 800; }.pin-button--available { cursor: pointer; }.pin-button--selected { color: var(--color-bg); border-color: var(--color-accent); background: var(--color-accent); }.pin-button--disabled { opacity: .32; }
+.keypad { display: grid; grid-template-columns: repeat(6, 1fr); gap: 5px; }.keypad-button { min-height: 36px; border: 1px solid var(--color-divider); color: var(--color-text); background: var(--color-surface-soft); font-weight: 800; }.keypad-button:disabled { opacity: .35; }
+.tablet-shortcuts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }.tablet-shortcuts .button { min-height: 36px; padding: 0 8px; font-size: 11px; }
+.throw-log { display: flex; flex-wrap: wrap; gap: 5px; min-height: 28px; color: var(--color-muted); font-size: 12px; }.throw-log span { padding: 4px 7px; border: 1px solid var(--color-divider); background: var(--color-surface-soft); color: var(--color-text); font-weight: 700; }
+.tablet-panel .modal-actions { margin-top: 0; }.tablet-card > .review-note { margin: 0; }
 .lane-add-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto; gap: 7px; }
 .lane-add-row [hidden] { display: none; }
 .lanes-list { display: grid; gap: 6px; max-height: 160px; overflow: auto; }
@@ -224,6 +244,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 @media (max-width: 620px) { .current-player { display: grid; flex: 1; grid-template-columns: 28px minmax(0, 1fr); column-gap: 8px; align-items: center; }.current-player--with-photo { grid-template-columns: 28px 34px minmax(0, 1fr); }.current-player .provisional-rank { grid-row: 1 / 3; }.current-player--with-photo .ranking-avatar { grid-column: 2; grid-row: 1 / 3; }.current-player .current-stats-link { grid-column: 2; grid-row: 1; }.current-player > span:not(.provisional-rank) { grid-column: 2; grid-row: 2; }.current-player--with-photo .current-stats-link, .current-player--with-photo > span:not(.provisional-rank) { grid-column: 3; }.current-score { display: grid; justify-items: end; gap: 5px; } }
 @media (max-width: 980px) { .extras-grid { grid-template-columns: 1fr; } }
 @media (max-width: 620px) { .encounter-bar label { width: 100%; }.encounter-bar select { flex: 1; max-width: none; }.selection-item .game-player-lane { max-width: 110px; }.prediction-panel select { max-width: none; width: 100%; } }
+@media (max-width: 620px) { .tablet-selectors, .tablet-entry-grid { grid-template-columns: 1fr; }.tablet-score-head { align-items: start; flex-direction: column; }.frame-scoreboard { padding-bottom: 3px; }.history-controls { align-items: stretch; }.history-controls label, .history-search { width: 100%; }.history-controls select, .history-controls input { width: 100%; } }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; } }
 .profile-current { display: flex; align-items: center; gap: 12px; padding: 10px; border: 1px solid var(--color-divider); border-radius: var(--radius); color: var(--color-text); font-size: 12px; }
 .profile-current[hidden], .profile-current img[hidden] { display: none; }

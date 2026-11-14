@@ -9,7 +9,7 @@
     <link rel="icon" href="favicon.ico" type="image/x-icon" />
     <link rel="apple-touch-icon" href="apple-touch-icon.png" />
     <link rel="manifest" href="manifest.webmanifest" />
-    <link rel="stylesheet" href="styles.css?v=20261114-17" />
+    <link rel="stylesheet" href="styles.css?v=20261114-18" />
   </head>
   <body>
     <div id="toastContainer" class="toast-container" aria-live="polite"></div>
@@ -30,6 +30,7 @@
           <div class="topbar-actions topbar-actions--admin admin-only" aria-label="Administração" hidden>
             <span class="topbar-divider" aria-hidden="true"></span>
             <button id="newGameButton" class="topbar-action topbar-action--primary" type="button">Nova partida</button>
+            <button id="tabletButton" class="topbar-action" type="button">Tablet</button>
             <button id="photoButton" class="topbar-action" type="button">Foto</button>
             <button id="newEncounterButton" class="topbar-action" type="button">Novo encontro</button>
             <button id="editEncounterButton" class="topbar-action" type="button">Editar encontro</button>
@@ -134,6 +135,10 @@
             <h3>Partidas</h3>
           </div>
           <span id="gameCount" class="section-meta">0 partidas</span>
+        </div>
+        <div class="history-controls" aria-label="Filtrar partidas">
+          <label>Mostrar<select id="gameHistoryFilter"><option value="all">Todas</option><option value="live">Em andamento</option><option value="final">Finalizadas</option><option value="winner">Com vencedor</option><option value="tie">Empates</option></select></label>
+          <label class="history-search">Buscar<input id="gameHistorySearch" type="search" placeholder="Nome da partida" /></label>
         </div>
         <div id="gamesList" class="games-grid"></div>
       </section>
@@ -287,6 +292,23 @@
       </div>
     </dialog>
 
+    <dialog id="tabletModal" class="modal">
+      <div class="modal-card modal-card--xl tablet-card">
+        <button class="modal-close" type="button" aria-label="Fechar">×</button>
+        <p class="eyebrow">tablet na pista</p>
+        <h2>Lançar por frame</h2>
+        <p class="modal-copy">Registre cada arremesso no celular. O total só entra no ranking oficial depois dos dez frames completos.</p>
+        <div class="tablet-selectors"><label>Partida<select id="tabletGame"></select></label><label>Jogador<select id="tabletPlayer"></select></label></div>
+        <div class="tablet-score-head"><div><strong id="tabletScoreTotal">0</strong><span>pontos provisórios</span></div><div><strong id="tabletScoreStatus">0 arremessos</strong><span id="tabletPlayerMeta">Escolha um jogador</span><small id="tabletTurnLabel">Frame 1 · 1º arremesso</small></div></div>
+        <div id="tabletScoreboard" class="frame-scoreboard" aria-label="Scorecard por frames"></div>
+        <div class="tablet-entry-grid">
+          <section class="tablet-panel"><div class="tablet-panel-heading"><strong>Pinos</strong><span>Toque nos pinos derrubados</span></div><div id="tabletPinRack" class="pin-rack"></div><div id="tabletKeypad" class="keypad"></div><div class="tablet-shortcuts"><button id="tabletStrikeButton" class="button button--quiet" type="button">Strike X</button><button id="tabletSpareButton" class="button button--quiet" type="button">Spare /</button></div></section>
+          <section class="tablet-panel"><div class="tablet-panel-heading"><strong>Arremessos</strong><span>Mais recente primeiro no histórico abaixo</span></div><div id="tabletThrowLog" class="throw-log">Nenhum arremesso registrado</div><label>Motivo da alteração<input id="tabletReason" type="text" maxlength="160" value="Lançamento no tablet" /></label><div class="modal-actions"><button id="tabletUndoButton" class="button button--quiet" type="button">Desfazer</button><button id="tabletRegisterButton" class="button button--primary" type="button">Registrar arremesso</button></div></section>
+        </div>
+        <p class="review-note">A correção fica registrada com pontuação anterior, nova pontuação, horário e motivo.</p>
+      </div>
+    </dialog>
+
     <dialog id="shareModal" class="modal">
       <div class="modal-card share-card">
         <button class="modal-close" type="button" aria-label="Fechar">×</button>
@@ -345,6 +367,6 @@
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
     <script src="supabase-config.js"></script>
-    <script src="app.js?v=20261114-17"></script>
+    <script src="app.js?v=20261114-18"></script>
   </body>
 </html>

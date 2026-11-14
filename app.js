@@ -22,6 +22,9 @@ const state = {
   profiles: [],
   playerPhotos: new Map(),
   scoreChanges: [],
+  scoreDetails: [],
+  scoreDetailsAvailable: true,
+  throwChanges: [],
   session: null,
   recovering: /(?:^#|&)type=recovery(?:&|$)/.test(window.location.hash) || new URLSearchParams(window.location.search).get("type") === "recovery",
   activeGameId: null,
@@ -48,6 +51,9 @@ const state = {
   editingPlayerId: null,
   editingLaneName: null,
   editingGameId: null,
+  tabletGameId: null,
+  tabletPlayerId: null,
+  tabletSelectedPins: [],
 };
 
 const $ = (id) => document.getElementById(id);
@@ -64,6 +70,8 @@ const localIsoDate = () => {
 const getPlayer = (id) => state.players.find((player) => player.id === id);
 const getGame = (id) => state.games.find((game) => game.id === id);
 const gameScores = (gameId) => state.scores.filter((score) => score.game_id === gameId);
+const scoreDetail = (gameId, playerId) => state.scoreDetails.find((detail) => detail.game_id === gameId && detail.player_id === playerId);
+const throwValues = (gameId, playerId) => (scoreDetail(gameId, playerId)?.throws || []).map((value) => Number(value)).filter((value) => Number.isInteger(value) && value >= 0 && value <= 10);
 const activeEncounter = () => state.encounters.find((encounter) => encounter.id === state.activeEncounterId);
 const encounterGames = () => state.games.filter((game) => game.encounter_id === state.activeEncounterId);
 const encounterPlayerIds = () => new Set(state.encounterPlayers.filter((row) => row.encounter_id === state.activeEncounterId).map((row) => row.player_id));
@@ -83,6 +91,96 @@ const isAdmin = () => {
   }
 };
 const isAuthenticated = () => Boolean(state.session);
+
+function bowlingFrames(throws = []) {
+  const rolls = throws.map(Number).filter((value) => Number.isInteger(value) && value >= 0 && value <= 10);
+  const frames = [];
+  let cursor = 0;
+  let cumulative = 0;
+  for (let frameNumber = 1; frameNumber <= 9; frameNumber++) {
+    const first = rolls[cursor];
+    if (first == null) {
+      frames.push({ number: frameNumber, throws: [], marks: [], complete: false, score: null, cumulative });
+      continue;
+    }
+    if (first === 10) {
+      const second = rolls[cursor + 1];
+      const third = rolls[cursor + 2];
+      const complete = second != null && third != null;
+      const score = complete ? 10 + second + third : null;
+      if (complete) cumulative += score;
+      frames.push({ number: frameNumber, throws: [first], marks: ["X"], complete, score, cumulative, cursor });
+      cursor += 1;
+      continue;
+    }
+    const second = rolls[cursor + 1];
+    if (second == null) {
+      frames.push({ number: frameNumber, throws: [first], marks: [String(first)], complete: false, score: null, cumulative, cursor });
+      cursor += 1;
+      continue;
+    }
+    const valid = first + second <= 10;
+    const complete = valid;
+    const score = complete ? first + second + (first + second === 10 && rolls[cursor + 2] != null ? rolls[cursor + 2] : 0) : null;
+    if (complete && !(first + second === 10 && rolls[cursor + 2] == null)) cumulative += score;
+    frames.push({ number: frameNumber, throws: [first, second], marks: [String(first), first + second === 10 ? "/" : String(second)], complete: complete && !(first + second === 10 && rolls[cursor + 2] == null), score: complete && !(first + second === 10 && rolls[cursor + 2] == null) ? score : null, cumulative, cursor });
+    cursor += 2;
+  }
+  const first = rolls[cursor];
+  const second = rolls[cursor + 1];
+  const third = rolls[cursor + 2];
+  let tenthComplete = false;
+  let tenthScore = null;
+  let tenthMarks = [];
+  if (first != null) {
+    tenthMarks.push(first === 10 ? "X" : String(first));
+    if (first === 10) {
+      if (second != null) tenthMarks.push(second === 10 ? "X" : String(second));
+      if (third != null) tenthMarks.push(third === 10 ? "X" : String(third));
+      tenthComplete = second != null && third != null;
+      if (tenthComplete) tenthScore = first + second + third;
+    } else if (second != null) {
+      tenthMarks.push(first + second === 10 ? "/" : String(second));
+      if (first + second === 10 && third != null) tenthMarks.push(third === 10 ? "X" : String(third));
+      tenthComplete = first + second < 10 || third != null;
+      if (tenthComplete) tenthScore = first + second + (first + second === 10 ? (third || 0) : 0);
+    }
+  }
+  if (tenthComplete) cumulative += tenthScore;
+  frames.push({ number: 10, throws: rolls.slice(cursor, cursor + 3), marks: tenthMarks, complete: tenthComplete, score: tenthScore, cumulative, cursor });
+  const completeTotal = frames[9].complete ? cumulative : frames.filter((frame) => frame.complete).at(-1)?.cumulative || 0;
+  const partial = frames.find((frame) => !frame.complete);
+  const provisional = partial && partial.number === 10 ? partial.throws.reduce((sum, value) => sum + value, 0) : partial?.throws.reduce((sum, value) => sum + value, 0) || 0;
+  return { rolls, frames, total: frames[9].complete ? cumulative : completeTotal + provisional, complete: frames[9].complete };
+}
+
+function tabletDetail() {
+  return state.tabletGameId && state.tabletPlayerId ? scoreDetail(state.tabletGameId, state.tabletPlayerId) : null;
+}
+
+function tabletThrows() {
+  return tabletDetail()?.throws?.map(Number) || [];
+}
+
+function tabletCurrentFrame() {
+  const result = bowlingFrames(tabletThrows());
+  return result.frames.find((frame) => !frame.complete) || result.frames[9];
+}
+
+function tabletStandingPins() {
+  const frame = tabletCurrentFrame();
+  if (!frame || frame.complete) return 0;
+  if (!frame.throws.length) return 10;
+  if (frame.number === 10 && frame.throws[0] === 10) return frame.throws.length === 1 ? 10 : 10;
+  return Math.max(0, 10 - frame.throws[0]);
+}
+
+function tabletSetPins(count) {
+  const standing = tabletStandingPins();
+  if (count > standing) return;
+  state.tabletSelectedPins = Array.from({ length: count }, (_, index) => index + 1);
+  renderTablet();
+}
 
 function showToast(message, type = "info") {
   const toast = document.createElement("div");
@@ -118,13 +216,15 @@ async function loadData() {
     return;
   }
   setConnection("Sincronizando…", "muted");
-  const [playersResult, lanesResult, encountersResult, rosterResult, gamesResult, scoresResult, teamsResult, teamPlayersResult, bracketsResult, predictionsResult, standingsResult, profilesResult, changesResult, publicPhotosResult] = await Promise.all([
+  const [playersResult, lanesResult, encountersResult, rosterResult, gamesResult, scoresResult, scoreDetailsResult, throwChangesResult, teamsResult, teamPlayersResult, bracketsResult, predictionsResult, standingsResult, profilesResult, changesResult, publicPhotosResult] = await Promise.all([
     client.from("players").select("id,nome,apelido_placar,pista").order("nome"),
     client.from("lanes").select("name,capacity").order("name"),
     client.from("encounters").select("id,nome,data,status,closed_at,prediction_closes_at,created_at").order("data", { ascending: false }),
     client.from("encounter_players").select("encounter_id,player_id"),
     client.from("games").select("id,nome,status,encounter_id,created_at,updated_at").order("created_at", { ascending: false }),
     client.from("scores").select("id,game_id,player_id,pista,pontos,finalizado,updated_at"),
+    client.from("score_details").select("score_id,game_id,player_id,throws,pin_masks,updated_at"),
+    isAdmin() ? client.from("throw_changes").select("id,score_id,game_id,player_id,previous_throws,new_throws,reason,changed_at,actor_id").order("id", { ascending: false }).limit(100) : Promise.resolve({ data: [] }),
     client.from("teams").select("id,encounter_id,name,metric"),
     client.from("team_players").select("team_id,player_id"),
     client.from("brackets").select("encounter_id,seeds,round_games,tiebreak_rule"),
@@ -134,7 +234,9 @@ async function loadData() {
     isAdmin() ? client.from("score_changes").select("id,score_id,game_id,player_id,previous_points,new_points,previous_finalized,new_finalized,changed_at,actor_id").order("id", { ascending: false }).limit(100) : Promise.resolve({ data: [] }),
     client.from("profiles").select("player_id,foto_path").eq("status", "approved").eq("photo_public_opt_in", true).not("player_id", "is", null),
   ]);
-  const error = playersResult.error || lanesResult.error || encountersResult.error || rosterResult.error || gamesResult.error || scoresResult.error || teamsResult.error || teamPlayersResult.error || bracketsResult.error || predictionsResult.error || standingsResult.error || profilesResult.error || changesResult.error || publicPhotosResult.error;
+  const migrationMissing = (result) => result?.error && ["42P01", "PGRST205"].includes(result.error.code);
+  const optionalMigrationError = (result) => migrationMissing(result) ? null : result?.error;
+  const error = playersResult.error || lanesResult.error || encountersResult.error || rosterResult.error || gamesResult.error || scoresResult.error || optionalMigrationError(scoreDetailsResult) || optionalMigrationError(throwChangesResult) || teamsResult.error || teamPlayersResult.error || bracketsResult.error || predictionsResult.error || standingsResult.error || profilesResult.error || changesResult.error || publicPhotosResult.error;
   if (error) throw error;
   if ($("photoModal")?.open) {
     captureReviewDraft();
@@ -149,6 +251,9 @@ async function loadData() {
   state.encounterPlayers = rosterResult.data || [];
   state.games = gamesResult.data || [];
   state.scores = scoresResult.data || [];
+  state.scoreDetails = migrationMissing(scoreDetailsResult) ? [] : (scoreDetailsResult.data || []);
+  state.scoreDetailsAvailable = !migrationMissing(scoreDetailsResult);
+  state.throwChanges = migrationMissing(throwChangesResult) ? [] : (throwChangesResult.data || []);
   if ($("photoModal")?.open && state.reviewConflict) updatePhotoConfirmState();
   state.teams = teamsResult.data || [];
   state.teamPlayers = teamPlayersResult.data || [];
@@ -290,7 +395,7 @@ async function refreshAfterReconnect() {
 
 function subscribeRealtime() {
   if (!client) return;
-  client.channel("boliche-live")
+  let channel = client.channel("boliche-live")
     .on("postgres_changes", { event: "*", schema: "public", table: "players" }, refreshFromRealtime)
     .on("postgres_changes", { event: "*", schema: "public", table: "encounters" }, refreshFromRealtime)
     .on("postgres_changes", { event: "*", schema: "public", table: "encounter_players" }, refreshFromRealtime)
@@ -298,7 +403,11 @@ function subscribeRealtime() {
     .on("postgres_changes", { event: "*", schema: "public", table: "scores" }, refreshFromRealtime)
     .on("postgres_changes", { event: "*", schema: "public", table: "teams" }, refreshFromRealtime)
     .on("postgres_changes", { event: "*", schema: "public", table: "team_players" }, refreshFromRealtime)
-    .on("postgres_changes", { event: "*", schema: "public", table: "brackets" }, refreshFromRealtime)
+    .on("postgres_changes", { event: "*", schema: "public", table: "brackets" }, refreshFromRealtime);
+  if (state.scoreDetailsAvailable) channel = channel
+    .on("postgres_changes", { event: "*", schema: "public", table: "score_details" }, refreshFromRealtime)
+    .on("postgres_changes", { event: "*", schema: "public", table: "throw_changes" }, refreshFromRealtime);
+  channel
     .subscribe((status) => {
       if (status === "SUBSCRIBED") {
         setConnection("Ao vivo", "success");
@@ -356,6 +465,7 @@ function renderEncounterBar() {
   if (document.body.classList.contains("tv-mode")) document.querySelector(".page-title h1").textContent = activeEncounter()?.nome || "Boliche dos Amigos";
   $("newGameButton").disabled = !encounterOpen();
   $("photoButton").disabled = !encounterActive();
+  if ($("tabletButton")) $("tabletButton").disabled = !encounterActive();
 }
 
 function selectEncounter(id) {
@@ -683,6 +793,7 @@ function render() {
   renderEncounterBar();
   renderCurrentGame();
   renderGames();
+  if ($("tabletModal")?.open) renderTablet();
   renderTeams(); renderBracket(); renderRecords(); renderPredictions();
   if (!$("gameModal").open) renderPlayerSelection();
   if (!$("photoModal").open) renderPhotoOptions();
@@ -823,17 +934,120 @@ function openStatsModal(playerId) {
 }
 
 function renderGames() {
-  const games = encounterGames();
-  $("gameCount").textContent = `${games.length} ${games.length === 1 ? "partida" : "partidas"}`;
-  $("gamesList").innerHTML = games.length ? games.map((game) => {
+  const allGames = encounterGames();
+  const filter = $("gameHistoryFilter")?.value || "all";
+  const search = normalize($("gameHistorySearch")?.value || "");
+  const games = allGames.filter((game) => {
+    const scores = gameScores(game.id).filter((score) => score.pontos != null);
+    const top = scores.length ? Math.max(...scores.map((score) => Number(score.pontos))) : null;
+    const leaders = top == null ? 0 : scores.filter((score) => Number(score.pontos) === top).length;
+    const matchesFilter = filter === "live" ? game.status !== "final" : filter === "final" ? game.status === "final" : filter === "winner" ? game.status === "final" && scores.length > 0 && leaders === 1 : filter === "tie" ? game.status === "final" && scores.length > 0 && leaders > 1 : true;
+    return matchesFilter && (!search || normalize(`${game.nome} ${game.status}`).includes(search));
+  });
+  $("gameCount").textContent = `${games.length} de ${allGames.length} ${allGames.length === 1 ? "partida" : "partidas"}`;
+  const renderGroup = (title, group) => {
+    if (!group.length) return "";
+    return `<div class="games-group"><div class="games-group-heading"><strong>${title}</strong><span>${group.length}</span></div><div class="games-grid">${group.map((game) => {
     const scores = gameScores(game.id);
     const done = scores.filter((score) => score.finalizado && score.pontos != null).length;
     const total = scores.length;
     return `<article class="game-card ${game.id === state.activeGameId ? "game-card--active" : ""}"><button class="game-card-select" type="button" data-game-id="${esc(game.id)}"><div class="game-card-top"><span class="eyebrow">${fmtDate(game.created_at)}</span><span class="status-pill status-pill--${game.status === "final" ? "success" : "warning"}">${game.status === "final" ? "Final" : "Parcial"}</span></div><h4>${esc(game.nome)}</h4><p>${done} de ${total} resultados confirmados</p><div class="game-progress"><span style="width:${total ? (done / total) * 100 : 0}%"></span></div></button>${isAdmin() && encounterOpen() ? `<div class="game-card-actions"><button class="text-button" type="button" data-edit-game="${esc(game.id)}">Editar</button><button class="text-button text-button--danger" type="button" data-delete-game="${esc(game.id)}">Excluir</button></div>` : ""}</article>`;
-  }).join("") : `<div class="empty-state empty-state--wide"><strong>Nenhuma partida cadastrada</strong><span>O administrador pode abrir a primeira partida.</span></div>`;
+    }).join("")}</div></div>`;
+  };
+  const live = games.filter((game) => game.status !== "final");
+  const finished = games.filter((game) => game.status === "final");
+  $("gamesList").innerHTML = games.length ? `${renderGroup("Em andamento", live)}${renderGroup("Finalizadas recentemente", finished)}` : `<div class="empty-state empty-state--wide"><strong>Nenhuma partida encontrada</strong><span>Ajuste o filtro ou abra uma nova partida.</span></div>`;
   document.querySelectorAll("[data-game-id]").forEach((button) => button.addEventListener("click", () => { state.activeGameId = button.dataset.gameId; render(); }));
   document.querySelectorAll("[data-edit-game]").forEach((button) => button.addEventListener("click", () => editGame(button.dataset.editGame)));
   document.querySelectorAll("[data-delete-game]").forEach((button) => button.addEventListener("click", () => removeGame(button.dataset.deleteGame)));
+}
+
+function openTabletModal(gameId = state.activeGameId, playerId = null) {
+  if (!isAdmin()) return showToast("Entre como administrador para lançar os frames.", "error");
+  if (!encounterActive()) return showToast("Inicie ou reabra o encontro para lançar pontos.", "error");
+  if (!state.scoreDetailsAvailable) return showToast("Aplique v13-throw-mode.sql para habilitar o tablet.", "error");
+  const game = getGame(gameId);
+  if (!game) return showToast("Escolha uma partida antes de abrir o tablet.", "error");
+  state.tabletGameId = game.id;
+  const scores = gameScores(game.id);
+  state.tabletPlayerId = playerId || scores.find((score) => !score.finalizado)?.player_id || scores[0]?.player_id || null;
+  state.tabletSelectedPins = [];
+  renderTablet();
+  setModal("tabletModal", true);
+}
+
+function renderTablet() {
+  const gameSelect = $("tabletGame");
+  const playerSelect = $("tabletPlayer");
+  if (!gameSelect || !playerSelect) return;
+  const games = encounterGames();
+  const gameValue = state.tabletGameId;
+  gameSelect.innerHTML = games.map((game) => `<option value="${esc(game.id)}">${esc(game.nome)} · ${game.status === "final" ? "final" : "parcial"}</option>`).join("");
+  gameSelect.value = games.some((game) => game.id === gameValue) ? gameValue : games[0]?.id || "";
+  if (gameSelect.value !== state.tabletGameId) state.tabletGameId = gameSelect.value || null;
+  const players = gameScores(state.tabletGameId).map((score) => getPlayer(score.player_id)).filter(Boolean);
+  const playerValue = state.tabletPlayerId;
+  playerSelect.innerHTML = players.map((player) => `<option value="${esc(player.id)}">${esc(player.nome)}</option>`).join("");
+  playerSelect.value = players.some((player) => player.id === playerValue) ? playerValue : players[0]?.id || "";
+  if (playerSelect.value !== state.tabletPlayerId) state.tabletPlayerId = playerSelect.value || null;
+  const player = getPlayer(state.tabletPlayerId);
+  const score = gameScores(state.tabletGameId).find((item) => item.player_id === state.tabletPlayerId);
+  const result = bowlingFrames(tabletThrows());
+  $("tabletPlayerMeta").textContent = player ? `Pista ${gameLaneForPlayer(state.tabletGameId, player.id) || "—"} · ${score?.finalizado ? "confirmado" : "em lançamento"}` : "Escolha um jogador";
+  $("tabletScoreTotal").textContent = result.total.toLocaleString("pt-BR");
+  $("tabletScoreStatus").textContent = result.complete ? "Partida completa" : `${result.rolls.length} arremesso${result.rolls.length === 1 ? "" : "s"}`;
+  const currentFrame = tabletCurrentFrame();
+  $("tabletTurnLabel").textContent = result.complete ? "Todos os frames confirmados" : `Frame ${currentFrame.number} · ${currentFrame.throws.length ? "2º" : "1º"} arremesso`;
+  $("tabletScoreboard").innerHTML = result.frames.map((frame) => `<div class="frame-cell ${frame.complete ? "frame-cell--complete" : "frame-cell--current"}"><span>${frame.number}</span><strong>${frame.marks.join(" ") || "·"}</strong><small>${frame.complete ? frame.cumulative : "—"}</small></div>`).join("");
+  const standing = tabletStandingPins();
+  const selected = new Set(state.tabletSelectedPins);
+  $("tabletPinRack").innerHTML = Array.from({ length: 10 }, (_, index) => index + 1).map((pin) => `<button class="pin-button ${pin <= standing ? "pin-button--available" : "pin-button--disabled"} ${selected.has(pin) ? "pin-button--selected" : ""}" type="button" data-pin="${pin}" ${pin > standing ? "disabled" : ""} aria-label="Pino ${pin}">${pin}</button>`).join("");
+  $("tabletKeypad").innerHTML = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((value) => `<button class="keypad-button" type="button" data-pins-value="${value}" ${value > standing ? "disabled" : ""}>${value === 10 ? "X" : value}</button>`).join("");
+  $("tabletUndoButton").disabled = !result.rolls.length;
+  $("tabletRegisterButton").disabled = !state.tabletSelectedPins.length && state.tabletSelectedPins.length !== 0;
+  $("tabletRegisterButton").textContent = result.complete ? "Confirmar partida" : "Registrar arremesso";
+  $("tabletThrowLog").innerHTML = result.rolls.length ? result.rolls.map((value, index) => `<span>${index + 1}. ${value === 10 ? "X" : value}</span>`).join("") : "Nenhum arremesso registrado";
+  $("tabletReason").value = $("tabletReason").value || "Lançamento no tablet";
+}
+
+function selectTabletPins(value) {
+  const count = Number(value);
+  if (!Number.isInteger(count) || count < 0) return;
+  tabletSetPins(count);
+}
+
+function toggleTabletPin(pin) {
+  if (state.tabletSelectedPins.includes(pin)) state.tabletSelectedPins = state.tabletSelectedPins.filter((value) => value !== pin);
+  else if (state.tabletSelectedPins.length < tabletStandingPins()) state.tabletSelectedPins = [...state.tabletSelectedPins, pin];
+  renderTablet();
+}
+
+async function saveTabletThrow() {
+  if (!state.tabletGameId || !state.tabletPlayerId) return;
+  const count = state.tabletSelectedPins.length;
+  if (count > tabletStandingPins()) return showToast("A quantidade de pinos excede o que resta no frame.", "error");
+  const detail = tabletDetail();
+  const throws = [...tabletThrows(), count];
+  const complete = bowlingFrames(throws).complete;
+  const reason = $("tabletReason").value.trim() || "Lançamento no tablet";
+  const { error } = await client.rpc("save_throw_score", { p_game_id: state.tabletGameId, p_player_id: state.tabletPlayerId, p_throws: throws, p_pin_masks: [...(detail?.pin_masks || []), state.tabletSelectedPins], p_finalized: complete, p_reason: reason });
+  if (error) return showToast(error.message.includes("function") || error.code === "42883" ? "Aplique v13-throw-mode.sql no Supabase para usar o tablet." : error.message, "error");
+  state.tabletSelectedPins = [];
+  await loadData(); render();
+  showToast(complete ? "Partida confirmada para este jogador." : "Arremesso registrado.", "success");
+}
+
+async function undoTabletThrow() {
+  const throws = tabletThrows();
+  if (!throws.length) return;
+  const detail = tabletDetail();
+  const nextThrows = throws.slice(0, -1);
+  const nextMasks = (detail?.pin_masks || []).slice(0, -1);
+  const { error } = await client.rpc("save_throw_score", { p_game_id: state.tabletGameId, p_player_id: state.tabletPlayerId, p_throws: nextThrows, p_pin_masks: nextMasks, p_finalized: false, p_reason: "Desfazer último arremesso" });
+  if (error) return showToast("Não foi possível desfazer o arremesso.", "error");
+  state.tabletSelectedPins = [];
+  await loadData(); render();
+  showToast("Último arremesso desfeito.", "success");
 }
 
 function renderPlayerSelection() {
@@ -1432,13 +1646,22 @@ function openApprovalsModal() { renderApprovals(); setModal("approvalsModal", tr
 function renderScoreHistory() {
   const gameIds = new Set(encounterGames().map((game) => game.id));
   const changes = state.scoreChanges.filter((change) => gameIds.has(change.game_id));
-  $("scoreHistoryList").innerHTML = changes.length ? changes.map((change, index) => {
+  const throwChanges = state.throwChanges.filter((change) => gameIds.has(change.game_id));
+  const scoreRows = changes.map((change, index) => {
     const player = getPlayer(change.player_id);
     const game = getGame(change.game_id);
     const actor = state.profiles.find((profile) => profile.id === change.actor_id)?.nome || (change.actor_id === state.session?.user?.id ? "Você" : "Administrador");
     const canUndo = encounterActive() && !changes.slice(0, index).some((newer) => newer.score_id === change.score_id);
     return `<div class="history-row"><div><strong>${esc(player?.nome || "Jogador")}</strong><small>${esc(game?.nome || "Partida")} · ${fmtDate(change.changed_at)} · ${esc(actor)}</small><span>${change.previous_points ?? "—"} → ${change.new_points ?? "—"}${change.previous_finalized !== change.new_finalized ? ` · ${change.new_finalized ? "confirmado" : "pendente"}` : ""}</span></div>${canUndo ? `<button class="text-button" type="button" data-undo-change="${change.id}">Desfazer</button>` : ""}</div>`;
-  }).join("") : `<p class="empty-inline">Nenhuma alteração registrada.</p>`;
+  });
+  const throwRows = throwChanges.map((change) => {
+    const player = getPlayer(change.player_id);
+    const game = getGame(change.game_id);
+    const actor = state.profiles.find((profile) => profile.id === change.actor_id)?.nome || (change.actor_id === state.session?.user?.id ? "Você" : "Administrador");
+    return `<div class="history-row"><div><strong>${esc(player?.nome || "Jogador")}</strong><small>${esc(game?.nome || "Partida")} · ${fmtDate(change.changed_at)} · ${esc(actor)}</small><span>Arremessos: ${change.previous_throws?.length || 0} → ${change.new_throws?.length || 0} · ${esc(change.reason || "Correção")}</span></div></div>`;
+  });
+  const rows = [...scoreRows, ...throwRows];
+  $("scoreHistoryList").innerHTML = rows.length ? rows.join("") : `<p class="empty-inline">Nenhuma alteração registrada.</p>`;
   $("scoreHistoryList").querySelectorAll("[data-undo-change]").forEach((button) => button.addEventListener("click", () => undoScoreChange(Number(button.dataset.undoChange))));
 }
 
@@ -1820,6 +2043,15 @@ function bindEvents() {
   $("recoverySignOut").addEventListener("click", signOut);
   $("recoveryModal").addEventListener("cancel", (event) => event.preventDefault());
   $("authButton").addEventListener("click", openAuth); $("registerButton").addEventListener("click", openRegister); $("profileButton").addEventListener("click", openProfileModal); $("photoButton").addEventListener("click", openPhotoModal); $("newGameButton").addEventListener("click", openGameModal);
+  $("tabletButton").addEventListener("click", () => openTabletModal());
+  $("tabletGame").addEventListener("change", (event) => { state.tabletGameId = event.target.value; state.tabletPlayerId = null; state.tabletSelectedPins = []; renderTablet(); });
+  $("tabletPlayer").addEventListener("change", (event) => { state.tabletPlayerId = event.target.value; state.tabletSelectedPins = []; renderTablet(); });
+  $("tabletPinRack").addEventListener("click", (event) => { const button = event.target.closest("[data-pin]"); if (button) toggleTabletPin(Number(button.dataset.pin)); });
+  $("tabletKeypad").addEventListener("click", (event) => { const button = event.target.closest("[data-pins-value]"); if (button) selectTabletPins(button.dataset.pinsValue); });
+  $("tabletStrikeButton").addEventListener("click", () => tabletSetPins(10));
+  $("tabletSpareButton").addEventListener("click", () => tabletSetPins(tabletStandingPins()));
+  $("tabletRegisterButton").addEventListener("click", saveTabletThrow);
+  $("tabletUndoButton").addEventListener("click", undoTabletThrow);
   $("gameForm").addEventListener("submit", createGame); $("authForm").addEventListener("submit", submitAuth); $("registerForm").addEventListener("submit", submitRegister); $("profileForm").addEventListener("submit", submitProfile); $("profilePhoto").addEventListener("change", profilePhotoSelected); $("profileCamera").addEventListener("change", profilePhotoSelected); $("playersForm").addEventListener("click", (event) => { if (event.target.id === "addPlayerButton") addPlayer(); }); $("cancelPlayerEditButton").addEventListener("click", cancelPlayerEdit);
   $("currentGameSelect").addEventListener("click", () => $("historico").scrollIntoView({ behavior: "smooth", block: "start" }));
   $("saveLaneButton").addEventListener("click", saveLane);
@@ -1832,6 +2064,8 @@ function bindEvents() {
   $("shareResultButton").addEventListener("click", shareResultCard);
   $("rankingLane").addEventListener("change", renderLeaderboard);
   $("rankingMetric").addEventListener("change", renderLeaderboard);
+  $("gameHistoryFilter").addEventListener("change", renderGames);
+  $("gameHistorySearch").addEventListener("input", renderGames);
   $("photoForm").addEventListener("submit", confirmPhotoUpdate); $("photoInput").addEventListener("change", loadPhoto); $("photoLane").addEventListener("change", changeReviewContext); $("photoGame").addEventListener("change", changeReviewContext); $("reviewTable").addEventListener("input", markReviewEdited); $("reviewTable").addEventListener("change", markReviewEdited); $("runOcrButton").addEventListener("click", runOcr); $("clearCropButton").addEventListener("click", () => { state.crop = null; drawCanvas(); });
   $("rotatePhotoButton").addEventListener("click", () => { state.photoRotation = (state.photoRotation + 90) % 360; state.crop = null; updatePhotoPreview(); });
   $("photoPanButton").addEventListener("click", () => { state.photoPanMode = !state.photoPanMode; applyPhotoInteractionMode(); });

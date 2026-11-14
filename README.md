@@ -19,11 +19,12 @@ Abra `http://localhost:4173`. Sem uma publishable key preenchida, a interface pe
 5. Execute [`management.sql`](management.sql) para habilitar edição e exclusão administrativa de pistas, partidas, resultados, jogadores e contas.
 6. Execute [`public-ranking-photos.sql`](public-ranking-photos.sql) e imediatamente [`v12-profile-privacy.sql`](v12-profile-privacy.sql). A segunda restringe a leitura pública às fotos aprovadas, vinculadas e autorizadas pelo dono; não publique uma versão intermediária da interface entre as duas migrações.
 7. Execute [`encounters.sql`](encounters.sql) e depois [`competition.sql`](competition.sql). A primeira migração reúne os dados existentes em um encontro inicial ativo, registra a pista em cada pontuação e cria preparação, encerramento e reabertura; a segunda habilita equipes, torneio e palpites. Ensaie em transação com `ROLLBACK` no projeto antes da aplicação.
-8. Crie a conta do administrador em Authentication → Users.
-9. Marque o usuário com `app_metadata.role = "admin"` usando o SQL comentado no final de `schema.sql` (ou pelo fluxo administrativo equivalente). O frontend não confia em um campo editável pelo navegador. Se o administrador também jogar, aprove e vincule seu perfil ao jogador correspondente.
-10. Copie a Project URL e a Publishable Key para [`supabase-config.js`](supabase-config.js). A URL e a publishable/anon key podem estar no navegador; nunca coloque `service_role` no repositório.
-11. No Storage, edite o bucket privado `profile-photos` e restrinja os tipos a JPEG, PNG e WebP e o tamanho a 5 MB. O navegador reduz fotos grandes e converte formatos que conseguir abrir para JPEG antes do envio; o bucket aplica os limites no servidor.
-12. Publique a pasta raiz na branch `main` pelo GitHub Pages.
+8. Execute [`v13-throw-mode.sql`](v13-throw-mode.sql) para habilitar o Tablet na pista, scorecard por frame e histórico granular dos arremessos. A migração é aditiva e mantém os totais históricos existentes compatíveis.
+9. Crie a conta do administrador em Authentication → Users.
+10. Marque o usuário com `app_metadata.role = "admin"` usando o SQL comentado no final de `schema.sql` (ou pelo fluxo administrativo equivalente). O frontend não confia em um campo editável pelo navegador. Se o administrador também jogar, aprove e vincule seu perfil ao jogador correspondente.
+11. Copie a Project URL e a Publishable Key para [`supabase-config.js`](supabase-config.js). A URL e a publishable/anon key podem estar no navegador; nunca coloque `service_role` no repositório.
+12. No Storage, edite o bucket privado `profile-photos` e restrinja os tipos a JPEG, PNG e WebP e o tamanho a 5 MB. O navegador reduz fotos grandes e converte formatos que conseguir abrir para JPEG antes do envio; o bucket aplica os limites no servidor.
+13. Publique a pasta raiz na branch `main` pelo GitHub Pages.
 
 As políticas permitem leitura pública de jogadores, partidas, pontos e somente fotos de perfis aprovados, vinculados e com autorização explícita. A escrita do placar exige um usuário autenticado com `app_metadata.role = "admin"` e sessão de login com senha. A foto do placar é processada localmente com Tesseract.js e não é enviada ao Supabase.
 
@@ -58,8 +59,8 @@ O cadastro público usa `auth.users` + `public.profiles`: qualquer pessoa pode c
 node tests/app.test.cjs
 ```
 
-Os testes cobrem OCR, conferência, ranking isolado por encontro, pista histórica, chave eliminatória, perfil e importação transacional. As migrações SQL devem ser verificadas no projeto Supabase antes de publicar o frontend.
+Os testes cobrem OCR, conferência, ranking isolado por encontro, pista histórica, chave eliminatória, perfil, importação transacional e scorecard por frames. As migrações SQL devem ser verificadas no projeto Supabase antes de publicar o frontend.
 
-Depois de aplicar todas as migrações, execute [`tests/transaction-smoke.sql`](tests/transaction-smoke.sql), [`tests/management-smoke.sql`](tests/management-smoke.sql), [`tests/encounter-smoke.sql`](tests/encounter-smoke.sql) e [`tests/privacy-smoke.sql`](tests/privacy-smoke.sql) no SQL Editor. Cada teste cria seus próprios registros sintéticos e termina com `ROLLBACK`.
+Depois de aplicar todas as migrações, execute [`tests/transaction-smoke.sql`](tests/transaction-smoke.sql), [`tests/management-smoke.sql`](tests/management-smoke.sql), [`tests/encounter-smoke.sql`](tests/encounter-smoke.sql), [`tests/privacy-smoke.sql`](tests/privacy-smoke.sql) e [`tests/throw-mode-smoke.sql`](tests/throw-mode-smoke.sql) no SQL Editor. Cada teste cria seus próprios registros sintéticos e termina com `ROLLBACK`.
 
 O teste de encontro cobre pista histórica, rankings isolados, idempotência de criação, equipes, chave, bloqueio após encerramento e reabertura.

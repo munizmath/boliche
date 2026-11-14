@@ -23,7 +23,7 @@ function loadApp(client = null) {
   });
   const source = fs.readFileSync(path.join(__dirname, '..', 'app.js'), 'utf8')
     .replace(/\nstart\(\);\s*$/, '\n');
-  vm.runInContext(`${source}\nrender = () => {};\nrefreshAfterReconnect = async () => {};\nglobalThis.testApp = { state, loadData, buildSuggestions, playersOnLane, updateReviewTable, updatePhotoConfirmState, captureReviewDraft, markReviewEdited, changeReviewContext, runOcr, drawOrientedPhoto, applyPhotoInteractionMode, canvasPoint, renderLeaderboard, renderCurrentGame, renderRecords, shareResultCard, confirmPhotoUpdate, submitAuth, submitProfile, prepareProfilePhoto, cleanupUnusedProfilePhotos, officialTotals, encounterGames, bracketRounds, bracketWinner, balancedLaneDraw, buildResultsExport, downloadResults };`, context);
+  vm.runInContext(`${source}\nrender = () => {};\nrefreshAfterReconnect = async () => {};\nglobalThis.testApp = { state, loadData, buildSuggestions, playersOnLane, updateReviewTable, updatePhotoConfirmState, captureReviewDraft, markReviewEdited, changeReviewContext, runOcr, drawOrientedPhoto, applyPhotoInteractionMode, canvasPoint, renderLeaderboard, renderCurrentGame, renderRecords, shareResultCard, confirmPhotoUpdate, submitAuth, submitProfile, prepareProfilePhoto, cleanupUnusedProfilePhotos, officialTotals, encounterGames, bracketRounds, bracketWinner, balancedLaneDraw, buildResultsExport, downloadResults, bowlingFrames, tabletStandingPins };`, context);
   return { ...context.testApp, get, rows, document, context };
 }
 
@@ -574,4 +574,24 @@ test('sessão expirada informa que é preciso entrar novamente antes do upload',
   await app.submitProfile({ preventDefault() {} });
   assert.equal(app.get('profileError').hidden, false);
   assert.match(app.get('profileError').textContent, /sessão expirou/);
+});
+
+test('scorecard calcula jogo perfeito e preenche os dez frames', () => {
+  const app = loadApp();
+  const result = app.bowlingFrames(Array(12).fill(10));
+  assert.equal(result.complete, true);
+  assert.equal(result.total, 300);
+  assert.equal(result.frames.length, 10);
+  assert.equal(result.frames[9].cumulative, 300);
+});
+
+test('scorecard preserva lançamento parcial e calcula spare completo', () => {
+  const app = loadApp();
+  const partial = app.bowlingFrames([10, 4]);
+  assert.equal(partial.complete, false);
+  assert.equal(partial.frames[0].marks[0], 'X');
+  const spare = app.bowlingFrames([5, 5, 5, ...Array(17).fill(0)]);
+  assert.equal(spare.complete, true);
+  assert.equal(spare.frames[0].score, 15);
+  assert.equal(spare.total, 20);
 });
