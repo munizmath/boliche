@@ -1,6 +1,6 @@
 # Jogatina dos Amigos
 
-Placar compartilhado em HTML, CSS e JavaScript puro para encontros de boliche, quiz e gincana. No boliche, o administrador pode conferir fotografias das pistas antes de publicar os pontos.
+Placar compartilhado em HTML, CSS e JavaScript puro para encontros de boliche, quiz, gincana, confrontos por sets, pinball, minigolfe, tempo e dardos 501. No boliche, o administrador pode conferir fotografias das pistas antes de publicar os pontos.
 
 ## Executar localmente
 
@@ -40,7 +40,7 @@ O cadastro público usa `auth.users` + `public.profiles`: qualquer pessoa pode c
 - Uma partida só fica `final` quando todos os resultados vinculados têm pontos e foram confirmados.
 - O ranking acumulado soma somente partidas `final`.
 - O ranking e a partida atual mostram a foto do jogador quando o perfil está aprovado e vinculado. A URL assinada é renovada ao voltar à página e periodicamente enquanto ela estiver aberta.
-- A navegação usa uma barra superior horizontal. No celular, os atalhos podem ser deslizados lateralmente.
+- No desktop, a navegação principal usa a barra superior. No celular, Placar, Histórico, Competições e Mais ficam na barra inferior.
 - O ranking oficial mostra um pódio. O perfil do jogador reúne foto, posição, recorde, média, vitórias, histórico e gráfico de evolução.
 - A opção de compartilhar pode gerar uma imagem PNG com o pódio e a classificação oficial; enquanto não houver partida finalizada, essa imagem não é gerada.
 - A foto do placar pode ser girada, ampliada e ter o contraste ajustado antes do recorte e da leitura OCR. No celular, o botão alterna entre mover a imagem ampliada e recortar; os pontos continuam sujeitos à conferência.
@@ -50,8 +50,8 @@ O cadastro público usa `auth.users` + `public.profiles`: qualquer pessoa pode c
 - O manifesto e o service worker permitem instalar a interface como PWA. O cache cobre apenas arquivos do site; resultados e autenticação continuam exigindo conexão com o Supabase.
 - O administrador pode renomear ou remover pistas vazias, editar participantes e partidas, limpar pontuações e excluir partidas/jogadores. O ranking oficial é calculado a partir dos pontos das partidas finalizadas; correções e exclusões o recalculam. Excluir um jogador ou partida apaga seus resultados e registros de alteração.
 - Cada encontro tem participantes, partidas e ranking próprios. O administrador prepara o encontro, inicia a competição, encerra com todas as partidas concluídas e pode reabrir para correções. A pista fica gravada em cada resultado da partida; mudar a pista padrão do cadastro não altera o histórico. A capacidade de cada pista é configurável, e o sorteio distribui jogadores de modo equilibrado sem ultrapassá-la.
-- Encontros novos podem usar quiz ou gincana. O administrador define a quantidade de rodadas e um limite de pontos por rodada; zero significa sem limite configurado. O banco consolida as rodadas nos resultados da partida, preservando o fluxo de boliche e seu scorecard. O formulário salva apenas os campos editados e usa `save_round_score_if_current` para rejeitar alterações concorrentes; os recordes históricos comparam somente regras equivalentes. O módulo [`game-rules.js`](game-rules.js) contém também regras determinísticas para outras modalidades, ainda sem cadastro ou persistência próprios.
-- O botão **Jogo**, acima do placar, reúne os encontros por Boliche, Quiz e Gincana. Visitantes podem abrir qualquer encontro existente; o administrador pode criar outro encontro diretamente da modalidade escolhida. O tipo de um encontro já criado permanece fixo para preservar os resultados. O módulo [`game-presentations.js`](game-presentations.js) separa a apresentação dessas modalidades: boliche mostra pistas, Quiz/Gincana mostram rodadas. As demais propostas aparecem identificadas como indisponíveis para uso.
+- Encontros de quiz ou gincana possuem rodadas com limite configurável. O banco consolida os resultados, e `save_round_score_if_current` rejeita alterações concorrentes; recordes históricos comparam somente regras equivalentes.
+- O botão **Jogo** reúne os encontros por modalidade. O tipo e as regras de um encontro com resultados permanecem fixos. Boliche mostra pistas e oferece OCR/tablet; Quiz/Gincana mostram rodadas; as demais modalidades usam formulários e feeds próprios para sets, valores individuais ou dardos. Os registros de pinball são lidos como texto decimal exato.
 - O ranking do encontro alterna entre pontos acumulados, média, melhor partida e quantidade de partidas; mostra quantas partidas cada pessoa jogou e permite filtrar pela pista usada naquela partida. A partida atual exibe por pista os totais de participantes, pontos informados, confirmados, pendentes e o percentual.
 - CSV em UTF-8 com BOM e delimitador `;`, e JSON com `schema_version`, exportam todos os encontros, participantes, partidas, pistas por participação, pontos e rankings consolidados. Textos de CSV são protegidos contra interpretação como fórmulas.
 - Equipes próprias do encontro têm classificação por soma ou média de seus integrantes, e um jogador não pode estar em duas equipes no mesmo encontro. A chave eliminatória usa quatro ou oito jogadores e resultados reais de até três rodadas, com desempate pela posição na chave configurada pelo administrador. Palpites de participantes aprovados são feitos para o vencedor do encontro durante a preparação ou até o prazo definido; o banco bloqueia palpites tardios. Recordes históricos e modo telão, com alternância entre ranking oficial e provisório, completam a visualização.
@@ -63,7 +63,7 @@ O cadastro público usa `auth.users` + `public.profiles`: qualquer pessoa pode c
 for test_file in tests/*.test.cjs; do node "$test_file"; done
 ```
 
-Os testes cobrem OCR, conferência, ranking isolado por encontro, pista histórica, chave eliminatória, perfil, importação transacional e scorecard por frames. As migrações SQL devem ser verificadas no projeto Supabase antes de publicar o frontend.
+Os testes cobrem OCR, conferência, ranking isolado por encontro, pista histórica, chave eliminatória, perfil, importação transacional, scorecard por frames e regras dos jogos adicionais. Os testes JavaScript não substituem a execução dos smokes SQL no Supabase.
 
 Depois de aplicar todas as migrações, execute [`tests/transaction-smoke.sql`](tests/transaction-smoke.sql), [`tests/management-smoke.sql`](tests/management-smoke.sql), [`tests/encounter-smoke.sql`](tests/encounter-smoke.sql), [`tests/privacy-smoke.sql`](tests/privacy-smoke.sql), [`tests/throw-mode-smoke.sql`](tests/throw-mode-smoke.sql), [`tests/multigame-smoke.sql`](tests/multigame-smoke.sql) e [`tests/advanced-game-modes-smoke.sql`](tests/advanced-game-modes-smoke.sql) no SQL Editor. Cada teste cria seus próprios registros sintéticos e termina com `ROLLBACK`.
 
