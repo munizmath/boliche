@@ -115,7 +115,10 @@ function isRoundBased(encounter = activeEncounter()) { return Boolean(getGameMod
 function historicalModeKey(encounter) {
   const mode = getGameMode(encounter);
   const family = ["boliche", "bowling"].includes(mode.id) ? "boliche" : mode.id;
-  return `${family}:${mode.unit}`;
+  if (!mode.roundBased) return `${family}:${mode.unit}`;
+  const rules = encounterRules(encounter);
+  const ruleKey = JSON.stringify(Object.keys(rules).sort().map((key) => [key, rules[key]]));
+  return `${family}:${mode.unit}:${encounter?.rules_version ?? 1}:${ruleKey}`;
 }
 function encounterRules(encounter = activeEncounter()) { return encounter?.rules_config && typeof encounter.rules_config === "object" ? encounter.rules_config : {}; }
 function configuredRoundCount(encounter = activeEncounter()) {
@@ -708,11 +711,11 @@ function captureRoundDraft(gameIdOverride = null, roundNoOverride = null) {
     const prior = state.roundDraft.get(key);
     const points = pointsInput.value;
     const finalized = Boolean(finalizedInput.checked);
-    const basePoints = prior?.manual ? prior.basePoints : (existing ? roundPoints(existing) : null);
-    const baseFinalized = prior?.manual ? prior.baseFinalized : roundFinalized(existing);
+    const basePoints = prior?.manual ? prior.basePoints : row.dataset.basePoints !== undefined ? (row.dataset.basePoints === "" ? null : row.dataset.basePoints) : (existing ? roundPoints(existing) : null);
+    const baseFinalized = prior?.manual ? prior.baseFinalized : row.dataset.baseFinalized !== undefined ? row.dataset.baseFinalized === "true" : roundFinalized(existing);
     const changedFromServer = String(points) !== String(basePoints ?? "") || finalized !== Boolean(baseFinalized);
-    if (!prior?.manual && !changedFromServer) { state.roundDraft.delete(key); return; }
-    state.roundDraft.set(key, { key, gameId, roundNo, points, finalized, manual: Boolean(prior?.manual || changedFromServer), basePoints, baseFinalized });
+    if (!changedFromServer) { state.roundDraft.delete(key); return; }
+    state.roundDraft.set(key, { key, gameId, roundNo, points, finalized, manual: true, basePoints, baseFinalized });
   });
 }
 
@@ -728,11 +731,16 @@ function markRoundEdited(event) {
   const existing = state.roundScores.find((item) => item.game_id === gameId && Number(item.round_no) === roundNo && item.player_id === playerId);
   const key = roundScoreKey(gameId, roundNo, playerId);
   const previousDraft = state.roundDraft.get(key);
+  const points = row.querySelector(".round-points")?.value ?? "";
+  const finalized = Boolean(row.querySelector(".round-final")?.checked);
+  const basePoints = previousDraft?.manual ? previousDraft.basePoints : row.dataset.basePoints !== undefined ? (row.dataset.basePoints === "" ? null : row.dataset.basePoints) : (existing ? roundPoints(existing) : null);
+  const baseFinalized = previousDraft?.manual ? previousDraft.baseFinalized : row.dataset.baseFinalized !== undefined ? row.dataset.baseFinalized === "true" : roundFinalized(existing);
+  if (String(points) === String(basePoints ?? "") && finalized === Boolean(baseFinalized)) {
+    state.roundDraft.delete(key);
+    return;
+  }
   state.roundDraft.set(key, {
-    key, gameId, roundNo, points: row.querySelector(".round-points")?.value ?? "",
-    finalized: Boolean(row.querySelector(".round-final")?.checked), manual: true,
-    basePoints: previousDraft?.manual ? previousDraft.basePoints : (existing ? roundPoints(existing) : null),
-    baseFinalized: previousDraft?.manual ? previousDraft.baseFinalized : roundFinalized(existing),
+    key, gameId, roundNo, points, finalized, manual: true, basePoints, baseFinalized,
   });
   if ($("roundError")) $("roundError").hidden = true;
 }
@@ -793,7 +801,7 @@ function renderRoundResults() {
       const finalized = draft?.manual ? draft.finalized : roundFinalized(existing);
       const gameTotal = score.pontos == null ? "aguardando banco" : `${Number(score.pontos).toLocaleString("pt-BR")} ${mode.unit}`;
       const clearButton = existing && isAdmin() && encounterActive() ? `<button class="text-button text-button--danger" type="button" data-clear-round="${esc(player.id)}">Limpar rodada</button>` : "";
-      return `<div class="round-result-row" data-round-player="${esc(player.id)}"><div class="round-result-player"><strong>${esc(player.nome)}</strong><small>Total do jogo: ${esc(gameTotal)}</small></div><label>Pontos da rodada ${roundNo}<input class="round-points" type="number" min="0"${max > 0 ? ` max="${max}"` : ""} step="1" inputmode="numeric" value="${value === "" ? "" : esc(value)}" aria-label="Pontos da rodada ${roundNo} de ${esc(player.nome)}" /></label><label class="round-confirm"><input class="round-final" type="checkbox" ${finalized ? "checked" : ""} /> Confirmar</label>${clearButton}</div>`;
+      return `<div class="round-result-row" data-round-player="${esc(player.id)}" data-base-points="${esc(existing ? String(roundPoints(existing) ?? "") : "")}" data-base-finalized="${roundFinalized(existing)}"><div class="round-result-player"><strong>${esc(player.nome)}</strong><small>Total do jogo: ${esc(gameTotal)}</small></div><label>Pontos da rodada ${roundNo}<input class="round-points" type="number" min="0"${max > 0 ? ` max="${max}"` : ""} step="1" inputmode="numeric" value="${value === "" ? "" : esc(value)}" aria-label="Pontos da rodada ${roundNo} de ${esc(player.nome)}" /></label><label class="round-confirm"><input class="round-final" type="checkbox" ${finalized ? "checked" : ""} /> Confirmar</label>${clearButton}</div>`;
     }).join("")
     : `<p class="empty-inline">${!rulesCount ? "Configure a quantidade de rodadas para este encontro." : !game ? "Crie uma partida e vincule participantes antes de lançar resultados." : "Nenhum participante vinculado à partida."}</p>`;
   const error = $("roundError");
@@ -820,6 +828,8 @@ async function saveRoundScores(event) {
   if (!resultRows.length) return fail("Não há participantes para salvar nesta rodada.");
   const updates = [];
   for (const row of resultRows) {
+    const key = roundScoreKey(gameId, roundNo, row.dataset.roundPlayer);
+    if (!state.roundDraft.get(key)?.manual) continue;
     const raw = row.querySelector(".round-points")?.value?.trim() ?? "";
     if (raw === "") continue;
     const points = Number(raw);
@@ -831,7 +841,7 @@ async function saveRoundScores(event) {
     const existing = state.roundScores.find((item) => item.game_id === gameId && Number(item.round_no) === roundNo && item.player_id === playerId);
     const existingPoints = roundPoints(existing);
     if (existing && existingPoints != null && Number(existingPoints) === points && roundFinalized(existing) === finalized) continue;
-    updates.push({ playerId, points, finalized, key: roundScoreKey(gameId, roundNo, playerId) });
+    updates.push({ playerId, points, finalized, key });
   }
   if (!updates.length) return fail("Nenhuma alteração nova nesta rodada.");
   if (state.roundConflict && !window.confirm("Os resultados mudaram em outro aparelho. Salvar seus valores locais sobre os atuais?")) return;
@@ -1004,7 +1014,11 @@ function renderTeams() {
     const sum = members.reduce((value, player) => value + (totals.get(player.id) || 0), 0);
     return { team, members, value: team.metric === "average" ? sum / (members.length || 1) : sum };
   }).sort((a, b) => b.value - a.value || a.team.name.localeCompare(b.team.name, "pt-BR"));
-  $("teamsList").innerHTML = ranked.length ? ranked.map(({ team, members, value }, index) => `<div class="extra-row"><strong>${index + 1}º ${esc(team.name)}</strong><span>${value.toFixed(team.metric === "average" ? 1 : 0).replace(".", ",")} ${team.metric === "average" ? "de média" : "pontos"}</span><small>${esc(members.map((player) => player.nome).join(", "))}</small></div>`).join("") : `<p class="empty-inline">Nenhuma equipe neste encontro.</p>`;
+  let position = 0;
+  $("teamsList").innerHTML = ranked.length ? ranked.map(({ team, members, value }, index) => {
+    if (!index || value !== ranked[index - 1].value) position = index + 1;
+    return `<div class="extra-row"><strong>${position}º ${esc(team.name)}</strong><span>${value.toFixed(team.metric === "average" ? 1 : 0).replace(".", ",")} ${team.metric === "average" ? "de média" : "pontos"}</span><small>${esc(members.map((player) => player.nome).join(", "))}</small></div>`;
+  }).join("") : `<p class="empty-inline">Nenhuma equipe neste encontro.</p>`;
 }
 
 function bracketWinner(gameId, first, second, rule = "higher_seed") {
@@ -1084,7 +1098,7 @@ function renderRecords() {
   scores.forEach((score) => appearanceByPlayer.set(score.player_id, (appearanceByPlayer.get(score.player_id) || 0) + 1));
   const appearanceTop = appearanceByPlayer.size ? Math.max(...appearanceByPlayer.values()) : null;
   const appearanceRows = appearanceTop == null ? [] : [...appearanceByPlayer].filter(([, count]) => count === appearanceTop);
-  $("groupRecords").innerHTML = scores.length ? `<p class="section-meta">Histórico de ${esc(mode.name)} · unidade: ${esc(mode.unit)} · ${matchingEncounters.length} ${matchingEncounters.length === 1 ? "encontro" : "encontros"} compatíveis</p><div class="extra-row"><strong>Maior pontuação em uma partida</strong><span>${highValue} ${esc(mode.unit)} · ${recordNames(highRows)}</span></div><div class="extra-row"><strong>Maior total em um encontro</strong><span>${biggestTotalValue} ${esc(mode.unit)} · ${encounterPlayerNames(biggestTotal)}</span></div><div class="extra-row"><strong>Melhor média em um encontro</strong><span>${bestAverageValue.toFixed(1).replace(".", ",")} ${esc(mode.unit)} · ${encounterPlayerNames(bestAverage)}</span></div><div class="extra-row"><strong>Maior evolução</strong><span>${growth.length && growthValue > 0 ? `+${growthValue} ${esc(mode.unit)} · ${growth.map(({ score, encounter: recordEncounter }) => `${esc(getPlayer(score.player_id)?.nome || "Jogador")} · ${esc(recordEncounter?.nome || "Encontro")}`).join(", ")}` : "Aguardando duas partidas no mesmo encontro"}</span></div><div class="extra-row"><strong>Mais vitórias isoladas</strong><span>${winLeaders.length ? `${winHigh} · ${winLeaders.map(([id]) => esc(getPlayer(id)?.nome || "Jogador")).join(", ")}` : "Nenhuma vitória isolada"}</span></div><div class="extra-row"><strong>Mais participações</strong><span>${appearanceRows.length ? `${appearanceTop} · ${appearanceRows.map(([id]) => esc(getPlayer(id)?.nome || "Jogador")).join(", ")}` : "—"}</span></div><small>Somente partidas finais e pontos confirmados de encontros da mesma modalidade e unidade. Empates permanecem compartilhados; vitórias contam apenas quando há líder isolado.</small>` : `<p class="empty-inline">${encounter ? `Ainda não há resultados finais de ${esc(mode.name)} (${esc(mode.unit)}).` : "Selecione um encontro para ver os recordes."}</p>`;
+  $("groupRecords").innerHTML = scores.length ? `<p class="section-meta">Histórico de ${esc(mode.name)} · unidade: ${esc(mode.unit)} · ${matchingEncounters.length} ${matchingEncounters.length === 1 ? "encontro" : "encontros"} compatíveis</p><div class="extra-row"><strong>Maior pontuação em uma partida</strong><span>${highValue} ${esc(mode.unit)} · ${recordNames(highRows)}</span></div><div class="extra-row"><strong>Maior total em um encontro</strong><span>${biggestTotalValue} ${esc(mode.unit)} · ${encounterPlayerNames(biggestTotal)}</span></div><div class="extra-row"><strong>Melhor média em um encontro</strong><span>${bestAverageValue.toFixed(1).replace(".", ",")} ${esc(mode.unit)} · ${encounterPlayerNames(bestAverage)}</span></div><div class="extra-row"><strong>Maior evolução</strong><span>${growth.length && growthValue > 0 ? `+${growthValue} ${esc(mode.unit)} · ${growth.map(({ score, encounter: recordEncounter }) => `${esc(getPlayer(score.player_id)?.nome || "Jogador")} · ${esc(recordEncounter?.nome || "Encontro")}`).join(", ")}` : "Aguardando duas partidas no mesmo encontro"}</span></div><div class="extra-row"><strong>Mais vitórias isoladas</strong><span>${winLeaders.length ? `${winHigh} · ${winLeaders.map(([id]) => esc(getPlayer(id)?.nome || "Jogador")).join(", ")}` : "Nenhuma vitória isolada"}</span></div><div class="extra-row"><strong>Mais participações</strong><span>${appearanceRows.length ? `${appearanceTop} · ${appearanceRows.map(([id]) => esc(getPlayer(id)?.nome || "Jogador")).join(", ")}` : "—"}</span></div><small>Somente partidas finais e pontos confirmados de encontros com modalidade e regras comparáveis. Empates permanecem compartilhados; vitórias contam apenas quando há líder isolado.</small>` : `<p class="empty-inline">${encounter ? `Ainda não há resultados finais de ${esc(mode.name)} (${esc(mode.unit)}).` : "Selecione um encontro para ver os recordes."}</p>`;
 }
 
 function renderPredictions() {

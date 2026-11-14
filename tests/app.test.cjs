@@ -24,7 +24,7 @@ function loadApp(client = null) {
   });
   const source = fs.readFileSync(path.join(__dirname, '..', 'app.js'), 'utf8')
     .replace(/\nstart\(\);\s*$/, '\n');
-  vm.runInContext(`${source}\nconst appRender = render;\nrender = () => {};\nrefreshAfterReconnect = async () => {};\nglobalThis.testApp = { state, loadData, renderApp: appRender, buildSuggestions, playersOnLane, updateReviewTable, updatePhotoConfirmState, captureReviewDraft, markRoundEdited, markReviewEdited, changeReviewContext, runOcr, drawOrientedPhoto, applyPhotoInteractionMode, canvasPoint, renderLeaderboard, renderCurrentGame, renderRecords, renderScoreHistory, shareResultCard, confirmPhotoUpdate, submitAuth, submitProfile, prepareProfilePhoto, cleanupUnusedProfilePhotos, officialTotals, officialPosition, encounterGames, bracketRounds, bracketWinner, balancedLaneDraw, buildResultsExport, downloadResults, openEncounterModal, saveEncounter, renderEncounterRules, renderEncounterBar, openRoundModal, renderRoundModal, renderRoundResults, saveRoundScores, clearRoundScore, undoRoundScoreChange, getGameMode, isRoundBased, configuredRoundMax, rankScoreRows, bowlingFrames, tabletStandingPins };`, context);
+  vm.runInContext(`${source}\nconst appRender = render;\nrender = () => {};\nrefreshAfterReconnect = async () => {};\nglobalThis.testApp = { state, loadData, renderApp: appRender, buildSuggestions, playersOnLane, updateReviewTable, updatePhotoConfirmState, captureReviewDraft, markRoundEdited, markReviewEdited, changeReviewContext, runOcr, drawOrientedPhoto, applyPhotoInteractionMode, canvasPoint, renderLeaderboard, renderCurrentGame, renderTeams, renderRecords, renderScoreHistory, shareResultCard, confirmPhotoUpdate, submitAuth, submitProfile, prepareProfilePhoto, cleanupUnusedProfilePhotos, officialTotals, officialPosition, encounterGames, bracketRounds, bracketWinner, balancedLaneDraw, buildResultsExport, downloadResults, openEncounterModal, saveEncounter, renderEncounterRules, renderEncounterBar, openRoundModal, renderRoundModal, renderRoundResults, saveRoundScores, clearRoundScore, undoRoundScoreChange, getGameMode, isRoundBased, configuredRoundMax, rankScoreRows, bowlingFrames, tabletStandingPins };`, context);
   return { ...context.testApp, get, rows, document, context };
 }
 
@@ -320,6 +320,43 @@ test('recordes históricos somam encontros da mesma modalidade sem misturar quiz
   assert.doesNotMatch(output, /Gincana separada|Quiz Player|999/);
 });
 
+test('recordes de quiz usam somente encontros com regras comparáveis', () => {
+  const app = loadApp();
+  app.state.players = [{ id: 'ana', nome: 'Ana' }, { id: 'bia', nome: 'Bia' }];
+  app.state.encounters = [
+    { id: 'q1', nome: 'Quiz três rodadas', game_type: 'quiz', rules_version: 1, rules_config: { round_count: 3, max_points_per_round: 20 } },
+    { id: 'q2', nome: 'Quiz vinte rodadas', game_type: 'quiz', rules_version: 1, rules_config: { round_count: 20, max_points_per_round: 20 } },
+  ];
+  app.state.activeEncounterId = 'q1';
+  app.state.games = [
+    { id: 'g1', nome: 'Jogo curto', encounter_id: 'q1', status: 'final' },
+    { id: 'g2', nome: 'Jogo longo', encounter_id: 'q2', status: 'final' },
+  ];
+  app.state.scores = [
+    { game_id: 'g1', player_id: 'ana', pontos: 30, finalizado: true },
+    { game_id: 'g2', player_id: 'bia', pontos: 200, finalizado: true },
+  ];
+  app.renderRecords();
+  assert.match(app.get('groupRecords').innerHTML, /30 pontos/);
+  assert.doesNotMatch(app.get('groupRecords').innerHTML, /Quiz vinte rodadas|200 pontos/);
+});
+
+test('equipes empatadas compartilham a posição', () => {
+  const app = loadApp();
+  app.state.activeEncounterId = 'e';
+  app.state.encounters = [{ id: 'e', game_type: 'boliche' }];
+  app.state.players = [{ id: 'ana', nome: 'Ana' }, { id: 'bia', nome: 'Bia' }, { id: 'cai', nome: 'Caio' }];
+  app.state.encounterPlayers = app.state.players.map((player) => ({ encounter_id: 'e', player_id: player.id }));
+  app.state.teams = [{ id: 'a', encounter_id: 'e', name: 'A', metric: 'sum' }, { id: 'b', encounter_id: 'e', name: 'B', metric: 'sum' }, { id: 'c', encounter_id: 'e', name: 'C', metric: 'sum' }];
+  app.state.teamPlayers = [{ team_id: 'a', player_id: 'ana' }, { team_id: 'b', player_id: 'bia' }, { team_id: 'c', player_id: 'cai' }];
+  app.state.games = [{ id: 'g', encounter_id: 'e', status: 'final' }];
+  app.state.scores = [{ game_id: 'g', player_id: 'ana', pontos: 100, finalizado: true }, { game_id: 'g', player_id: 'bia', pontos: 100, finalizado: true }, { game_id: 'g', player_id: 'cai', pontos: 80, finalizado: true }];
+  app.renderTeams();
+  assert.match(app.get('teamsList').innerHTML, /1º A/);
+  assert.match(app.get('teamsList').innerHTML, /1º B/);
+  assert.match(app.get('teamsList').innerHTML, /3º C/);
+});
+
 test('carrega tipo e regras dos encontros junto com os resultados por rodada', async () => {
   const rows = {
     players: [{ id: 'ana', nome: 'Ana', pista: 'A' }], lanes: [],
@@ -502,6 +539,73 @@ test('rascunho da rodada sobrevive a render e atualização Realtime com conflit
   assert.equal(app.state.roundDraft.get('g:1:ana').points, '9');
   assert.match(app.get('roundResults').innerHTML, /value="9"/);
   assert.match(app.get('roundError').textContent, /rascunhos foram preservados/);
+});
+
+test('Realtime não recria rascunho nem reenvia pontuação intocada de outro jogador', async () => {
+  const calls = [];
+  const session = adminSession();
+  const data = {
+    players: [{ id: 'ana', nome: 'Ana' }, { id: 'bia', nome: 'Bia' }], lanes: [],
+    encounters: [{ id: 'e', nome: 'Quiz', data: '2026-11-14', status: 'active', game_type: 'quiz', rules_version: 1, rules_config: { round_count: 1, max_points_per_round: 0 } }],
+    encounter_players: [{ encounter_id: 'e', player_id: 'ana' }, { encounter_id: 'e', player_id: 'bia' }],
+    games: [{ id: 'g', nome: 'Quiz', encounter_id: 'e', status: 'partial' }],
+    scores: [{ game_id: 'g', player_id: 'ana', pontos: 27, finalizado: false }, { game_id: 'g', player_id: 'bia', pontos: 10, finalizado: false }],
+    round_scores: [{ game_id: 'g', player_id: 'ana', round_no: 1, points: 27, finalized: false }, { game_id: 'g', player_id: 'bia', round_no: 1, points: 10, finalized: false }],
+  };
+  const client = {
+    auth: { getSession: async () => ({ data: { session }, error: null }) },
+    rpc: async (name, args) => {
+      if (name === 'save_round_score') calls.push(args);
+      return { data: [], error: null };
+    },
+    from: (table) => {
+      const result = { data: data[table] || [], error: null };
+      const query = { select: () => query, order: () => query, eq: () => query, not: () => query, limit: () => query, then: (resolve, reject) => Promise.resolve(result).then(resolve, reject) };
+      return query;
+    },
+    storage: { from: () => ({ createSignedUrl: async () => ({ data: null, error: null }) }) },
+  };
+  const app = loadApp(client);
+  app.state.session = session;
+  app.state.encounters = data.encounters; app.state.activeEncounterId = 'e';
+  app.state.players = data.players; app.state.games = data.games; app.state.activeGameId = 'g';
+  app.state.scores = data.scores; app.state.roundGameId = 'g'; app.state.roundNo = 1;
+  app.state.roundScores = [{ game_id: 'g', player_id: 'ana', round_no: 1, points: 10, finalized: false }, { game_id: 'g', player_id: 'bia', round_no: 1, points: 10, finalized: false }];
+  app.get('roundModal').open = true; app.get('roundGame').value = 'g'; app.get('roundNumber').value = '1';
+  const ana = roundRow('ana', 10, false);
+  const bia = roundRow('bia', 12, false);
+  for (const row of [ana, bia]) { row.dataset.basePoints = '10'; row.dataset.baseFinalized = 'false'; }
+  bia.pointsInput.matches = (selector) => selector.includes('.round-points');
+  bia.pointsInput.closest = () => bia;
+  app.get('roundResults').querySelectorAll = () => [ana, bia];
+  app.markRoundEdited({ target: bia.pointsInput });
+
+  await app.loadData();
+  app.renderRoundModal();
+  assert.equal(app.state.roundConflict, false);
+  assert.equal(app.state.roundDraft.has('g:1:ana'), false);
+  assert.match(app.get('roundResults').innerHTML, /data-round-player="ana" data-base-points="27"[^>]*>.*value="27"/);
+  assert.match(app.get('roundResults').innerHTML, /data-round-player="bia"[^>]*>.*value="12"/);
+
+  app.context.loadData = async () => {};
+  await app.saveRoundScores({ preventDefault() {} });
+  assert.deepEqual(JSON.parse(JSON.stringify(calls)), [{ p_game_id: 'g', p_player_id: 'bia', p_round_no: 1, p_points: 12, p_finalized: false }]);
+});
+
+test('editar e voltar ao valor original não cria escrita após atualização remota', () => {
+  const app = loadApp();
+  app.state.roundGameId = 'g'; app.state.roundNo = 1;
+  app.state.roundScores = [{ game_id: 'g', player_id: 'ana', round_no: 1, points: 27, finalized: false }];
+  app.get('roundGame').value = 'g'; app.get('roundNumber').value = '1';
+  const row = roundRow('ana', 12, false);
+  row.dataset.basePoints = '10'; row.dataset.baseFinalized = 'false';
+  row.pointsInput.matches = (selector) => selector.includes('.round-points');
+  row.pointsInput.closest = () => row;
+  app.markRoundEdited({ target: row.pointsInput });
+  assert.equal(app.state.roundDraft.has('g:1:ana'), true);
+  row.pointsInput.value = '10';
+  app.markRoundEdited({ target: row.pointsInput });
+  assert.equal(app.state.roundDraft.has('g:1:ana'), false);
 });
 
 test('salva zero com save_round_score e ignora repetição idêntica', async () => {
