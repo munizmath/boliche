@@ -71,9 +71,15 @@ revoke all on function public.guard_encounter_integrity_markers()
 create or replace function public.mark_multigame_ever_scored()
 returns trigger language plpgsql security definer
 set search_path = pg_catalog, public as $$
-declare target_encounter_id uuid;
+declare
+  target_game_id uuid;
+  target_encounter_id uuid;
 begin
-  select g.encounter_id into target_encounter_id from public.games g where g.id=new.game_id;
+  if tg_op='DELETE' then target_game_id:=old.game_id;
+  else target_game_id:=new.game_id;
+  end if;
+  select g.encounter_id into target_encounter_id
+    from public.games g where g.id=target_game_id;
   if not found then return null; end if;
   update public.encounters e
      set multigame_ever_scored_at=coalesce(e.multigame_ever_scored_at,clock_timestamp())
@@ -85,6 +91,10 @@ $$;
 drop trigger if exists round_scores_mark_multigame_scored on public.round_scores;
 create trigger round_scores_mark_multigame_scored
   after insert or update of points, finalized on public.round_scores
+  for each row execute function public.mark_multigame_ever_scored();
+drop trigger if exists round_scores_mark_multigame_deleted on public.round_scores;
+create trigger round_scores_mark_multigame_deleted
+  after delete on public.round_scores
   for each row execute function public.mark_multigame_ever_scored();
 revoke all on function public.mark_multigame_ever_scored()
   from public, anon, authenticated, service_role;

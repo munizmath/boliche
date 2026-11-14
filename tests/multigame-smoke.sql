@@ -979,6 +979,12 @@ $$;
 set constraints teams_common_metric_guard immediate;
 
 -- Exclusão de encontro pontuado usa a cascata sem tentar editar equipes congeladas.
+-- O probe temporário cobre a reutilização da função por triggers avançados AFTER DELETE.
+reset role;
+create temporary table v16_mark_delete_probe(game_id uuid);
+create trigger v16_mark_delete_probe_after_delete
+  after delete on pg_temp.v16_mark_delete_probe
+  for each row execute function public.mark_multigame_ever_scored();
 do $$
 declare
   metric_test_id uuid;
@@ -988,7 +994,10 @@ begin
   select id into metric_test_id from public.encounters
    where request_id='00000000-0000-4000-8000-000000000461';
   select array_agg(id) into metric_team_ids from public.teams where encounter_id=metric_test_id;
-  perform public.activate_encounter(metric_test_id);
+  if exists (select 1 from public.encounters
+              where id=metric_test_id and multigame_ever_scored_at is not null) then
+    raise exception 'O cenário de DELETE deveria iniciar sem marcador';
+  end if;
   metric_game := public.create_encounter_game(
     metric_test_id, 'Partida a excluir com histórico',
     jsonb_build_array(jsonb_build_object(
@@ -997,6 +1006,13 @@ begin
     )),
     '00000000-0000-4000-8000-000000000463'
   );
+  insert into pg_temp.v16_mark_delete_probe(game_id) values (metric_game.id);
+  delete from pg_temp.v16_mark_delete_probe where game_id=metric_game.id;
+  if not exists (select 1 from public.encounters
+                  where id=metric_test_id and multigame_ever_scored_at is not null) then
+    raise exception 'DELETE não marcou o encontro usando OLD.game_id';
+  end if;
+  perform public.activate_encounter(metric_test_id);
   perform public.save_round_score(
     metric_game.id, '00000000-0000-4000-8000-000000000414'::uuid, 1, 7, true
   );
