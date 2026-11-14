@@ -96,10 +96,11 @@ function fixture(modeId, overrides = {}) {
   makePanel('advanced-status-match', ['p_game_id', 'p_player_id', 'p_status', 'p_expected_version'], statusForm);
   makePanel('advanced-status-darts', ['p_game_id', 'p_leg_no', 'p_player_id', 'p_status'], statusForm);
   let confirmResult = false;
+  const confirmCalls = [];
   const document = {
     getElementById: (id) => nodes.get(id) || null,
     createElement: (tag) => new Element(tag.toUpperCase()),
-    defaultView: { confirm: () => confirmResult },
+    defaultView: { confirm: (message) => { confirmCalls.push(message); return confirmResult; } },
   };
   const state = {
     games: [{ id: 'g1', encounter_id: 'e1', nome: 'Partida 1' }, { id: 'g2', encounter_id: 'e1', nome: 'Partida 2' }],
@@ -150,7 +151,7 @@ function fixture(modeId, overrides = {}) {
       return { value: raw, status, finalized };
     },
     toDartsRpcThrows: (list) => list.map((dart) => ({ score: dart.value * dart.multiplier, is_double: dart.multiplier === 2 })),
-    evaluateDartsTurn: (balance, list) => { if (balance < 1 || !list.length) throw new Error('Turno inválido'); return { balance }; },
+    evaluateDartsTurn: (balance, list) => { if (balance < 1 || !list.length) throw new Error('Turno inválido'); return { balance, throws: list }; },
   };
   const toasts = [];
   let reloads = 0;
@@ -172,7 +173,7 @@ function fixture(modeId, overrides = {}) {
     item.checked = checked;
     form(kind).emit('change', item);
   };
-  return { nodes, state, encounter, feeds, tables, calls, reads, controller, panel, control, set, check,
+  return { nodes, state, encounter, feeds, tables, calls, reads, confirmCalls, controller, panel, control, set, check,
     toasts, get reloads() { return reloads; }, setAdmin: (value) => { admin = value; },
     setConfirm: (value) => { confirmResult = value; }, setReadFailure: (error) => { readFailure = error; },
     setWriteFailure: (error) => { writeFailure = error; }, setReadGate: (promise) => { readGate = promise; } };
@@ -229,6 +230,25 @@ test('match status hydrates CAS version and writes DNF', async () => {
   });
 });
 
+test('match RPC prerequisites disable sets out of sequence and DNS after a confirmed set', async () => {
+  const f = fixture('sinuca');
+  f.tables.match_sets = [{ game_id: 'g1', set_no: 1, player_a_id: 'p1', player_b_id: 'p2',
+    score_a: 5, score_b: 2, confirmed: false, version: 1 }];
+  await f.controller.openScore();
+  f.set('p_set_no', '2');
+  f.set('p_score_a', '4');
+  f.set('p_score_b', '1');
+  assert.equal(f.nodes.get('advancedScoreSaveButton').disabled, true);
+  f.controller.close();
+  f.tables.match_sets[0].confirmed = true;
+  await f.controller.openStatus();
+  f.set('p_player_id', 'p1', 'status');
+  f.set('p_status', 'DNS', 'status');
+  assert.equal(f.nodes.get('advancedStatusSaveButton').disabled, true);
+  f.set('p_status', 'DNF', 'status');
+  assert.equal(f.nodes.get('advancedStatusSaveButton').disabled, false);
+});
+
 test('individual scores preserve exact decimal text and CAS; DNF clears value', async () => {
   const f = fixture('pinball');
   f.feeds.get_mode_player_scores = [{ game_id: 'g1', player_id: 'p1', value_text: '9007199254740993', status: 'active', finalized: true, version: 2 }];
@@ -277,13 +297,61 @@ test('context change requires explicit discard and restores selection on cancel'
   assert.equal(f.control('p_value').value, '1234');
   f.set('p_game_id', 'g2');
   assert.equal(f.control('p_game_id').value, 'g1');
+  assert.equal(f.confirmCalls.length, 2);
+  assert.match(f.confirmCalls[0], /Descartar as alterações não salvas/);
   f.setConfirm(true);
   f.set('p_player_id', 'p2');
   assert.equal(f.control('p_player_id').value, 'p2');
   assert.equal(f.control('p_value').value, '');
 });
 
-test('darts refresh loads leg players, sorts tables and writes start plus turn', async () => {
+test('unchanged set event and Realtime render retain a dirty match draft', async () => {
+  const f = fixture('pebolim');
+  await f.controller.openScore();
+  f.set('p_set_no', '1');
+  f.set('p_score_a', '10');
+  f.set('p_score_b', '8');
+  f.set('p_set_no', '1');
+  assert.equal(f.control('p_score_a').value, '10');
+  assert.equal(f.control('p_score_b').value, '8');
+  f.controller.render('g2');
+  assert.equal(f.control('p_game_id').value, 'g1');
+  assert.equal(f.control('p_score_a').value, '10');
+  f.set('p_set_no', '2', 'score', 'input');
+  assert.equal(f.nodes.get('advancedScoreSaveButton').disabled, true);
+  f.set('p_set_no', '2');
+  assert.equal(f.control('p_set_no').value, '1');
+  assert.equal(f.control('p_score_a').value, '10');
+  assert.equal(f.confirmCalls.length, 1);
+  f.setConfirm(true);
+  f.set('p_set_no', '2');
+  assert.equal(f.control('p_score_a').value, '');
+  assert.equal(f.control('p_score_b').value, '');
+  assert.equal(f.control('p_expected_version').value, '');
+});
+
+test('leg change cancels without loss and clears turn fields only after confirmation', async () => {
+  const f = fixture('dardos_501');
+  await f.controller.openScore();
+  f.set('p_starter_player_id', 'p1');
+  f.set('p_player_id', 'p1');
+  f.set('dart_1_value', '20');
+  f.set('dart_1_multiplier', '3');
+  f.set('p_leg_no', '2');
+  assert.equal(f.control('p_leg_no').value, '1');
+  assert.equal(f.control('dart_1_value').value, '20');
+  assert.equal(f.control('p_starter_player_id').value, 'p1');
+  assert.equal(f.confirmCalls.length, 1);
+  f.setConfirm(true);
+  f.set('p_leg_no', '2');
+  assert.equal(f.control('p_leg_no').value, '2');
+  assert.equal(f.control('dart_1_value').value, '');
+  assert.equal(f.control('p_starter_player_id').value, '');
+  assert.equal(f.control('p_player_id').value, '');
+  assert.equal(f.control('p_turn_no').value, '1');
+});
+
+test('darts refresh loads leg players and first turn uses one atomic RPC', async () => {
   const f = fixture('dardos_501');
   const feed = await f.controller.openScore();
   assert.deepEqual(Object.keys(feed.details), ['darts_legs', 'darts_leg_players', 'darts_turns']);
@@ -294,12 +362,11 @@ test('darts refresh loads leg players, sorts tables and writes start plus turn',
   f.set('dart_1_multiplier', '3');
   assert.equal(f.nodes.get('advancedScoreSaveButton').disabled, false);
   assert.equal((await f.controller.submitScore()).ok, true);
-  assert.deepEqual(f.calls.find(([name]) => name === 'start_darts_leg')[1], {
-    p_game_id: 'g1', p_leg_no: 1, p_starter_player_id: 'p1',
+  assert.deepEqual(f.calls.find(([name]) => name === 'start_darts_leg_and_save_turn')[1], {
+    p_game_id: 'g1', p_leg_no: 1, p_turn_no: 1, p_player_id: 'p1',
+    p_throws: [{ score: 60, is_double: false }], p_starter_player_id: 'p1',
   });
-  assert.deepEqual(f.calls.find(([name]) => name === 'save_darts_turn')[1], {
-    p_game_id: 'g1', p_leg_no: 1, p_turn_no: 1, p_player_id: 'p1', p_throws: [{ score: 60, is_double: false }],
-  });
+  assert.equal(f.calls.some(([name]) => name === 'start_darts_leg' || name === 'save_darts_turn'), false);
 });
 
 test('darts turn supports four-player order and balance from leg players', async () => {
@@ -314,10 +381,30 @@ test('darts turn supports four-player order and balance from leg players', async
   f.set('dart_1_value', '20');
   assert.equal(f.nodes.get('advancedScoreSaveButton').disabled, true);
   f.set('p_player_id', 'p2');
+  assert.equal(f.control('p_player_id').value, 'p3');
+  assert.equal(f.control('dart_1_value').value, '20');
+  f.setConfirm(true);
+  f.set('p_player_id', 'p2');
+  assert.equal(f.control('dart_1_value').value, '');
+  f.set('dart_1_value', '20');
   assert.equal(f.nodes.get('advancedScoreSaveButton').disabled, false);
   assert.equal((await f.controller.submitScore()).ok, true);
-  assert.equal(f.calls.find(([name]) => name === 'start_darts_leg'), undefined);
+  assert.equal(f.calls.find(([name]) => name === 'start_darts_leg_and_save_turn'), undefined);
   assert.equal(f.calls.find(([name]) => name === 'save_darts_turn')[1].p_turn_no, 2);
+});
+
+test('failed atomic first turn keeps draft without a separate leg-start write', async () => {
+  const f = fixture('dardos_501');
+  await f.controller.openScore();
+  f.set('p_starter_player_id', 'p1');
+  f.set('p_player_id', 'p1');
+  f.set('dart_1_value', '20');
+  f.setWriteFailure(new Error('network'));
+  assert.equal((await f.controller.submitScore()).ok, false);
+  assert.equal(f.control('dart_1_value').value, '20');
+  assert.deepEqual(f.calls.filter(([name]) => !name.startsWith('get_')).map(([name]) => name),
+    ['start_darts_leg_and_save_turn']);
+  assert.deepEqual(f.tables.darts_legs, []);
 });
 
 test('darts status uses active leg and player', async () => {
@@ -331,6 +418,19 @@ test('darts status uses active leg and player', async () => {
   assert.deepEqual(f.calls.find(([name]) => name === 'set_darts_player_status')[1], {
     p_game_id: 'g1', p_leg_no: 1, p_player_id: 'p1', p_status: 'DNS',
   });
+});
+
+test('darts DNS is disabled after the player has thrown a turn', async () => {
+  const f = fixture('dardos_501');
+  f.tables.darts_legs = [{ game_id: 'g1', leg_no: 1, starter_player_id: 'p1', status: 'active' }];
+  f.tables.darts_leg_players = [{ game_id: 'g1', leg_no: 1, player_id: 'p1', turn_order: 1, status: 'active', balance: 481 }];
+  f.tables.darts_turns = [{ game_id: 'g1', leg_no: 1, turn_no: 1, player_id: 'p1' }];
+  await f.controller.openStatus();
+  f.set('p_player_id', 'p1', 'status');
+  f.set('p_status', 'DNS', 'status');
+  assert.equal(f.nodes.get('advancedStatusSaveButton').disabled, true);
+  f.set('p_status', 'DNF', 'status');
+  assert.equal(f.nodes.get('advancedStatusSaveButton').disabled, false);
 });
 
 test('read errors leave save disabled and show error', async () => {
@@ -354,6 +454,23 @@ test('loading disables the fieldset and reports busy until feed arrives', async 
   await pending;
   assert.equal(f.panel().disabled, false);
   assert.equal(f.nodes.get('advancedScoreForm').attributes.get('aria-busy'), 'false');
+});
+
+test('late feed from previous game cannot hydrate or enable the new game', async () => {
+  const f = fixture('pebolim');
+  let release;
+  f.setReadGate(new Promise((resolve) => { release = resolve; }));
+  const pending = f.controller.openScore();
+  f.controller.render('g2');
+  assert.equal(f.control('p_game_id').value, 'g2');
+  assert.equal(f.nodes.get('advancedScoreForm').attributes.get('aria-busy'), 'false');
+  release();
+  assert.equal(await pending, null);
+  assert.equal(f.control('p_game_id').value, 'g2');
+  assert.equal(f.nodes.get('advancedScoreSaveButton').disabled, true);
+  const feed = await f.controller.refreshFeed('pebolim', 'g2');
+  assert.equal(feed.gameId, 'g2');
+  assert.equal(f.controller.getRankingFeed('pebolim', 'g1').gameId, 'g1');
 });
 
 test('CAS conflict retains unsaved score and blocks retry', async () => {

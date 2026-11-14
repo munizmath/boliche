@@ -7,6 +7,8 @@
 
   const READ_RPC = Object.freeze({ match: 'get_match_results', individual: 'get_mode_player_scores', darts: 'get_darts_match_results' });
   const TABLES = Object.freeze({ match: ['match_sets', 'match_player_status'], individual: [], darts: ['darts_legs', 'darts_leg_players', 'darts_turns'] });
+  // v19 runs leg creation and the first turn in one database transaction.
+  const FIRST_DARTS_TURN_RPC = 'start_darts_leg_and_save_turn';
   const TERMINAL = new Set(['DNF', 'DNS']);
 
   // getActive() returns the current encounter ({id,game_type,status,rules_config}).
@@ -117,7 +119,19 @@
       const games = (state.games || []).filter((game) => game.encounter_id === encounter.id)
         .map((game) => ({ value: game.id, label: game.nome || 'Partida' }));
       const gameSelect = field(view.panel, 'p_game_id');
-      fillSelect(gameSelect, games, 'Selecione a partida', preferredGameId, true);
+      const previousGameId = gameSelect?.value || '';
+      // A state render (including Realtime) must never move an unsaved form to
+      // another game. Explicit user changes go through onFieldEvent below.
+      const nextGameId = view.dirty && preferredGameId != null && preferredGameId !== previousGameId
+        ? previousGameId : preferredGameId;
+      if (!view.dirty && nextGameId != null && nextGameId !== previousGameId) {
+        resetContextFields(view, 'p_game_id');
+        view.feedLoaded = false;
+        view.baseSignature = null;
+        view.feedRequest += 1;
+        if (view.busy) setBusy(view, false);
+      }
+      fillSelect(gameSelect, games, 'Selecione a partida', nextGameId, true);
       const gameId = gameSelect?.value || '';
       const roster = playerIds(gameId).map((id) => {
         const player = (state.players || []).find((item) => item.id === id);
@@ -131,8 +145,39 @@
         if (!value(view.panel, 'p_player_a_id')) setValue(view.panel, 'p_player_a_id', roster[0].value);
         if (!value(view.panel, 'p_player_b_id')) setValue(view.panel, 'p_player_b_id', roster[1].value);
       }
+      if (!view.dirty && previousGameId !== gameId) rememberContext(view);
       validate();
       return view;
+    }
+
+    function resetContextFields(view, changedName) {
+      const panel = view.panel;
+      const entryNames = view.kind === 'score' ? view.mode.entryFields : view.mode.statusFields;
+      let names;
+      if (changedName === 'p_game_id') names = entryNames.filter((name) => name !== 'p_game_id');
+      else if (changedName === 'p_set_no') names = ['p_score_a', 'p_score_b', 'p_confirmed', 'p_expected_version'];
+      else if (changedName === 'p_player_id') names = view.kind === 'status'
+        ? ['p_status', 'p_expected_version'] : view.mode.kind === 'darts'
+          ? ['dart_1_value', 'dart_2_value', 'dart_3_value', 'dart_1_multiplier', 'dart_2_multiplier', 'dart_3_multiplier']
+          : ['p_value', 'p_status', 'p_finalized', 'p_expected_version'];
+      else if (changedName === 'p_player_a_id' || changedName === 'p_player_b_id') {
+        names = ['p_score_a', 'p_score_b', 'p_confirmed', 'p_expected_version'];
+      } else if (changedName === 'p_starter_player_id') {
+        names = ['p_player_id', 'dart_1_value', 'dart_2_value', 'dart_3_value',
+          'dart_1_multiplier', 'dart_2_multiplier', 'dart_3_multiplier'];
+      }
+      else names = view.kind === 'status'
+        ? ['p_player_id', 'p_status']
+        : ['p_starter_player_id', 'p_turn_no', 'p_player_id', 'dart_1_value', 'dart_2_value', 'dart_3_value',
+          'dart_1_multiplier', 'dart_2_multiplier', 'dart_3_multiplier'];
+      for (const name of names) {
+        const control = field(panel, name);
+        if (!control) continue;
+        if (control.type === 'checkbox') control.checked = false;
+        else control.value = name === 'p_status' && view.mode.kind === 'individual' ? 'active'
+          : name.endsWith('_multiplier') ? '1' : '';
+      }
+      if (view.mode.kind === 'individual') syncIndividualStatus(view);
     }
 
     async function rpc(name, args) {
@@ -220,7 +265,8 @@
     }
 
     function rememberContext(view) {
-      view.contextValues = Object.fromEntries(['p_game_id', 'p_set_no', 'p_player_id', 'p_leg_no']
+      view.contextValues = Object.fromEntries(['p_game_id', 'p_set_no', 'p_player_id', 'p_leg_no',
+        'p_player_a_id', 'p_player_b_id', 'p_starter_player_id']
         .map((name) => [name, value(view.panel, name)]));
     }
 
@@ -231,6 +277,9 @@
       const ticket = (fetchVersions.get(key) || 0) + 1;
       fetchVersions.set(key, ticket);
       const view = active && active.modeId === modeId && value(active.panel, 'p_game_id') === gameId ? active : null;
+      const viewRequest = view ? ++view.feedRequest : null;
+      const currentViewRead = () => view && active === view && view.feedRequest === viewRequest
+        && value(view.panel, 'p_game_id') === gameId;
       if (view) setBusy(view, true, 'Carregando…');
       try {
         const [rows, ...tables] = await Promise.all([
@@ -248,7 +297,7 @@
         const feed = Object.freeze({ modeId, gameId, rows: Object.freeze([...rows]), rankedRows: Object.freeze(logic.rankResults(modeId, rows)), details: Object.freeze(details) });
         if (ticket !== fetchVersions.get(key)) return feeds.get(key) || feed;
         feeds.set(key, feed);
-        if (view && active === view) {
+        if (currentViewRead()) {
           view.feedLoaded = true;
           if (view.dirty && view.baseSignature !== signature(view, feed)) {
             view.conflict = true;
@@ -259,13 +308,13 @@
         }
         return feed;
       } catch (error) {
-        if (view && active === view && ticket === fetchVersions.get(key)) {
+        if (currentViewRead() && ticket === fetchVersions.get(key)) {
           view.feedLoaded = false;
           announceError(`Não foi possível carregar resultados: ${error.message || 'tente novamente'}.`, view);
         }
         throw error;
       } finally {
-        if (view && active === view && ticket === fetchVersions.get(key)) setBusy(view, false);
+        if (currentViewRead() && ticket === fetchVersions.get(key)) setBusy(view, false);
       }
     }
 
@@ -291,6 +340,29 @@
         const scoreA = integer(value(panel, 'p_score_a'), 0, 1000000, 'Placar A');
         const scoreB = integer(value(panel, 'p_score_b'), 0, 1000000, 'Placar B');
         const confirmed = field(panel, 'p_confirmed').checked;
+        const feed = getRankingFeed(view.modeId, gameId);
+        const sets = feed?.details.match_sets || [];
+        if (feed?.details.match_player_status.length) throw new Error('O confronto já tem uma situação terminal.');
+        const existing = sets.find((row) => Number(row.set_no) === setNo);
+        if (setNo > Math.max(0, ...sets.map((row) => Number(row.set_no))) + 1) throw new Error('Registre os sets em sequência.');
+        if (sets.some((row) => row.player_a_id !== playerA || row.player_b_id !== playerB)) {
+          throw new Error('Mantenha a ordem dos jogadores em todos os sets.');
+        }
+        for (let prior = 1; prior < setNo; prior += 1) {
+          if (!sets.some((row) => Number(row.set_no) === prior && row.confirmed)) {
+            throw new Error('Confirme os sets anteriores primeiro.');
+          }
+        }
+        if (existing && sets.some((row) => Number(row.set_no) > setNo && row.confirmed)) {
+          throw new Error('Corrija primeiro os sets confirmados posteriores.');
+        }
+        const wins = new Map();
+        for (const row of sets) {
+          if (Number(row.set_no) !== setNo && row.confirmed && row.winner_player_id) {
+            wins.set(row.winner_player_id, (wins.get(row.winner_player_id) || 0) + 1);
+          }
+        }
+        if ([...wins.values()].some((count) => count >= rules.sets_to_win)) throw new Error('O confronto já foi decidido.');
         if (confirmed && !logic.evaluateMatchSet(view.modeId, scoreA, scoreB, rules).complete) throw new Error('O set ainda não atingiu as regras para confirmação.');
         return { p_game_id: gameId, p_set_no: setNo, p_player_a_id: playerA, p_player_b_id: playerB,
           p_score_a: scoreA, p_score_b: scoreB, p_confirmed: confirmed, p_expected_version: version(value(panel, 'p_expected_version')) };
@@ -314,16 +386,18 @@
       const feed = getRankingFeed(view.modeId, gameId);
       const leg = feed?.details.darts_legs.find((item) => Number(item.leg_no) === legNo);
       const turns = (feed?.details.darts_turns || []).filter((item) => Number(item.leg_no) === legNo).sort((a, b) => a.turn_no - b.turn_no);
-      if ((!leg && !starterId && !view.startedLeg) || (leg && starterId && starterId !== leg.starter_player_id)) {
+      if ((!leg && !starterId) || (leg && starterId && starterId !== leg.starter_player_id)) {
         throw new Error('Informe quem inicia uma nova perna ou escolha uma perna já iniciada.');
       }
       if (leg && leg.status !== 'active') throw new Error('Escolha uma perna ativa.');
-      if (!leg && !view.startedLeg && legNo !== Number(feed?.details.darts_legs.at(-1)?.leg_no || 0) + 1) {
+      if (!leg && legNo !== Number(feed?.details.darts_legs.at(-1)?.leg_no || 0) + 1) {
         throw new Error('A nova perna precisa ser a próxima da partida.');
       }
+      if (!leg && (feed?.details.darts_legs.some((item) => item.status === 'active')
+          || feed?.rows.some((row) => row.match_complete))) throw new Error('A partida já tem uma perna ativa ou foi decidida.');
       if (turnNo !== turns.length + 1) throw new Error('O número do turno precisa ser o próximo da perna.');
       const lastPlayer = turns.at(-1)?.player_id;
-      const firstPlayer = leg?.starter_player_id || starterId || view.startedLeg?.starterId;
+      const firstPlayer = leg?.starter_player_id || starterId;
       const legPlayers = (feed?.details.darts_leg_players || []).filter((item) => Number(item.leg_no) === legNo && item.status === 'active');
       const lastOrder = legPlayers.find((item) => item.player_id === lastPlayer)?.turn_order
         ?? feed?.details.darts_leg_players.find((item) => Number(item.leg_no) === legNo && item.player_id === lastPlayer)?.turn_order;
@@ -340,24 +414,38 @@
         if (missing) throw new Error('Preencha os dardos na ordem, sem lacunas.');
         throws.push({ value: integer(raw, 0, 25, `Dardo ${index}`), multiplier: integer(value(panel, `dart_${index}_multiplier`), 1, 3, 'Multiplicador') });
       }
-      const rpcThrows = logic.toDartsRpcThrows(throws);
       const playerRow = feed?.details.darts_leg_players.find((row) => row.player_id === playerId && Number(row.leg_no) === legNo);
       const balance = leg ? playerRow?.balance : 501;
       if (!Number.isInteger(balance)) throw new Error('Saldo de dardos indisponível; recarregue a partida.');
-      logic.evaluateDartsTurn(balance, throws);
+      const evaluated = logic.evaluateDartsTurn(balance, throws);
+      const rpcThrows = logic.toDartsRpcThrows(evaluated.throws);
+      const turn = { p_game_id: gameId, p_leg_no: legNo, p_turn_no: turnNo, p_player_id: playerId, p_throws: rpcThrows };
       return {
-        start: !leg && !view.startedLeg ? { p_game_id: gameId, p_leg_no: legNo, p_starter_player_id: starterId } : null,
-        turn: { p_game_id: gameId, p_leg_no: legNo, p_turn_no: turnNo, p_player_id: playerId, p_throws: rpcThrows },
+        firstTurn: leg ? null : { ...turn, p_starter_player_id: starterId },
+        turn,
       };
     }
 
     function buildStatus(view) {
-      const { gameId, roster } = requireWritable(view);
+      const { gameId, roster, rules } = requireWritable(view);
       const playerId = value(view.panel, 'p_player_id');
       const status = value(view.panel, 'p_status');
       if (!roster.includes(playerId) || !TERMINAL.has(status)) throw new Error('Escolha jogador e situação DNF ou DNS.');
       if (view.mode.kind === 'match') {
         if (roster.length !== 2) throw new Error('O confronto precisa ter exatamente dois jogadores.');
+        const feed = getRankingFeed(view.modeId, gameId);
+        const sets = feed?.details.match_sets || [];
+        if (feed?.details.match_player_status.some((row) => row.player_id !== playerId)) {
+          throw new Error('O outro jogador já tem uma situação terminal.');
+        }
+        if (status === 'DNS' && sets.some((row) => row.confirmed)) {
+          throw new Error('DNS só é permitido antes do primeiro set confirmado.');
+        }
+        const wins = new Map();
+        for (const row of sets) {
+          if (row.confirmed && row.winner_player_id) wins.set(row.winner_player_id, (wins.get(row.winner_player_id) || 0) + 1);
+        }
+        if ([...wins.values()].some((count) => count >= rules.sets_to_win)) throw new Error('O confronto já foi decidido.');
         return { p_game_id: gameId, p_player_id: playerId, p_status: status, p_expected_version: version(value(view.panel, 'p_expected_version')) };
       }
       const legNo = integer(value(view.panel, 'p_leg_no'), 1, 99, 'Perna');
@@ -365,6 +453,9 @@
       if (!feed?.details.darts_legs.some((leg) => Number(leg.leg_no) === legNo && leg.status === 'active')
           || !feed.details.darts_leg_players.some((row) => Number(row.leg_no) === legNo && row.player_id === playerId && row.status === 'active')) {
         throw new Error('Escolha um jogador de uma perna ativa.');
+      }
+      if (status === 'DNS' && feed.details.darts_turns.some((row) => Number(row.leg_no) === legNo && row.player_id === playerId)) {
+        throw new Error('DNS só é permitido antes do primeiro turno do jogador.');
       }
       return { p_game_id: gameId, p_leg_no: legNo, p_player_id: playerId, p_status: status };
     }
@@ -399,11 +490,17 @@
       if (!name || (event.type === 'input' && event.target.tagName === 'SELECT')) return;
       const navigates = name === 'p_game_id'
         || (view.kind === 'score' && view.mode.kind === 'match' && name === 'p_set_no')
+        || (view.kind === 'score' && view.mode.kind === 'match' && ['p_player_a_id', 'p_player_b_id'].includes(name))
         || (view.kind === 'score' && view.mode.kind === 'individual' && name === 'p_player_id')
         || (view.kind === 'status' && view.mode.kind === 'match' && name === 'p_player_id')
-        || (view.mode.kind === 'darts' && name === 'p_leg_no');
+        || (view.mode.kind === 'darts' && ['p_leg_no', 'p_player_id'].includes(name))
+        || (view.kind === 'score' && view.mode.kind === 'darts' && name === 'p_starter_player_id');
       if (navigates && event.type === 'input') { view.save.disabled = true; return; }
-      if (navigates && view.dirty && value(view.panel, name) !== view.contextValues[name]) {
+      if (navigates && value(view.panel, name) === view.contextValues[name]) {
+        validate();
+        return;
+      }
+      if (navigates && view.dirty) {
         const discard = document.defaultView?.confirm?.('Descartar as alterações não salvas deste resultado?') === true;
         if (!discard) {
           setValue(view.panel, name, view.contextValues[name]);
@@ -411,8 +508,11 @@
           return;
         }
       }
+      if (navigates) resetContextFields(view, name);
       if (name === 'p_game_id') {
         view.dirty = false; view.conflict = false; view.feedLoaded = false;
+        view.feedRequest += 1;
+        if (view.busy) setBusy(view, false);
         announceError('', view);
         render();
         rememberContext(view);
@@ -481,14 +581,18 @@
       dialog.removeAttribute('inert');
       active = { kind, mode, modeId, encounterId: encounter.id, dialog, form, save, panel,
         originalSaveLabel: save.textContent, dirty: false, conflict: false, busy: false, feedLoaded: false,
-        baseSignature: null, startedLeg: null };
+        baseSignature: null, feedRequest: 0 };
       announceError('');
       dialog.showModal();
       render(gameId);
       rememberContext(active);
       const selectedGameId = value(panel, 'p_game_id');
       if (!selectedGameId) return null;
-      try { return await refreshFeed(modeId, selectedGameId); }
+      const openedView = active;
+      try {
+        const feed = await refreshFeed(modeId, selectedGameId);
+        return active === openedView && value(panel, 'p_game_id') === selectedGameId ? feed : null;
+      }
       catch { return null; }
     }
 
@@ -514,11 +618,9 @@
       try {
         let saved;
         if (view.mode.kind === 'darts') {
-          if (payload.start) {
-            await rpc(view.mode.startRpc, payload.start);
-            view.startedLeg = { gameId, legNo: payload.start.p_leg_no, starterId: payload.start.p_starter_player_id };
-          }
-          saved = await rpc(view.mode.writeRpc, payload.turn);
+          saved = payload.firstTurn
+            ? await rpc(view.mode.firstTurnRpc || FIRST_DARTS_TURN_RPC, payload.firstTurn)
+            : await rpc(view.mode.writeRpc, payload.turn);
         } else saved = await rpc(view.mode.writeRpc, payload);
         return await finishWrite(view, saved, gameId);
       } catch (error) {
