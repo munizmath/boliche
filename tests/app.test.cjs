@@ -625,12 +625,13 @@ test('chave eliminatória avança só com resultados finais e desempata pela ord
 
 test('exportação inclui jogadores, partidas e pista histórica no CSV e no JSON', () => {
   const app = loadApp();
-  app.state.encounters = [{ id: 'meet-1', nome: 'Noite', data: '2026-11-13' }];
+  app.state.encounters = [{ id: 'meet-1', nome: 'Noite', data: '2026-11-13', game_type: 'quiz', rules_version: 1, rules_config: { round_count: 1, max_points_per_round: 0 } }];
   app.state.activeEncounterId = 'meet-1';
   app.state.players = [{ id: 'ana', nome: 'Ana', pista: '2' }];
   app.state.encounterPlayers = [{ encounter_id: 'meet-1', player_id: 'ana' }];
   app.state.games = [{ id: 'game-1', encounter_id: 'meet-1', nome: 'Partida', status: 'final' }];
   app.state.scores = [{ game_id: 'game-1', player_id: 'ana', pista: '1', pontos: 213, finalizado: true }];
+  app.state.roundScores = [{ game_id: 'game-1', player_id: 'ana', round_no: 1, points: 213, finalized: true }];
   const exports = [];
   app.context.Blob = class { constructor(parts) { exports.push(parts.join('')); } };
   app.context.URL = { createObjectURL: () => 'blob:export', revokeObjectURL() {} };
@@ -641,8 +642,10 @@ test('exportação inclui jogadores, partidas e pista histórica no CSV e no JSO
   assert.match(exports[0], /"participante".*"Ana"/);
   assert.match(exports[0], /"partida".*"Partida"/);
   assert.match(exports[0], /"pontuacao".*"Ana";"1";"213";"true"/);
+  assert.match(exports[0], /"rodada".*"Ana";"1";"";"true"/);
   assert.match(exports[0], /"ranking".*"ana".*"213"/);
   assert.equal(JSON.parse(exports[1]).scores[0].pista, '1');
+  assert.equal(JSON.parse(exports[1]).round_scores[0].points, 213);
   assert.equal(JSON.parse(exports[1]).rankings[0].total, 213);
 });
 

@@ -1,0 +1,4 @@
+/.local-backups/
+/.worktrees/
+/.migration-*.html
+/.migration-*.sql

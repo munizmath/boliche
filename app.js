@@ -669,11 +669,11 @@ async function saveEncounter(event) {
   if (!editing && isRoundBased(gameType)) {
     const roundCountValue = $("encounterRoundCount")?.value?.trim() || "";
     const roundMaxValue = $("encounterRoundMax")?.value?.trim() || "";
-    if (!/^\d+$/.test(roundCountValue) || Number(roundCountValue) < 1) {
-      errorElement.textContent = "Informe uma quantidade de rodadas maior que zero."; errorElement.hidden = false; return;
+    if (!/^\d+$/.test(roundCountValue) || Number(roundCountValue) < 1 || Number(roundCountValue) > 20) {
+      errorElement.textContent = "Informe de 1 a 20 rodadas."; errorElement.hidden = false; return;
     }
-    if (roundMaxValue !== "" && (!/^\d+$/.test(roundMaxValue) || !Number.isSafeInteger(Number(roundMaxValue)))) {
-      errorElement.textContent = "O limite por rodada deve ser um inteiro não negativo."; errorElement.hidden = false; return;
+    if (roundMaxValue !== "" && (!/^\d+$/.test(roundMaxValue) || !Number.isSafeInteger(Number(roundMaxValue)) || Number(roundMaxValue) > 2147483647)) {
+      errorElement.textContent = "O limite por rodada deve ser um inteiro de 0 a 2.147.483.647."; errorElement.hidden = false; return;
     }
     rulesConfig = { round_count: Number(roundCountValue), max_points_per_round: roundMaxValue === "" ? 0 : Number(roundMaxValue) };
   }
@@ -959,7 +959,7 @@ function downloadResults(format) {
       ...data.participations.map((row) => { const encounter = data.encounters.find((item) => item.id === row.encounter_id); const player = getPlayer(row.player_id); return ["participante", encounter?.id, encounter?.nome, encounter?.data, "", "", "", row.player_id, player?.nome, player?.pista, "", "", "", "", "", "", "", ...modeFields(encounter)]; }),
       ...data.games.map((game) => { const encounter = data.encounters.find((item) => item.id === game.encounter_id); return ["partida", encounter?.id, encounter?.nome, encounter?.data, game.id, game.nome, game.status, "", "", "", "", "", "", "", "", "", "", ...modeFields(encounter)]; }),
       ...data.scores.map((score) => { const game = getGame(score.game_id); const encounter = data.encounters.find((item) => item.id === game?.encounter_id); return ["pontuacao", encounter?.id, encounter?.nome, encounter?.data, game?.id, game?.nome, game?.status, score.player_id, getPlayer(score.player_id)?.nome, score.pista, score.pontos, score.finalizado, "", "", "", "", "", ...modeFields(encounter)]; }),
-      ...data.round_scores.map((score) => { const game = getGame(score.game_id); const encounter = data.encounters.find((item) => item.id === game?.encounter_id); return ["rodada", encounter?.id, encounter?.nome, encounter?.data, game?.id, game?.nome, game?.status, score.player_id, getPlayer(score.player_id)?.nome, score.pista || "", "", score.finalized, "", "", "", "", "", ...modeFields(encounter), score.round_no, roundPoints(score)]; }),
+      ...data.round_scores.map((score) => { const game = getGame(score.game_id); const encounter = data.encounters.find((item) => item.id === game?.encounter_id); const participation = data.scores.find((item) => item.game_id === score.game_id && item.player_id === score.player_id); return ["rodada", encounter?.id, encounter?.nome, encounter?.data, game?.id, game?.nome, game?.status, score.player_id, getPlayer(score.player_id)?.nome, participation?.pista || "", "", score.finalized, "", "", "", "", "", ...modeFields(encounter), score.round_no, roundPoints(score)]; }),
       ...data.rankings.map((row) => { const encounter = data.encounters.find((item) => item.id === row.encounter_id); return ["ranking", encounter?.id, encounter?.nome, encounter?.data, "", "", "", row.player_id, getPlayer(row.player_id)?.nome, "", "", "", row.position, row.total, row.average?.toFixed(2).replace(".", ","), row.best, row.games_played, ...modeFields(encounter)]; }),
     ];
     content = `\uFEFF${[header, ...rows].map((row) => row.map(quote).join(";")).join("\r\n")}`; mime = "text/csv;charset=utf-8";
@@ -2590,7 +2590,6 @@ function bindEvents() {
     if (button) clearRoundScore(button.dataset.clearRound);
   });
   $("roundSaveButton")?.form?.addEventListener("submit", saveRoundScores);
-  $("roundSaveButton")?.addEventListener("click", saveRoundScores);
   $("tabletGame").addEventListener("change", (event) => { state.tabletGameId = event.target.value; state.tabletPlayerId = null; state.tabletSelectedPins = []; renderTablet(); });
   $("tabletPlayer").addEventListener("change", (event) => { state.tabletPlayerId = event.target.value; state.tabletSelectedPins = []; renderTablet(); });
   $("tabletPinRack").addEventListener("click", (event) => { const button = event.target.closest("[data-pin]"); if (button) toggleTabletPin(Number(button.dataset.pin)); });
