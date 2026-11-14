@@ -327,6 +327,26 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
   .admin-area-grid { grid-template-columns: 1fr; }
 }
 
+@media (min-width: 621px) and (max-width: 980px) {
+  /* Tablet: preserve the horizontal 90s-style bar without compressing every action. */
+  .topbar { overflow: hidden; }
+  .topbar-menu-shell .topbar-actions--admin { display: none; }
+  .topbar-actions--tools { margin-left: auto; }
+  .topbar-actions--tools #exportMenuButton, .topbar-actions--tools #tvModeButton, .topbar-actions--tools #themeToggle, .topbar-actions--tools > .topbar-divider { display: none; }
+  .primary-nav .nav-link { padding-right: 10px; padding-left: 10px; }
+  .tablet-card { width: min(920px, calc(100vw - 20px)); max-height: calc(100dvh - 16px); padding: 20px; gap: 12px; }
+  .tablet-card h2 { font-size: 27px; }
+  .tablet-score-head { padding: 11px; }
+  .tablet-entry-grid { grid-template-columns: minmax(0, 1fr) minmax(250px, .8fr); gap: 10px; }
+  .tablet-panel { padding: 11px; }
+  .pin-rack { grid-template-columns: repeat(5, minmax(42px, 1fr)); gap: 5px; }
+  .pin-button { min-height: 48px; }
+  .keypad { gap: 5px; }
+  .keypad-button { min-height: 42px; }
+  .tablet-shortcuts .button { min-height: 42px; }
+  .tablet-panel .modal-actions .button { min-height: 44px; }
+}
+
 @media (max-width: 620px) {
   body { padding-bottom: 68px; overflow-x: hidden; }
   .topbar { min-height: 56px; }
