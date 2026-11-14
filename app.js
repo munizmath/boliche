@@ -575,7 +575,7 @@ function renderPredictions() {
   const deadlineInput = $("predictionDeadline");
   deadlineInput.disabled = encounter.status !== "preparing";
   $("savePredictionDeadline").disabled = deadlineInput.disabled;
-  if (document.activeElement !== deadlineInput) deadlineInput.value = encounter.prediction_closes_at ? new Date(encounter.prediction_closes_at).toLocaleString("sv-SE", { timeZone: "America/Sao_Paulo", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }).replace(" ", "T") : "";
+  if (document.activeElement !== deadlineInput) deadlineInput.value = encounter.prediction_closes_at ? new Date(encounter.prediction_closes_at).toLocaleString("sv-SE", { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }).replace(" ", "T") : "";
 }
 
 function renderTeamEditor() {
@@ -1193,11 +1193,6 @@ async function submitProfile(event) {
     $("profileName").focus();
     return;
   }
-  if (!file && !state.profile?.foto_path) {
-    errorElement.textContent = "Adicione pelo menos uma foto para concluir o cadastro.";
-    errorElement.hidden = false;
-    return;
-  }
   const button = $("profileSubmitButton");
   button.disabled = true;
   button.textContent = "Salvando…";
@@ -1206,12 +1201,9 @@ async function submitProfile(event) {
     const { data: authData, error: authError } = await client.auth.getSession();
     if (authError || !authData?.session) throw new Error("Sua sessão expirou. Entre novamente para salvar a foto.");
     state.session = authData.session;
-    let currentProfile = state.profile;
-    if (!currentProfile) {
-      const { data: existing, error: readError } = await client.from("profiles").select("id,nome,foto_path,status,player_id,photo_public_opt_in").eq("id", state.session.user.id).maybeSingle();
-      if (readError) throw new Error(`Não foi possível conferir o cadastro: ${readError.message || "tente novamente"}.`);
-      currentProfile = existing;
-    }
+    const { data: currentProfile, error: readError } = await client.from("profiles").select("id,nome,foto_path,status,player_id,photo_public_opt_in,updated_at").eq("id", state.session.user.id).maybeSingle();
+    if (readError) throw new Error(`Não foi possível conferir o cadastro: ${readError.message || "tente novamente"}.`);
+    if (!file && !currentProfile?.foto_path) throw new Error("Adicione pelo menos uma foto para concluir o cadastro.");
     let fotoPath = currentProfile?.foto_path;
     if (file) {
       const prepared = await prepareProfilePhoto(file);
@@ -1224,9 +1216,9 @@ async function submitProfile(event) {
     }
     button.textContent = "Salvando perfil…";
     const query = currentProfile
-      ? client.from("profiles").update({ nome, foto_path: fotoPath, photo_public_opt_in: photoPublic }).eq("id", state.session.user.id)
+      ? client.from("profiles").update({ nome, foto_path: fotoPath, photo_public_opt_in: photoPublic }).eq("id", state.session.user.id).eq("updated_at", currentProfile.updated_at)
       : client.from("profiles").insert({ id: state.session.user.id, nome, foto_path: fotoPath, photo_public_opt_in: photoPublic });
-    const { data, error } = await query.select("id,nome,foto_path,status,player_id,photo_public_opt_in").single();
+    const { data, error } = await query.select("id,nome,foto_path,status,player_id,photo_public_opt_in,updated_at").single();
     if (error) {
       if (uploadedPath) {
         try {
@@ -1234,7 +1226,7 @@ async function submitProfile(event) {
           if (cleanupError) console.warn("Nova foto ainda não referenciada; limpeza pendente", cleanupError);
         } catch (cleanupError) { console.warn("Nova foto ainda não referenciada; limpeza pendente", cleanupError); }
       }
-      throw new Error(`Não foi possível salvar o perfil: ${error.message || "tente novamente"}.`);
+      throw new Error(`Não foi possível salvar o perfil: ${error.code === "PGRST116" ? "o perfil mudou em outro aparelho; recarregue e tente novamente" : error.message || "tente novamente"}.`);
     }
     state.profile = data;
     if (data.foto_path) {

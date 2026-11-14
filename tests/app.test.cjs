@@ -441,14 +441,15 @@ test('limpeza remove só foto antiga não referenciada após confirmar perfil', 
 
 test('usuário pode autorizar a foto pública sem enviar nova imagem', async () => {
   let payload;
-  const saved = { id: 'user', nome: 'Ana', foto_path: 'user/photo.jpg', status: 'approved', player_id: 'p', photo_public_opt_in: true };
+  const saved = { id: 'user', nome: 'Ana', foto_path: 'user/photo.jpg', status: 'approved', player_id: 'p', photo_public_opt_in: true, updated_at: '2026-11-13T12:00:00Z' };
   const query = { eq: () => query, select: () => query, single: async () => ({ data: saved, error: null }) };
   const client = {
     auth: { getSession: async () => ({ data: { session: { user: { id: 'user' } } }, error: null }) },
     storage: { from: () => ({ createSignedUrl: async () => ({ data: { signedUrl: 'https://example.test/photo' } }), list: async () => ({ data: [{ id: '1', name: 'photo.jpg' }], error: null }) }) },
-    from: () => ({ update: (value) => { payload = value; return query; } }),
+    from: () => ({ select: () => ({ eq: () => ({ maybeSingle: async () => ({ data: saved, error: null }) }) }), update: (value) => { payload = value; return query; } }),
   };
   const app = loadApp(client);
+  app.context.console = { ...console, error() {} };
   app.state.session = { user: { id: 'user' } };
   app.state.profile = { ...saved, photo_public_opt_in: false };
   app.get('profileName').value = 'Ana'; app.get('profilePhotoPublic').checked = true;
@@ -458,11 +459,30 @@ test('usuário pode autorizar a foto pública sem enviar nova imagem', async () 
   assert.equal(app.get('profileError').hidden, true);
 });
 
+test('falha ao salvar foto nova preserva a antiga e limpa só o novo envio', async () => {
+  const removed = [];
+  const query = { eq: () => query, select: () => query, single: async () => ({ data: null, error: { code: 'PGRST116', message: 'No rows' } }) };
+  const client = {
+    auth: { getSession: async () => ({ data: { session: { user: { id: 'user' } } }, error: null }) },
+    storage: { from: () => ({ upload: async () => ({ error: null }), remove: async (paths) => { removed.push(...paths); return { error: null }; } }) },
+    from: () => ({ select: () => ({ eq: () => ({ maybeSingle: async () => ({ data: { foto_path: 'user/old.jpg', updated_at: '2026-11-13T12:00:00Z' }, error: null }) }) }), update: () => query }),
+  };
+  const app = loadApp(client);
+  app.state.session = { user: { id: 'user' } };
+  app.state.profile = { foto_path: 'user/old.jpg' };
+  app.context.console = { ...console, error() {} };
+  app.get('profileName').value = 'Ana'; app.get('profilePhoto').files = [{ name: 'nova.jpg', type: 'image/jpeg', size: 100 }];
+  await app.submitProfile({ preventDefault() {} });
+  assert.deepEqual(removed, ['user/photo-id.jpg']);
+  assert.equal(app.state.profile.foto_path, 'user/old.jpg');
+  assert.match(app.get('profileError').textContent, /outro aparelho/);
+});
+
 for (const existing of [false, true, 'stale']) {
   test(`${existing === 'stale' ? 'perfil recarregado após renovação de sessão troca' : existing ? 'perfil aprovado troca' : 'primeiro perfil envia'} foto e salva cadastro`, async () => {
     let upload;
     let write;
-    const profile = { id: 'user-1', nome: 'Matheus', foto_path: 'user-1/photo-id.jpg', status: existing ? 'approved' : 'pending', player_id: existing ? 'player-1' : null };
+    const profile = { id: 'user-1', nome: 'Matheus', foto_path: 'user-1/photo-id.jpg', status: existing ? 'approved' : 'pending', player_id: existing ? 'player-1' : null, updated_at: '2026-11-13T12:00:00Z' };
     const query = {
       eq: () => query,
       select: () => query,
@@ -472,7 +492,7 @@ for (const existing of [false, true, 'stale']) {
       auth: { getSession: async () => ({ data: { session: { user: { id: 'user-1' } } }, error: null }) },
       storage: { from: () => ({ upload: async (path, body, options) => { upload = { path, body, options }; return { error: null }; }, createSignedUrl: async () => ({ data: { signedUrl: 'https://example.test/photo.jpg' } }), list: async () => ({ data: [], error: null }) }) },
       from: () => ({
-        select: () => ({ eq: () => ({ maybeSingle: async () => ({ data: existing === 'stale' ? { ...profile, foto_path: 'user-1/old.jpg' } : null, error: null }) }) }),
+        select: () => ({ eq: () => ({ maybeSingle: async () => ({ data: existing ? { ...profile, foto_path: 'user-1/old.jpg' } : null, error: null }) }) }),
         insert: (payload) => { write = { method: 'insert', payload }; return query; },
         update: (payload) => { write = { method: 'update', payload }; return query; },
       }),
