@@ -1,6 +1,6 @@
-const CACHE_NAME = 'boliche-shell-v20';
+const CACHE_NAME = 'boliche-shell-v21';
 const SHELL = [
-  './', './index.html', './styles.css?v=20261114-20', './app.js?v=20261114-19', './supabase-config.js',
+  './', './index.html', './styles.css?v=20261114-21', './game-rules.js?v=20261114-01', './app.js?v=20261114-20', './supabase-config.js',
   './logo.png', './share-qr.png', './manifest.webmanifest',
   './pwa-192.png', './pwa-512.png',
 ];

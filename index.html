@@ -9,7 +9,7 @@
     <link rel="icon" href="favicon.ico" type="image/x-icon" />
     <link rel="apple-touch-icon" href="apple-touch-icon.png" />
     <link rel="manifest" href="manifest.webmanifest" />
-    <link rel="stylesheet" href="styles.css?v=20261114-20" />
+    <link rel="stylesheet" href="styles.css?v=20261114-21" />
   </head>
   <body>
     <div id="toastContainer" class="toast-container" aria-live="polite"></div>
@@ -94,6 +94,7 @@
       <section class="encounter-bar" aria-label="Encontro atual">
         <label>Encontro <select id="encounterSelect" aria-label="Selecionar encontro"></select></label>
         <span id="encounterStatus" class="status-pill status-pill--muted"></span>
+        <span id="gameTypeBadge" class="game-type-badge status-pill status-pill--muted" role="status" aria-live="polite">Boliche</span>
         <span class="encounter-sync"><span id="connectionStatus" class="status-pill status-pill--muted">Conectando…</span><span id="lastUpdated">Aguardando dados</span></span>
         <button id="tvExitButton" class="button button--quiet" type="button" hidden>Sair do telão</button>
         <button id="tvRankingToggle" class="button button--quiet" type="button" hidden>Classificação provisória</button>
@@ -111,6 +112,7 @@
             <div>
               <p class="eyebrow">ranking geral</p>
               <h3 id="rankingTitle">Classificação acumulada</h3>
+              <span id="rankingUnitLabel" class="ranking-unit-label" aria-live="polite">Unidade do ranking: pontos</span>
             </div>
             <div class="ranking-controls">
               <label class="ranking-view-label">Ver<select id="rankingMode" aria-label="Visualização do ranking"><option value="current">Partida atual</option><option value="official">Ranking oficial</option></select></label>
@@ -140,7 +142,7 @@
               <p class="eyebrow">operação da partida · ao vivo</p>
               <h3 id="currentGameTitle">Nenhuma partida aberta</h3>
             </div>
-            <div class="current-card-actions"><span id="currentGameStatus" class="status-pill status-pill--muted">Aguardando</span><button id="updateScoreButton" class="button button--primary admin-only" type="button" aria-expanded="false" aria-controls="scoreUpdateMenu" hidden>Atualizar placar</button><div id="scoreUpdateMenu" class="context-menu" hidden><button type="button" data-score-action="photo">Atualizar por foto</button><button type="button" data-score-action="manual">Informar pontuação</button><button type="button" data-score-action="tablet">Registro no tablet</button></div></div>
+            <div class="current-card-actions"><span id="currentGameStatus" class="status-pill status-pill--muted">Aguardando</span><button id="updateScoreButton" class="button button--primary admin-only" type="button" aria-expanded="false" aria-controls="scoreUpdateMenu" hidden>Atualizar placar</button><div id="scoreUpdateMenu" class="context-menu" hidden><button type="button" data-score-action="photo">Atualizar por foto</button><button type="button" data-score-action="manual">Informar pontuação</button><button type="button" data-score-action="tablet">Registro no tablet</button><button class="admin-only" type="button" data-score-action="round" hidden>Registrar rodada</button></div></div>
           </div>
           <div id="currentGameBody" class="current-game-body"></div>
           <div id="laneProgress" class="lane-progress"></div>
@@ -274,10 +276,54 @@
         <p class="eyebrow">encontro</p><h2 id="encounterModalTitle">Novo encontro</h2>
         <label>Nome<input id="encounterName" type="text" maxlength="80" required /></label>
         <label>Data<input id="encounterDate" type="date" required /></label>
+        <div class="form-section-heading"><span>Modalidade</span></div>
+        <label for="encounterGameType">Tipo de jogo
+          <select id="encounterGameType" aria-describedby="encounterRulesSummary">
+            <option value="boliche">Boliche</option>
+            <option value="quiz">Quiz</option>
+            <option value="gincana">Gincana</option>
+          </select>
+        </label>
+        <p id="encounterRulesSummary" class="modal-copy encounter-rules-summary" role="status" aria-live="polite">No boliche, o ranking considera os pontos por partida.</p>
+        <div id="encounterRoundSettings" class="encounter-round-settings" role="group" aria-label="Configuração das rodadas" hidden>
+          <label for="encounterRoundCount">Quantidade de rodadas
+            <input id="encounterRoundCount" type="number" min="1" max="20" step="1" value="3" inputmode="numeric" />
+          </label>
+          <label for="encounterRoundMax">Máximo de pontos por pessoa em cada rodada (0 = sem limite)
+            <input id="encounterRoundMax" type="number" min="0" step="1" value="0" inputmode="numeric" />
+          </label>
+        </div>
         <div class="form-section-heading"><span>Participantes</span><small>Escolha quem participará deste encontro</small></div>
         <div id="encounterPlayerSelection" class="selection-grid"></div>
         <p id="encounterFormError" class="form-error" role="alert" hidden></p>
         <div class="modal-actions"><button class="button button--quiet" type="button" data-close-modal>Cancelar</button><button class="button button--primary" type="submit">Salvar encontro</button></div>
+      </form>
+    </dialog>
+
+    <dialog id="roundModal" class="modal" aria-labelledby="roundModalTitle" aria-describedby="roundModalHelp">
+      <form id="roundForm" class="modal-card round-modal-card">
+        <button class="modal-close" type="button" aria-label="Fechar lançamento de rodada">×</button>
+        <p class="eyebrow">placar</p>
+        <h2 id="roundModalTitle">Lançar rodada</h2>
+        <p id="roundModalHelp" class="modal-copy">Escolha a partida e a rodada para informar os resultados.</p>
+        <label for="roundGame">Partida
+          <select id="roundGame" required>
+            <option value="">Selecione a partida</option>
+          </select>
+        </label>
+        <label for="roundNumber">Rodada
+          <select id="roundNumber" required>
+            <option value="">Selecione a rodada</option>
+          </select>
+        </label>
+        <div id="roundResults" class="round-results" role="group" aria-label="Resultados dos participantes" aria-live="polite">
+          <p class="empty-inline">Os campos de pontuação aparecem após escolher a partida e a rodada.</p>
+        </div>
+        <p id="roundError" class="form-error" role="alert" aria-live="assertive" hidden></p>
+        <div class="modal-actions">
+          <button class="button button--quiet" type="button" data-close-modal>Cancelar</button>
+          <button id="roundSaveButton" class="button button--primary" type="submit">Salvar rodada</button>
+        </div>
       </form>
     </dialog>
 
@@ -410,6 +456,7 @@
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
     <script src="supabase-config.js"></script>
-    <script src="app.js?v=20261114-19"></script>
+    <script src="game-rules.js?v=20261114-01"></script>
+    <script src="app.js?v=20261114-20"></script>
   </body>
 </html>
