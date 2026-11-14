@@ -54,30 +54,23 @@ begin
   caught := false;
   begin
     perform public.create_advanced_encounter(
-      'Smoke roster inválido', current_date, array[p1,p2,p3],
-      '00000000-0000-4000-8000-000000000918', 'pebolim',
-      '{"sets_to_win":1,"points_to_win":5,"win_by":1}'::jsonb
-    );
-  exception when invalid_parameter_value then caught := true;
-  end;
-  if not caught then raise exception 'pebolim roster deve ter exatamente dois'; end if;
-  caught := false;
-  begin
-    perform public.create_advanced_encounter(
       'Smoke darts inválido', current_date, array[p1],
       '00000000-0000-4000-8000-000000000917', 'dardos_501', '{"legs_to_win":1}'::jsonb
     );
   exception when invalid_parameter_value then caught := true;
   end;
-  if not caught then raise exception 'dardos roster deve ter de dois a quatro'; end if;
+  if not caught then raise exception 'dardos roster deve ter pelo menos dois'; end if;
 
   -- Confirmed set; winner is database-derived and game status is synchronized.
   e := public.create_advanced_encounter(
-    'Smoke pebolim', current_date, array[p1,p2],
+    'Smoke pebolim', current_date, array[p1,p2,p3],
     '00000000-0000-4000-8000-000000000911', 'pebolim',
     '{"sets_to_win":1,"points_to_win":5,"win_by":1}'::jsonb
   );
   perform public.activate_encounter(e.id);
+  if (select count(*) from public.encounter_players where encounter_id=e.id) <> 3 then
+    raise exception 'Encontro de confronto não aceitou grupo com três jogadores';
+  end if;
   caught := false;
   begin
     perform public.create_encounter_game(e.id, 'Smoke confronto inválido', jsonb_build_array(
@@ -86,6 +79,16 @@ begin
   exception when invalid_parameter_value then caught := true;
   end;
   if not caught then raise exception 'Partida de confronto aceitou somente um participante'; end if;
+  caught := false;
+  begin
+    perform public.create_encounter_game(e.id, 'Smoke confronto inválido', jsonb_build_array(
+      jsonb_build_object('player_id',p1,'pista','__mode_smoke__'),
+      jsonb_build_object('player_id',p2,'pista','__mode_smoke__'),
+      jsonb_build_object('player_id',p3,'pista','__mode_smoke__')
+    ), '00000000-0000-4000-8000-000000000931');
+  exception when invalid_parameter_value then caught := true;
+  end;
+  if not caught then raise exception 'Partida de confronto aceitou três participantes'; end if;
   g := public.create_encounter_game(e.id, 'Smoke pebolim', jsonb_build_array(
     jsonb_build_object('player_id',p1,'pista','__mode_smoke__'),
     jsonb_build_object('player_id',p2,'pista','__mode_smoke__')

@@ -20,7 +20,7 @@
     ]),
     availability: 'Backend-only until app.js/index consume these feeds and RPCs; no advanced mode is user-facing yet.',
     load: 'Load advanced-game-modes.js after game-rules.js and before app.js; use window.AdvancedGameModes or require().',
-    rosters: 'Head-to-head encounters and games require exactly 2 participants; dardos_501 requires 2–4; these sizes are checked on creation and edit.',
+    rosters: 'Head-to-head encounter pools require at least 2 players and each match game exactly 2; dardos_501 encounter pools require at least 2 and each game 2–4. Individual modes retain variable group size.',
     createEncounter: Object.freeze({
       rpc: 'create_advanced_encounter',
       rules: Object.freeze({

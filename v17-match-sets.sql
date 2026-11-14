@@ -161,8 +161,8 @@ begin
      or p_game_type not in (
        'pebolim', 'sinuca', 'tenis_mesa', 'truco', 'pinball', 'minigolfe', 'tempo', 'dardos_501'
      )
-     or (p_game_type in ('pebolim', 'sinuca', 'tenis_mesa', 'truco') and cardinality(requested_players) <> 2)
-     or (p_game_type = 'dardos_501' and cardinality(requested_players) not between 2 and 4)
+     or (p_game_type in ('pebolim', 'sinuca', 'tenis_mesa', 'truco', 'dardos_501')
+         and cardinality(requested_players) < 2)
      or not public.valid_game_rules(p_game_type, normalized_rules) then
     raise exception 'Nome, data, modalidade ou configuração inválidos'
       using errcode = '22023';

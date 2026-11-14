@@ -119,7 +119,7 @@ test('contrato de frontend aponta RPCs, feed textual e vencedor calculado no ban
   assert.match(contract.matches.writeSet, /save_match_set/);
   assert.match(contract.matches.winner, /Never send a winner/);
   assert.match(contract.availability, /Backend-only/);
-  assert.match(contract.rosters, /exactly 2 participants/);
+  assert.match(contract.rosters, /at least 2 players[\s\S]*exactly 2/);
   assert.match(contract.individual.read, /get_mode_player_scores/);
   assert.match(contract.individual.precision, /decimal strings/);
   assert.equal(contract.individual.units.tempo, 'integer elapsed milliseconds');
@@ -138,8 +138,9 @@ test('migrações são incrementais, transacionais, mantêm RLS e não alteram v
   const editorSmoke = fs.readFileSync(path.join(__dirname, 'advanced-game-modes-smoke.sql'), 'utf8');
   assert.match(v17, /depois de v16-multigame-integrity\.sql/i);
   assert.match(v17, /create or replace function public\.assert_encounter_game_assignments/i);
-  assert.match(v17, /cardinality\(requested_players\) <> 2/);
-  assert.match(v17, /cardinality\(requested_players\) not between 2 and 4/);
+  assert.match(v17, /cardinality\(requested_players\) < 2/);
+  assert.match(v17, /expected_count <> 2/);
+  assert.match(v17, /expected_count not between 2 and 4/);
   assert.match(v17, /no máximo um participante pode ter DNF\/DNS/i);
   assert.match(v17, /O outro participante já tem status terminal/i);
   assert.match(v17, /advanced_mode_activity/);
@@ -195,7 +196,8 @@ test('migrações são incrementais, transacionais, mantêm RLS e não alteram v
   assert.match(editorSmoke, /"score":40,"is_double":false/);
   assert.match(editorSmoke, /UPDATE direto falsificou placar individual/);
   assert.match(editorSmoke, /delete from public\.games where id = darts_game_id/i);
-  assert.match(editorSmoke, /pebolim roster deve ter exatamente dois/i);
+  assert.match(editorSmoke, /array\[p1,p2,p3\][\s\S]{0,120}'pebolim'/i);
+  assert.match(editorSmoke, /Partida de confronto aceitou três participantes/i);
   assert.match(editorSmoke, /Roster mudou depois do primeiro resultado/i);
   assert.doesNotMatch(fs.readFileSync(path.join(ROOT, 'v14-game-types.sql'), 'utf8'), /pebolim/);
   assert.doesNotMatch(fs.readFileSync(path.join(ROOT, 'v15-round-scores.sql'), 'utf8'), /pebolim/);
