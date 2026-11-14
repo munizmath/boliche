@@ -9,7 +9,7 @@
     <link rel="icon" href="favicon.ico" type="image/x-icon" />
     <link rel="apple-touch-icon" href="apple-touch-icon.png" />
     <link rel="manifest" href="manifest.webmanifest" />
-    <link rel="stylesheet" href="styles.css?v=20261114-16" />
+    <link rel="stylesheet" href="styles.css?v=20261114-17" />
   </head>
   <body>
     <div id="toastContainer" class="toast-container" aria-live="polite"></div>
@@ -53,15 +53,15 @@
             <button id="tvModeButton" class="topbar-action" type="button">Telão</button>
             <button id="themeToggle" class="topbar-action" type="button" aria-label="Alternar tema">Tema escuro</button>
           </div>
-          <div class="topbar-actions topbar-actions--account" aria-label="Conta">
-            <span class="topbar-divider" aria-hidden="true"></span>
-            <div class="topbar-menu-item">
-              <button id="accountMenuButton" class="topbar-action topbar-menu-trigger" type="button" aria-expanded="false" aria-haspopup="true">Entrar <span aria-hidden="true">▾</span></button>
-              <div class="topbar-submenu" role="menu" aria-label="Conta">
-                <button id="authButton" type="button" role="menuitem">Entrar</button>
-                <button id="registerButton" type="button" role="menuitem">Criar cadastro</button>
-                <button id="profileButton" type="button" role="menuitem" hidden>Meu cadastro</button>
-              </div>
+        </div>
+        <div class="topbar-actions topbar-actions--account topbar-account-fixed" aria-label="Conta">
+          <span class="topbar-divider" aria-hidden="true"></span>
+          <div class="topbar-menu-item">
+            <button id="accountMenuButton" class="topbar-action topbar-menu-trigger" type="button" aria-expanded="false" aria-haspopup="true">Entrar <span aria-hidden="true">▾</span></button>
+            <div class="topbar-submenu" role="menu" aria-label="Conta">
+              <button id="authButton" type="button" role="menuitem">Entrar</button>
+              <button id="registerButton" type="button" role="menuitem">Criar cadastro</button>
+              <button id="profileButton" type="button" role="menuitem" hidden>Meu cadastro</button>
             </div>
           </div>
         </div>
@@ -345,6 +345,6 @@
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
     <script src="supabase-config.js"></script>
-    <script src="app.js?v=20261114-16"></script>
+    <script src="app.js?v=20261114-17"></script>
   </body>
 </html>
