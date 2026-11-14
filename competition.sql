@@ -145,7 +145,9 @@ declare result public.brackets%rowtype;
 begin
   if not public.is_admin() then raise exception 'Acesso de administrador necessário' using errcode='42501'; end if;
   if not exists(select 1 from public.encounters where id=p_encounter_id and status<>'closed' for update) then raise exception 'Encontro encerrado ou inexistente'; end if;
-  if cardinality(p_seeds) not in (4,8) or cardinality(p_round_games)<>case when cardinality(p_seeds)=4 then 2 else 3 end
+  if cardinality(p_seeds) not in (4,8)
+    or (cardinality(p_seeds)=4 and cardinality(p_round_games)<>2)
+    or (cardinality(p_seeds)=8 and cardinality(p_round_games)<>3)
     or p_tiebreak_rule not in ('higher_seed','lower_seed')
     or (select count(distinct x.id) from unnest(p_seeds) as x(id))<>cardinality(p_seeds)
     or (select count(*) from public.encounter_players where encounter_id=p_encounter_id and player_id=any(p_seeds))<>cardinality(p_seeds)
