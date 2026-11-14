@@ -401,4 +401,5 @@ begin
 end;
 $cleanup$;
 
+select 'advanced_game_modes_smoke_passed' as resultado;
 rollback;

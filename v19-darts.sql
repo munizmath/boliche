@@ -391,9 +391,10 @@ declare
 begin
   if not public.is_admin() then raise exception 'Acesso de administrador necessário' using errcode = '42501'; end if;
   if p_game_id is null or p_leg_no is null or p_turn_no is null or p_player_id is null
-     or case when jsonb_typeof(p_throws) = 'array'
-             then jsonb_array_length(p_throws) not between 1 and 3
-             else true end then
+     or jsonb_typeof(p_throws) is distinct from 'array' then
+    raise exception 'Turno inválido: informe de 1 a 3 dardos' using errcode = '22023';
+  end if;
+  if jsonb_array_length(p_throws) not between 1 and 3 then
     raise exception 'Turno inválido: informe de 1 a 3 dardos' using errcode = '22023';
   end if;
 

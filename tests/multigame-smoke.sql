@@ -930,10 +930,10 @@ $$;
 -- Uma gravação em outro encontro não pode ser bloqueada; salvar o afetado o normaliza.
 reset role;
 set constraints teams_common_metric_guard deferred;
-update public.teams t set metric='sum'
+update public.teams t set metric='average'
   from public.encounters e
  where e.id=t.encounter_id
-   and e.request_id='00000000-0000-4000-8000-000000000421'
+   and e.request_id='00000000-0000-4000-8000-000000000461'
    and t.id=(select t2.id from public.teams t2
               where t2.encounter_id=e.id order by t2.id limit 1);
 do $$
