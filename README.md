@@ -21,6 +21,7 @@ Abra `http://localhost:4173`. Sem uma publishable key preenchida, a interface pe
 7. Execute [`encounters.sql`](encounters.sql) e depois [`competition.sql`](competition.sql). A primeira migração reúne os dados existentes em um encontro inicial ativo, registra a pista em cada pontuação e cria preparação, encerramento e reabertura; a segunda habilita equipes, torneio e palpites. Ensaie em transação com `ROLLBACK` no projeto antes da aplicação.
 8. Execute [`v13-throw-mode.sql`](v13-throw-mode.sql) para habilitar o Tablet na pista, scorecard por frame e histórico granular dos arremessos. A migração é aditiva e mantém os totais históricos existentes compatíveis.
 9. Execute [`v14-game-types.sql`](v14-game-types.sql) e depois [`v15-round-scores.sql`](v15-round-scores.sql) para habilitar encontros de quiz e gincana com rodadas. Encontros existentes permanecem como boliche e suas pontuações não são recalculadas. Aplique ambas antes de publicar a interface multijogos.
+   Antes da atualização seguinte, execute [`scripts/snapshot-before-v16.sql`](scripts/snapshot-before-v16.sql) no SQL Editor e confira a data, o tamanho e o checksum do snapshot no schema privado `migration_backup`. Ensaie cada migração substituindo o `COMMIT` final por `ROLLBACK`; depois aplique, nesta ordem, [`v16-multigame-integrity.sql`](v16-multigame-integrity.sql), [`v17-match-sets.sql`](v17-match-sets.sql), [`v18-special-scores.sql`](v18-special-scores.sql) e [`v19-darts.sql`](v19-darts.sql). Execute os testes SQL reversíveis antes de publicar a interface atualizada.
 10. Crie a conta do administrador em Authentication → Users.
 11. Marque o usuário com `app_metadata.role = "admin"` usando o SQL comentado no final de `schema.sql` (ou pelo fluxo administrativo equivalente). O frontend não confia em um campo editável pelo navegador. Se o administrador também jogar, aprove e vincule seu perfil ao jogador correspondente.
 12. Copie a Project URL e a Publishable Key para [`supabase-config.js`](supabase-config.js). A URL e a publishable/anon key podem estar no navegador; nunca coloque `service_role` no repositório.
@@ -59,13 +60,11 @@ O cadastro público usa `auth.users` + `public.profiles`: qualquer pessoa pode c
 ## Verificação local
 
 ```bash
-node tests/app.test.cjs
-node tests/game-rules.test.cjs
-node tests/game-presentations.test.cjs
+for test_file in tests/*.test.cjs; do node "$test_file"; done
 ```
 
 Os testes cobrem OCR, conferência, ranking isolado por encontro, pista histórica, chave eliminatória, perfil, importação transacional e scorecard por frames. As migrações SQL devem ser verificadas no projeto Supabase antes de publicar o frontend.
 
-Depois de aplicar todas as migrações, execute [`tests/transaction-smoke.sql`](tests/transaction-smoke.sql), [`tests/management-smoke.sql`](tests/management-smoke.sql), [`tests/encounter-smoke.sql`](tests/encounter-smoke.sql), [`tests/privacy-smoke.sql`](tests/privacy-smoke.sql), [`tests/throw-mode-smoke.sql`](tests/throw-mode-smoke.sql) e [`tests/multigame-smoke.sql`](tests/multigame-smoke.sql) no SQL Editor. Cada teste cria seus próprios registros sintéticos e termina com `ROLLBACK`.
+Depois de aplicar todas as migrações, execute [`tests/transaction-smoke.sql`](tests/transaction-smoke.sql), [`tests/management-smoke.sql`](tests/management-smoke.sql), [`tests/encounter-smoke.sql`](tests/encounter-smoke.sql), [`tests/privacy-smoke.sql`](tests/privacy-smoke.sql), [`tests/throw-mode-smoke.sql`](tests/throw-mode-smoke.sql), [`tests/multigame-smoke.sql`](tests/multigame-smoke.sql) e [`tests/advanced-game-modes-smoke.sql`](tests/advanced-game-modes-smoke.sql) no SQL Editor. Cada teste cria seus próprios registros sintéticos e termina com `ROLLBACK`.
 
 O teste de encontro cobre pista histórica, rankings isolados, idempotência de criação, equipes, chave, bloqueio após encerramento e reabertura.
