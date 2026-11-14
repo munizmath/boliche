@@ -245,6 +245,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 @media (max-width: 980px) { .extras-grid { grid-template-columns: 1fr; } }
 @media (max-width: 620px) { .encounter-bar label { width: 100%; }.encounter-bar select { flex: 1; max-width: none; }.selection-item .game-player-lane { max-width: 110px; }.prediction-panel select { max-width: none; width: 100%; } }
 @media (max-width: 620px) { .tablet-selectors, .tablet-entry-grid { grid-template-columns: 1fr; }.tablet-score-head { align-items: start; flex-direction: column; }.frame-scoreboard { padding-bottom: 3px; }.history-controls { align-items: stretch; }.history-controls label, .history-search { width: 100%; }.history-controls select, .history-controls input { width: 100%; } }
+@media (max-width: 620px) { .encounter-bar > label, .encounter-bar select { min-width: 0; } }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; } }
 .profile-current { display: flex; align-items: center; gap: 12px; padding: 10px; border: 1px solid var(--color-divider); border-radius: var(--radius); color: var(--color-text); font-size: 12px; }
 .profile-current[hidden], .profile-current img[hidden] { display: none; }
