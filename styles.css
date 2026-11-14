@@ -368,10 +368,38 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .round-results { display: grid; gap: 10px; min-width: 0; }
 .round-results > * { min-width: 0; }
 
+/* Mode cards identify the activity before opening an encounter. */
+.game-choice::before { display: inline-flex; width: fit-content; margin-bottom: 9px; padding: 4px 7px; border: 1px solid var(--color-divider); color: var(--color-muted); font-size: 9px; font-weight: 800; letter-spacing: .08em; line-height: 1.2; }
+.game-choice[aria-label="Boliche"]::before { content: "FRAMES · PISTAS"; }
+.game-choice[aria-label="Quiz"]::before { content: "PERGUNTAS · RODADAS"; color: var(--color-accent-700); border-color: color-mix(in srgb, var(--color-accent) 48%, var(--color-divider)); }
+.game-choice[aria-label="Gincana"]::before { content: "DESAFIOS · EQUIPES"; color: var(--color-success); border-color: color-mix(in srgb, var(--color-success) 45%, var(--color-divider)); }
+.game-choice--selected { box-shadow: inset 0 3px 0 var(--color-accent); }
+.game-choice--selected .game-choice-heading::after { content: "Modo atual"; flex: none; padding: 3px 6px; border: 1px solid var(--color-accent); color: var(--color-accent-700); font-size: 9px; font-weight: 800; letter-spacing: .04em; }
+.share-card { width: min(440px, calc(100% - 24px)); }
+.share-card .modal-copy { max-width: 38ch; line-height: 1.55; }
+.share-qr { display: block; width: min(220px, 68vw); height: auto; aspect-ratio: 1; padding: 0; object-fit: contain; background: #fff; }
+.share-qr-status { max-width: 40ch; margin: 0; color: var(--color-muted); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.share-card :focus-visible, a:focus-visible, summary:focus-visible { outline: 2px solid var(--color-accent-700); outline-offset: 3px; }
+
+@media (min-width: 621px) and (max-width: 980px) {
+  .game-switch-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .game-choice { padding: 12px; }
+  .game-choice-heading { align-items: flex-start; }
+  .game-choice-heading strong { overflow-wrap: anywhere; }
+  .game-choice p { min-height: 58px; }
+  .game-choice-encounters { max-height: min(190px, 24vh); }
+}
+
 @media (max-width: 620px) {
   .game-switch-button { min-height: 44px; }
   .game-switch-list { grid-template-columns: minmax(0, 1fr); }
   .game-choice p { min-height: 0; }
+  .game-choice { padding: 13px; }
+  .game-choice-heading strong { font-size: 18px; }
+  .game-choice-encounters { max-height: 28vh; }
+  .share-card { width: calc(100% - 20px); max-height: calc(100dvh - 20px); overflow-y: auto; }
+  .share-card .modal-actions { width: 100%; flex-wrap: wrap; }
+  .share-card .modal-actions .button { flex: 1 1 135px; min-height: 44px; }
   .encounter-round-settings { grid-template-columns: minmax(0, 1fr); }
   .ranking-view-label { flex: 1 1 148px; min-width: 148px; }
   .ranking-view-label select { min-height: 44px; }

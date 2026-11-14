@@ -21,3 +21,27 @@ test('progresso por rodada aceita zero e ignora outro encontro ou participante',
     { round: 2, participants: 2, informed: 0, confirmed: 0, pending: 2, percent: 0 },
   ]);
 });
+
+test('adaptadores mantêm um contrato comum e comunicam o contexto de cada modalidade', () => {
+  assert.deepEqual(presentations.adaptRankRow('quiz', {
+    rank: 2, player: 'Ana', points: 18, eligible: true,
+  }), {
+    rank: 2,
+    participant: 'Ana',
+    value: 18,
+    status: 'Classificado',
+    labels: { rank: 'Posição no quiz', participant: 'Participante', value: 'Pontos no quiz', status: 'Resultado' },
+  });
+  assert.deepEqual(presentations.adaptProgress('gincana', {
+    round: 3, confirmed: 4, pending: 1, percent: 80,
+  }), {
+    title: 'Desafios da gincana', itemLabel: 'Etapa 3', confirmed: 4, pending: 1,
+    percent: 80, confirmedLabel: 'resultados confirmados', pendingLabel: 'resultados pendentes',
+  });
+  assert.equal(presentations.adaptEntry('quiz').action, 'Lançar pontos do quiz');
+  assert.equal(presentations.adaptEntry('gincana').action, 'Lançar resultado do desafio');
+  assert.notEqual(presentations.get('quiz').summary, presentations.get('gincana').summary);
+  assert.equal(presentations.adaptRankRow('pinball', {}), null);
+  assert.equal(presentations.adaptProgress('pinball', {}), null);
+  assert.equal(presentations.adaptEntry('pinball'), null);
+});

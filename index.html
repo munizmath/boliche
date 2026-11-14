@@ -9,7 +9,7 @@
     <link rel="icon" href="favicon.ico" type="image/x-icon" />
     <link rel="apple-touch-icon" href="apple-touch-icon.png" />
     <link rel="manifest" href="manifest.webmanifest" />
-    <link rel="stylesheet" href="styles.css?v=20261114-23" />
+    <link rel="stylesheet" href="styles.css?v=20261114-24" />
   </head>
   <body>
     <div id="toastContainer" class="toast-container" aria-live="polite"></div>
@@ -412,8 +412,9 @@
         <button class="modal-close" type="button" aria-label="Fechar">×</button>
         <p class="eyebrow">convide os amigos</p>
         <h2>Acompanhar o placar</h2>
-        <p class="modal-copy">O QR Code abre o encontro em andamento. O link abaixo abre o encontro selecionado. O placar pode ser visto sem cadastro.</p>
-        <img class="share-qr" src="share-qr.png" alt="QR Code para abrir o placar da Jogatina dos Amigos" width="220" height="220" />
+        <p class="modal-copy">O QR Code e o link abrem o encontro selecionado. Sem encontro selecionado, eles abrem o placar geral. A consulta não exige cadastro.</p>
+        <img id="shareQr" class="share-qr" alt="QR Code do encontro selecionado" width="220" height="220" aria-describedby="shareQrStatus" />
+        <p id="shareQrStatus" class="share-qr-status" role="status" aria-live="polite">O QR Code será gerado neste aparelho.</p>
         <a class="share-link" href="https://munizmath.github.io/boliche/">munizmath.github.io/boliche</a>
         <div class="modal-actions"><button id="copyShareButton" class="button button--quiet" type="button">Copiar link</button><button id="shareResultButton" class="button button--quiet" type="button">Imagem do resultado</button><button id="nativeShareButton" class="button button--primary" type="button">Compartilhar</button></div>
       </div>
@@ -468,7 +469,8 @@
     <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
     <script src="supabase-config.js"></script>
     <script src="game-rules.js?v=20261114-01"></script>
-    <script src="game-presentations.js?v=20261114-01"></script>
+    <script src="game-presentations.js?v=20261114-02"></script>
+    <script src="jogatina-qr.js?v=20261114-01"></script>
     <script src="app.js?v=20261114-22"></script>
   </body>
 </html>
