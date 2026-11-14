@@ -1,6 +1,6 @@
 # Jogatina dos Amigos
 
-Score Board estático, em HTML/CSS/JavaScript puro, adaptado para importar fotos dos placares das pistas, conferir os resultados e publicar um ranking compartilhado.
+Placar compartilhado em HTML, CSS e JavaScript puro para encontros de boliche, quiz e gincana. No boliche, o administrador pode conferir fotografias das pistas antes de publicar os pontos.
 
 ## Executar localmente
 
