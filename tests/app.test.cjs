@@ -8,23 +8,39 @@ function loadApp(client = null) {
   const elements = new Map();
   const rows = [];
   const get = (id) => {
-    if (!elements.has(id)) elements.set(id, { value: '', hidden: false, disabled: false, textContent: '', innerHTML: '', style: {}, focus() {}, setAttribute() {}, querySelectorAll: () => [] });
+    if (!elements.has(id)) elements.set(id, { value: '', hidden: false, disabled: false, textContent: '', innerHTML: '', style: {}, open: false, focus() {}, showModal() { this.open = true; }, close() { this.open = false; }, addEventListener() {}, setAttribute() {}, querySelectorAll: () => [] });
     return elements.get(id);
   };
   const document = {
     getElementById: get,
     querySelectorAll: (selector) => selector === '[data-review-player]' ? rows : [],
+    body: { classList: { contains: () => false } },
     createElement: () => ({ textContent: '', remove() {} }),
   };
   get('toastContainer').append = () => {};
   const context = vm.createContext({
-    window: { SUPABASE_CONFIG: client ? { url: 'https://example.test', publishableKey: 'test' } : {}, supabase: client ? { createClient: () => client } : null, location: { hash: '', search: '' }, setTimeout: () => {} },
+    window: { SUPABASE_CONFIG: client ? { url: 'https://example.test', publishableKey: 'test' } : {}, supabase: client ? { createClient: () => client } : null, location: { hash: '', search: '' }, setTimeout: () => {}, confirm: () => true },
     document, URLSearchParams, Intl, atob, console, crypto: { randomUUID: () => 'photo-id' },
   });
   const source = fs.readFileSync(path.join(__dirname, '..', 'app.js'), 'utf8')
     .replace(/\nstart\(\);\s*$/, '\n');
-  vm.runInContext(`${source}\nrender = () => {};\nrefreshAfterReconnect = async () => {};\nglobalThis.testApp = { state, loadData, buildSuggestions, playersOnLane, updateReviewTable, updatePhotoConfirmState, captureReviewDraft, markReviewEdited, changeReviewContext, runOcr, drawOrientedPhoto, applyPhotoInteractionMode, canvasPoint, renderLeaderboard, renderCurrentGame, renderRecords, shareResultCard, confirmPhotoUpdate, submitAuth, submitProfile, prepareProfilePhoto, cleanupUnusedProfilePhotos, officialTotals, encounterGames, bracketRounds, bracketWinner, balancedLaneDraw, buildResultsExport, downloadResults, bowlingFrames, tabletStandingPins };`, context);
+  vm.runInContext(`${source}\nconst appRender = render;\nrender = () => {};\nrefreshAfterReconnect = async () => {};\nglobalThis.testApp = { state, loadData, renderApp: appRender, buildSuggestions, playersOnLane, updateReviewTable, updatePhotoConfirmState, captureReviewDraft, markRoundEdited, markReviewEdited, changeReviewContext, runOcr, drawOrientedPhoto, applyPhotoInteractionMode, canvasPoint, renderLeaderboard, renderCurrentGame, renderRecords, renderScoreHistory, shareResultCard, confirmPhotoUpdate, submitAuth, submitProfile, prepareProfilePhoto, cleanupUnusedProfilePhotos, officialTotals, officialPosition, encounterGames, bracketRounds, bracketWinner, balancedLaneDraw, buildResultsExport, downloadResults, openEncounterModal, saveEncounter, renderEncounterRules, renderEncounterBar, openRoundModal, renderRoundModal, renderRoundResults, saveRoundScores, clearRoundScore, undoRoundScoreChange, getGameMode, isRoundBased, configuredRoundMax, rankScoreRows, bowlingFrames, tabletStandingPins };`, context);
   return { ...context.testApp, get, rows, document, context };
+}
+
+function adminSession() {
+  const payload = Buffer.from(JSON.stringify({ amr: [{ method: 'password' }] })).toString('base64url');
+  return { access_token: `header.${payload}.signature`, user: { id: 'admin', app_metadata: { role: 'admin' } } };
+}
+
+function roundRow(playerId, points, finalized) {
+  const pointsInput = { value: String(points) };
+  const finalizedInput = { checked: Boolean(finalized) };
+  return {
+    dataset: { roundPlayer: playerId },
+    pointsInput, finalizedInput,
+    querySelector: (selector) => selector === '.round-points' ? pointsInput : selector === '.round-final' ? finalizedInput : null,
+  };
 }
 
 test('OCR só sugere total alinhado à última coluna para jogadores vinculados à partida e pista', () => {
@@ -275,6 +291,307 @@ test('ranking isola encontros e calcula média por partidas concluídas', () => 
   assert.equal(app.officialTotals()[0].gamesPlayed, 2);
   app.state.activeEncounterId = 'b';
   assert.equal(app.officialTotals()[0].points, 300);
+});
+
+test('recordes históricos somam encontros da mesma modalidade sem misturar quiz', () => {
+  const app = loadApp();
+  app.state.players = [{ id: 'ana', nome: 'Ana' }, { id: 'quiz-player', nome: 'Quiz Player' }];
+  app.state.encounters = [
+    { id: 'b1', nome: 'Boliche um', game_type: 'boliche' },
+    { id: 'b2', nome: 'Boliche dois', game_type: 'boliche' },
+    { id: 'q1', nome: 'Gincana separada', game_type: 'quiz' },
+  ];
+  app.state.activeEncounterId = 'b1';
+  app.state.games = [
+    { id: 'g1', nome: 'Partida um', encounter_id: 'b1', status: 'final', created_at: '2026-11-10' },
+    { id: 'g2', nome: 'Partida dois', encounter_id: 'b2', status: 'final', created_at: '2026-11-11' },
+    { id: 'g3', nome: 'Rodada de quiz', encounter_id: 'q1', status: 'final', created_at: '2026-11-12' },
+  ];
+  app.state.scores = [
+    { game_id: 'g1', player_id: 'ana', pontos: 100, finalizado: true },
+    { game_id: 'g2', player_id: 'ana', pontos: 150, finalizado: true },
+    { game_id: 'g3', player_id: 'quiz-player', pontos: 999, finalizado: true },
+  ];
+  app.renderRecords();
+  const output = app.get('groupRecords').innerHTML;
+  assert.match(output, /Histórico de Boliche/);
+  assert.match(output, /Boliche dois/);
+  assert.match(output, /150 pontos/);
+  assert.doesNotMatch(output, /Gincana separada|Quiz Player|999/);
+});
+
+test('carrega tipo e regras dos encontros junto com os resultados por rodada', async () => {
+  const rows = {
+    players: [{ id: 'ana', nome: 'Ana', pista: 'A' }], lanes: [],
+    encounters: [{ id: 'quiz-1', nome: 'Quiz', data: '2026-11-14', status: 'active', game_type: 'quiz', rules_version: 2, rules_config: { round_count: 3, max_points_per_round: 0 } }],
+    encounter_players: [{ encounter_id: 'quiz-1', player_id: 'ana' }],
+    games: [{ id: 'game-1', nome: 'Quiz 1', status: 'partial', encounter_id: 'quiz-1' }],
+    scores: [{ game_id: 'game-1', player_id: 'ana', pontos: 0, finalizado: false }],
+    round_scores: [{ game_id: 'game-1', player_id: 'ana', round_no: 1, points: 0, finalized: true }],
+    round_score_changes: [{ id: 12, game_id: 'game-1', player_id: 'ana', round_no: 1, previous_points: null, new_points: 0 }],
+  };
+  const selects = {};
+  const client = {
+    rpc: async () => ({ data: [], error: null }),
+    from: (table) => {
+      const result = { data: rows[table] || [], error: null };
+      const query = { select: (columns) => { selects[table] = columns; return query; }, order: () => query, eq: () => query, not: () => query, limit: () => query, then: (resolve, reject) => Promise.resolve(result).then(resolve, reject) };
+      return query;
+    },
+    storage: { from: () => ({ createSignedUrl: async () => ({ data: null, error: null }) }) },
+  };
+  const app = loadApp(client);
+  app.state.session = adminSession();
+  await app.loadData();
+  assert.match(selects.encounters, /game_type.*rules_version.*rules_config/);
+  assert.match(selects.round_scores, /round_no.*points.*finalized/);
+  assert.equal(selects.round_score_changes, '*');
+  assert.equal(app.state.encounters[0].game_type, 'quiz');
+  assert.equal(app.state.encounters[0].rules_version, 2);
+  assert.equal(app.state.roundScores[0].points, 0);
+  assert.equal(app.state.roundScoreChanges[0].id, 12);
+});
+
+test('criação de quiz usa RPC multijogos com configuração explícita', async () => {
+  let call;
+  const client = { rpc: async (name, args) => { call = { name, args }; return { data: null, error: { message: 'mock sql ausente' } }; } };
+  const app = loadApp(client);
+  app.openEncounterModal(false);
+  app.get('encounterName').value = 'Quiz de sábado';
+  app.get('encounterDate').value = '2026-11-14';
+  app.get('encounterGameType').value = 'quiz';
+  app.get('encounterRoundCount').value = '3';
+  app.get('encounterRoundMax').value = '';
+  await app.saveEncounter({ preventDefault() {} });
+  assert.equal(call.name, 'create_multigame_encounter');
+  assert.equal(call.args.p_game_type, 'quiz');
+  assert.deepEqual(JSON.parse(JSON.stringify(call.args.p_rules_config)), { round_count: 3, max_points_per_round: 0 });
+  assert.equal(call.args.p_request_id, 'photo-id');
+  assert.match(app.get('encounterFormError').textContent, /mock sql ausente/);
+});
+
+test('edição de encontro conserva modalidade e regras existentes', async () => {
+  let call;
+  const client = { rpc: async (name, args) => { call = { name, args }; return { data: null, error: { message: 'mock sql ausente' } }; } };
+  const app = loadApp(client);
+  app.state.encounters = [{ id: 'e', nome: 'Quiz', data: '2026-11-14', status: 'preparing', game_type: 'quiz', rules_version: 4, rules_config: { round_count: 5, max_points_per_round: 20 } }];
+  app.state.activeEncounterId = 'e';
+  app.openEncounterModal(true);
+  assert.equal(app.get('encounterGameType').value, 'quiz');
+  assert.equal(app.get('encounterGameType').disabled, true);
+  assert.equal(app.get('encounterRoundCount').value, 5);
+  app.get('encounterName').value = 'Quiz editado';
+  await app.saveEncounter({ preventDefault() {} });
+  assert.equal(call.name, 'save_encounter');
+  assert.equal(call.args.p_encounter_id, 'e');
+  assert.equal(Object.hasOwn(call.args, 'p_game_type'), false);
+  assert.equal(Object.hasOwn(call.args, 'p_rules_config'), false);
+});
+
+test('GameRules recebe modeId e linhas com a métrica correta para total, média, empates e zero', () => {
+  const app = loadApp();
+  const calls = [];
+  app.context.window.GameRules = {
+    getMode: (id) => ({ id, name: 'Quiz', unit: 'pontos', roundBased: true }),
+    rankScores: (modeId, rows, metric) => {
+      calls.push({ modeId, metric, rows: rows.map((row) => ({ player_id: row.player_id, value: row[metric] })) });
+      return [...rows].sort((a, b) => b[metric] - a[metric]);
+    },
+  };
+  app.state.players = [
+    { id: 'ana', nome: 'Ana' }, { id: 'bia', nome: 'Bia' },
+    { id: 'caio', nome: 'Caio' }, { id: 'zero', nome: 'Zero' },
+  ];
+  app.state.encounters = [{ id: 'e', nome: 'Quiz', status: 'active', game_type: 'quiz', rules_config: { round_count: 2, max_points_per_round: 0 } }];
+  app.state.activeEncounterId = 'e';
+  app.state.encounterPlayers = app.state.players.map((player) => ({ encounter_id: 'e', player_id: player.id }));
+  app.state.games = [{ id: 'g1', encounter_id: 'e', status: 'final' }, { id: 'g2', encounter_id: 'e', status: 'final' }];
+  app.state.scores = [
+    { game_id: 'g1', player_id: 'ana', pontos: 10, finalizado: true }, { game_id: 'g2', player_id: 'ana', pontos: 0, finalizado: true },
+    { game_id: 'g1', player_id: 'bia', pontos: 8, finalizado: true }, { game_id: 'g1', player_id: 'caio', pontos: 8, finalizado: true },
+    { game_id: 'g1', player_id: 'zero', pontos: 0, finalizado: true },
+  ];
+  app.get('rankingMetric').value = 'total';
+  let totals = app.officialTotals();
+  assert.equal(totals[0].player.id, 'ana');
+  assert.equal(totals.find((row) => row.player.id === 'zero').points, 0);
+  assert.equal(app.officialPosition(totals, totals.findIndex((row) => row.player.id === 'bia')), app.officialPosition(totals, totals.findIndex((row) => row.player.id === 'caio')));
+  assert.equal(calls[0].modeId, 'quiz');
+  assert.equal(calls[0].metric, 'total');
+  assert.deepEqual(JSON.parse(JSON.stringify(calls[0].rows.map((row) => row.value))), [10, 8, 8, 0]);
+  app.get('rankingMetric').value = 'average';
+  totals = app.officialTotals();
+  assert.equal(totals[0].player.id, 'bia');
+  assert.equal(totals[0].average, 8);
+  assert.equal(totals[1].average, 8);
+  assert.equal(calls.at(-1).metric, 'average');
+  assert.deepEqual(JSON.parse(JSON.stringify(calls.at(-1).rows.map((row) => row.value))), [5, 8, 8, 0]);
+
+  app.state.activeGameId = 'g1';
+  app.renderCurrentGame();
+  assert.equal(calls.at(-1).modeId, 'quiz');
+  assert.equal(calls.at(-1).metric, 'total');
+  assert.deepEqual(JSON.parse(JSON.stringify(calls.at(-1).rows.map((row) => row.value))), [10, 8, 8, 0]);
+});
+
+test('regra max_points_per_round igual a zero significa sem limite na tela e no formulário', () => {
+  const app = loadApp();
+  app.state.encounters = [{ id: 'e', nome: 'Quiz', status: 'active', game_type: 'quiz', rules_config: { round_count: 1, max_points_per_round: 0 } }];
+  app.state.activeEncounterId = 'e';
+  app.state.activeGameId = 'g';
+  app.state.games = [{ id: 'g', encounter_id: 'e', status: 'partial', nome: 'Quiz' }];
+  app.state.players = [{ id: 'ana', nome: 'Ana' }];
+  app.state.scores = [{ game_id: 'g', player_id: 'ana', pontos: 0, finalizado: false }];
+  app.state.roundGameId = 'g'; app.state.roundNo = 1;
+  app.get('roundGame').value = 'g'; app.get('roundNumber').value = '1';
+  assert.equal(app.configuredRoundMax(), 0);
+  app.renderRoundResults();
+  assert.doesNotMatch(app.get('roundResults').innerHTML, /max="0"/);
+  app.get('encounterGameType').value = 'quiz';
+  app.get('encounterRoundCount').value = '1';
+  app.get('encounterRoundMax').value = '0';
+  app.renderEncounterRules();
+  assert.match(app.get('encounterRulesSummary').textContent, /Sem limite/);
+});
+
+test('rascunho da rodada sobrevive a render e atualização Realtime com conflito', async () => {
+  const rows = {
+    players: [{ id: 'ana', nome: 'Ana', pista: 'A' }], lanes: [],
+    encounters: [{ id: 'e', nome: 'Quiz', data: '2026-11-14', status: 'active', game_type: 'quiz', rules_version: 1, rules_config: { round_count: 2, max_points_per_round: 0 } }],
+    encounter_players: [{ encounter_id: 'e', player_id: 'ana' }],
+    games: [{ id: 'g', nome: 'Quiz', encounter_id: 'e', status: 'partial' }],
+    scores: [{ game_id: 'g', player_id: 'ana', pontos: 4, finalizado: false }],
+    round_scores: [{ game_id: 'g', player_id: 'ana', round_no: 1, points: 5, finalized: false }],
+    round_score_changes: [],
+  };
+  const client = {
+    rpc: async () => ({ data: [], error: null }),
+    from: (table) => {
+      const result = { data: rows[table] || [], error: null };
+      const query = { select: () => query, order: () => query, eq: () => query, not: () => query, limit: () => query, then: (resolve, reject) => Promise.resolve(result).then(resolve, reject) };
+      return query;
+    },
+    storage: { from: () => ({ createSignedUrl: async () => ({ data: null, error: null }) }) },
+  };
+  const app = loadApp(client);
+  const session = adminSession();
+  app.state.session = session;
+  app.state.activeEncounterId = 'e'; app.state.activeGameId = 'g'; app.state.roundGameId = 'g'; app.state.roundNo = 1;
+  app.state.encounters = [rows.encounters[0]];
+  app.state.games = [rows.games[0]];
+  app.state.players = rows.players;
+  app.state.scores = [{ game_id: 'g', player_id: 'ana', pontos: 4, finalizado: false }];
+  app.state.roundScores = [{ game_id: 'g', player_id: 'ana', round_no: 1, points: 4, finalized: false }];
+  app.get('roundModal').open = true;
+  app.get('roundGame').value = 'g'; app.get('roundNumber').value = '1';
+  const row = roundRow('ana', 9, false);
+  row.pointsInput.matches = (selector) => selector.includes('.round-points');
+  row.pointsInput.closest = () => row;
+  app.get('roundResults').querySelectorAll = () => [row];
+  app.markRoundEdited({ target: row.pointsInput });
+  await app.loadData();
+  assert.equal(app.state.roundConflict, true);
+  assert.equal(app.state.roundDraft.get('g:1:ana').points, '9');
+  app.context.renderAreaNavigation = () => {}; app.context.renderCompetitionArea = () => {};
+  app.context.renderLeaderboard = () => {}; app.context.renderEncounterBar = () => {};
+  app.context.renderCurrentGame = () => {}; app.context.renderGames = () => {};
+  app.context.renderTeams = () => {}; app.context.renderBracket = () => {};
+  app.context.renderRecords = () => {}; app.context.renderPredictions = () => {};
+  app.context.renderPlayerSelection = () => {}; app.context.renderPhotoOptions = () => {};
+  app.renderApp();
+  assert.equal(app.state.roundDraft.get('g:1:ana').points, '9');
+  assert.match(app.get('roundResults').innerHTML, /value="9"/);
+  assert.match(app.get('roundError').textContent, /rascunhos foram preservados/);
+});
+
+test('salva zero com save_round_score e ignora repetição idêntica', async () => {
+  const calls = [];
+  const session = adminSession();
+  const client = {
+    auth: { getSession: async () => ({ data: { session }, error: null }) },
+    rpc: async (name, args) => { calls.push({ name, args }); return { data: null, error: null }; },
+  };
+  const app = loadApp(client);
+  app.state.session = session;
+  app.state.encounters = [{ id: 'e', nome: 'Quiz', status: 'active', game_type: 'quiz', rules_config: { round_count: 2, max_points_per_round: 0 } }];
+  app.state.activeEncounterId = 'e'; app.state.activeGameId = 'g'; app.state.roundGameId = 'g'; app.state.roundNo = 1;
+  app.state.roundScores = [{ game_id: 'g', player_id: 'ana', round_no: 1, points: null, finalized: false }];
+  const row = roundRow('ana', 0, true);
+  app.get('roundGame').value = 'g'; app.get('roundNumber').value = '1';
+  app.get('roundResults').querySelectorAll = () => [row];
+  app.context.loadData = async () => {};
+  await app.saveRoundScores({ preventDefault() {} });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].name, 'save_round_score');
+  assert.deepEqual(JSON.parse(JSON.stringify(calls[0].args)), { p_game_id: 'g', p_player_id: 'ana', p_round_no: 1, p_points: 0, p_finalized: true });
+  app.state.roundScores = [{ game_id: 'g', player_id: 'ana', round_no: 1, points: 0, finalized: true }];
+  await app.saveRoundScores({ preventDefault() {} });
+  assert.equal(calls.length, 1);
+  assert.match(app.get('roundError').textContent, /Nenhuma alteração nova/);
+});
+
+test('submit parcial reconcilia linha salva e não duplica RPC na nova tentativa', async () => {
+  const calls = [];
+  let failedSecondPlayerOnce = true;
+  let app;
+  const session = adminSession();
+  const client = {
+    auth: { getSession: async () => ({ data: { session }, error: null }) },
+    rpc: async (name, args) => {
+      calls.push({ name, args });
+      if (args.p_player_id === 'bia' && failedSecondPlayerOnce) { failedSecondPlayerOnce = false; return { data: null, error: { message: 'falha simulada' } }; }
+      if (!app.state.roundScores.some((row) => row.player_id === args.p_player_id)) app.state.roundScores.push({ game_id: args.p_game_id, player_id: args.p_player_id, round_no: args.p_round_no, points: args.p_points, finalized: args.p_finalized });
+      return { data: null, error: null };
+    },
+  };
+  app = loadApp(client);
+  app.state.session = session;
+  app.state.encounters = [{ id: 'e', nome: 'Quiz', status: 'active', game_type: 'quiz', rules_config: { round_count: 1, max_points_per_round: 0 } }];
+  app.state.activeEncounterId = 'e'; app.state.activeGameId = 'g'; app.state.roundGameId = 'g'; app.state.roundNo = 1;
+  app.get('roundGame').value = 'g'; app.get('roundNumber').value = '1';
+  app.get('roundResults').querySelectorAll = () => [roundRow('ana', 0, true), roundRow('bia', 8, true)];
+  app.context.loadData = async () => {};
+  await app.saveRoundScores({ preventDefault() {} });
+  assert.match(app.get('roundError').textContent, /Falha após 1 resultado/);
+  assert.equal(app.state.roundScores.length, 1);
+  await app.saveRoundScores({ preventDefault() {} });
+  assert.deepEqual(calls.map((call) => call.args.p_player_id), ['ana', 'bia', 'bia']);
+  assert.equal(app.state.roundScores.length, 2);
+});
+
+test('modal de histórico oferece desfazer e limpar rodada com RPCs confirmadas', async () => {
+  const calls = [];
+  const session = adminSession();
+  const client = { rpc: async (name, args) => { calls.push({ name, args }); return { data: null, error: null }; } };
+  const app = loadApp(client);
+  app.state.session = session;
+  app.state.players = [{ id: 'ana', nome: 'Ana' }];
+  app.state.encounters = [{ id: 'e', nome: 'Quiz', status: 'active', game_type: 'quiz', rules_config: { round_count: 1, max_points_per_round: 0 } }];
+  app.state.activeEncounterId = 'e'; app.state.activeGameId = 'g'; app.state.roundGameId = 'g'; app.state.roundNo = 1;
+  app.state.games = [{ id: 'g', nome: 'Quiz', encounter_id: 'e', status: 'partial' }];
+  app.state.scores = [{ game_id: 'g', player_id: 'ana', pontos: 5, finalizado: false }];
+  app.state.scoreChanges = [{ id: 7, score_id: 'score-ana', game_id: 'g', player_id: 'ana', previous_points: 0, new_points: 5, previous_finalized: false, new_finalized: false, changed_at: '2026-11-14T11:00:00Z', actor_id: 'admin' }];
+  app.state.roundScores = [{ game_id: 'g', player_id: 'ana', round_no: 1, points: 5, finalized: true }];
+  app.state.roundScoreChanges = [{ id: 44, game_id: 'g', player_id: 'ana', round_no: 1, previous_points: 0, new_points: 5, changed_at: '2026-11-14T12:00:00Z', actor_id: 'admin' }];
+  app.renderScoreHistory();
+  const history = app.get('scoreHistoryList').innerHTML;
+  assert.match(history, /data-undo-round-change="44"/);
+  assert.doesNotMatch(history, /data-undo-change=/);
+  assert.match(history, /Rodada 1/);
+  assert.match(history, /unidade: pontos/);
+  app.get('roundGame').value = 'g'; app.get('roundNumber').value = '1';
+  app.get('roundResults').querySelectorAll = () => [roundRow('ana', 5, true)];
+  app.renderRoundResults();
+  assert.match(app.get('roundResults').innerHTML, /data-clear-round="ana"/);
+  app.renderCurrentGame();
+  assert.doesNotMatch(app.get('currentGameBody').innerHTML, /data-clear-round=/);
+  app.context.loadData = async () => {};
+  await app.clearRoundScore('ana');
+  await app.undoRoundScoreChange(44);
+  assert.deepEqual(JSON.parse(JSON.stringify(calls.map((call) => [call.name, call.args]))), [
+    ['clear_round_score', { p_game_id: 'g', p_player_id: 'ana', p_round_no: 1 }],
+    ['undo_round_score_change', { p_change_id: 44 }],
+  ]);
 });
 
 test('OCR usa a pista gravada na partida mesmo após alterar a pista padrão do jogador', () => {
