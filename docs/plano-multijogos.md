@@ -186,3 +186,12 @@ Usar registro agregado de tempos e falhas, sem adicionar serviço de analytics p
 4. **Confrontos:** primeiro individuais; confronto entre equipes depende de regra própria de composição.
 5. **Especializações:** pinball, menor tempo/tacadas e 501 são entregas separadas, com validação de banco específica.
 6. **Regra de federação:** usar como referência apenas se o grupo escolher o modelo; mesa com 11 pontos e vantagem de 2 segue os [estatutos de 2026 da ITTF](https://db.ittf.com/sites/default/files/public/2026-02/2026_Statutes_v1_consolidated_clean.pdf); 501 com saída dupla tem referência na [WDF](https://dartswdf.com/storage/uploads/be7ad99c-3d8b-4dbf-ab49-51c7c320d05e/2025-01-01_World_Ranking_Systems_Criteria_Seniors_45.pdf); cubo por tempo e DNF consulta a [WCA](https://www.worldcubeassociation.org/regulations/). Regras recreativas alternativas exigem ficha própria.
+
+## 13. Decisões complementares para a implementação
+
+1. Até existir um papel próprio de operador com RLS correspondente, **operador é o administrador autenticado por senha**. O texto da interface não deve sugerir delegação de escrita a contas de jogadores.
+2. A classificação de equipes de um encontro usa **um único critério**. Na modalidade por média, o denominador é a quantidade de resultados individuais elegíveis dos integrantes nas partidas finalizadas; equipes sem resultados elegíveis ficam sem posição. Composição e critério não mudam silenciosamente após o início da pontuação.
+3. Palpites recreativos continuam apontando para **um jogador**. O ranking de equipes é independente dos palpites; habilitar palpite em equipe exige decisão de produto e versão de regra próprias.
+4. O QR Code e o link de compartilhamento devem apontar para o mesmo encontro selecionado. O arquivo de exportação deve conter a configuração das regras e a composição das equipes para permitir reconstruir ambas as classificações.
+5. A exclusão de jogadores e resultados deve respeitar a ação administrativa pedida sem liberar a troca posterior de modalidade e regras de um encontro que já teve pontos. A retenção de identificadores pessoais na auditoria deve ser explícita e compatível com o texto da confirmação.
+6. A demonstração sintética de regras não substitui o piloto com pessoas reais em dois dispositivos. A porta D2 continua pendente até haver evidência desse fluxo completo.
