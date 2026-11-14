@@ -176,6 +176,13 @@ begin
   metric_team_c := public.save_team(null, metric_test.id, 'Equipe métrica C', 'sum', array[p6]);
   caught := false;
   begin
+    delete from public.encounter_players
+     where encounter_id=metric_test.id and player_id=p4;
+  exception when raise_exception then caught := true;
+  end;
+  if not caught then raise exception 'Remoção direta de jogador com equipe foi permitida'; end if;
+  caught := false;
+  begin
     delete from public.teams where id=metric_team_c.id;
   exception when insufficient_privilege then caught := true;
   end;
