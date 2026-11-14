@@ -8,7 +8,7 @@ function loadApp(client = null) {
   const elements = new Map();
   const rows = [];
   const get = (id) => {
-    if (!elements.has(id)) elements.set(id, { value: '', hidden: false, disabled: false, textContent: '', innerHTML: '', style: {}, open: false, focus() {}, showModal() { this.open = true; }, close() { this.open = false; }, addEventListener() {}, setAttribute() {}, querySelector: () => null, querySelectorAll: () => [] });
+    if (!elements.has(id)) elements.set(id, { value: '', hidden: false, disabled: false, textContent: '', innerHTML: '', style: {}, open: false, focus() {}, showModal() { this.open = true; }, close() { this.open = false; }, reset() {}, addEventListener() {}, setAttribute() {}, querySelector: () => null, querySelectorAll: () => [] });
     return elements.get(id);
   };
   const document = {
@@ -20,11 +20,11 @@ function loadApp(client = null) {
   get('toastContainer').append = () => {};
   const context = vm.createContext({
     window: { SUPABASE_CONFIG: client ? { url: 'https://example.test', publishableKey: 'test' } : {}, supabase: client ? { createClient: () => client } : null, GamePresentations: require('../game-presentations.js'), location: { hash: '', search: '', href: 'https://example.test/boliche/' }, history: { replaceState() {} }, setTimeout: () => {}, confirm: () => true },
-    document, URL, URLSearchParams, Intl, atob, console, crypto: { randomUUID: () => 'photo-id' },
+    document, URL, URLSearchParams, Intl, atob, console, sessionStorage: { getItem: () => null, setItem() {}, removeItem() {} }, crypto: { randomUUID: () => 'photo-id' },
   });
   const source = fs.readFileSync(path.join(__dirname, '..', 'app.js'), 'utf8')
     .replace(/\nstart\(\);\s*$/, '\n');
-  vm.runInContext(`${source}\nconst appRender = render;\nrender = () => {};\nrefreshAfterReconnect = async () => {};\nglobalThis.testApp = { state, loadData, renderApp: appRender, buildSuggestions, playersOnLane, updateReviewTable, updatePhotoConfirmState, captureReviewDraft, markRoundEdited, markReviewEdited, changeReviewContext, runOcr, drawOrientedPhoto, applyPhotoInteractionMode, canvasPoint, renderLeaderboard, renderCurrentGame, removeGame, renderTeams, renderRecords, renderScoreHistory, shareResultCard, confirmPhotoUpdate, submitAuth, submitProfile, prepareProfilePhoto, cleanupUnusedProfilePhotos, officialTotals, officialPosition, encounterGames, bracketRounds, bracketWinner, balancedLaneDraw, buildResultsExport, downloadResults, openEncounterModal, saveEncounter, renderEncounterRules, renderEncounterBar, renderGameSwitcher, selectEncounter, openRoundModal, renderRoundModal, renderRoundResults, saveRoundScores, clearRoundScore, undoRoundScoreChange, getGameMode, isRoundBased, configuredRoundMax, rankScoreRows, bowlingFrames, tabletStandingPins };`, context);
+  vm.runInContext(`${source}\nconst appRender = render;\nrender = () => {};\nrefreshAfterReconnect = async () => {};\nglobalThis.testApp = { state, loadData, renderApp: appRender, buildSuggestions, playersOnLane, updateReviewTable, updatePhotoConfirmState, captureReviewDraft, markRoundEdited, markReviewEdited, changeReviewContext, runOcr, drawOrientedPhoto, applyPhotoInteractionMode, canvasPoint, renderLeaderboard, renderCurrentGame, renderGames, renderLanes, renderPhotoOptions, removeGame, renderTeams, renderRecords, renderScoreHistory, loadMoreAuditHistory, shareResultCard, openShareModal, openPhotoModal, openTabletModal, openQuickScore, openStatsModal, confirmPhotoUpdate, submitAuth, submitProfile, prepareProfilePhoto, cleanupUnusedProfilePhotos, officialTotals, officialPosition, encounterGames, bracketRounds, bracketWinner, balancedLaneDraw, buildResultsExport, downloadResults, openEncounterModal, saveEncounter, renderEncounterRules, renderEncounterBar, renderGameSwitcher, selectEncounter, openGameModal, createGame, renderPlayerSelection, addPlayer, signOut, openRoundModal, renderRoundModal, renderRoundResults, saveRoundScores, clearRoundScore, undoRoundScoreChange, getGameMode, isRoundBased, configuredRoundMax, rankScoreRows, teamStandings, bowlingFrames, tabletStandingPins };`, context);
   return { ...context.testApp, get, rows, document, context };
 }
 
@@ -41,6 +41,28 @@ function roundRow(playerId, points, finalized) {
     pointsInput, finalizedInput,
     querySelector: (selector) => selector === '.round-points' ? pointsInput : selector === '.round-final' ? finalizedInput : null,
   };
+}
+
+function pagedClient(rows, ranges = []) {
+  const client = {
+    rpc: async () => ({ data: [], error: null }),
+    from: (table) => {
+      let offset = 0;
+      let end = Number.POSITIVE_INFINITY;
+      const query = {
+        select: () => query,
+        order: () => query,
+        eq: () => query,
+        not: () => query,
+        limit: (count) => { end = offset + count; return query; },
+        range: (first, last) => { offset = first; end = last + 1; ranges.push([table, first, last]); return query; },
+        then: (resolve, reject) => Promise.resolve({ data: (rows[table] || []).slice(offset, end), error: null }).then(resolve, reject),
+      };
+      return query;
+    },
+    storage: { from: () => ({ createSignedUrl: async () => ({ data: null, error: null }) }) },
+  };
+  return client;
 }
 
 test('troca de jogo agrupa encontros e muda o placar sem alterar a modalidade histórica', () => {
@@ -70,6 +92,147 @@ test('novo encontro aberto a partir de Quiz inicia com modalidade e rodadas pron
   assert.equal(app.get('encounterGameType').value, 'quiz');
   assert.equal(app.get('encounterRoundCount').value, '3');
   assert.match(app.get('encounterRulesSummary').textContent, /Quiz/);
+});
+
+test('novo encontro não pré-seleciona todos os jogadores globais no roster', () => {
+  const app = loadApp();
+  app.state.players = [{ id: 'ana', nome: 'Ana' }, { id: 'bia', nome: 'Bia' }];
+  app.openEncounterModal(false, 'quiz');
+  assert.equal((app.get('encounterPlayerSelection').innerHTML.match(/checked/g) || []).length, 0);
+});
+
+test('Quiz distribui participantes na estação virtual sem depender de pistas físicas', () => {
+  const app = loadApp();
+  app.state.encounters = [{ id: 'q', nome: 'Quiz', status: 'active', game_type: 'quiz', rules_config: { round_count: 2 } }];
+  app.state.activeEncounterId = 'q';
+  app.state.players = [{ id: 'ana', nome: 'Ana' }, { id: 'bia', nome: 'Bia' }, { id: 'global', nome: 'Fora do roster' }];
+  app.state.encounterPlayers = [{ encounter_id: 'q', player_id: 'ana' }, { encounter_id: 'q', player_id: 'bia' }];
+  app.state.lanes = [{ name: '__estacao_virtual__', capacity: 20 }, { name: 'Pista 1', capacity: 6 }];
+  app.openGameModal();
+  const html = app.get('playerSelection').innerHTML;
+  assert.equal((html.match(/value="__estacao_virtual__" selected>Estação<\/option>/g) || []).length, 2);
+  assert.doesNotMatch(html, /Pista 1|Estação __estacao_virtual__/);
+  assert.doesNotMatch(html, /Fora do roster/);
+  assert.equal(app.get('drawLanesButton').textContent, 'Distribuir na estação');
+  assert.match(app.get('gamePlayerHelp').textContent, /estação virtual/);
+});
+
+test('cadastro de jogador aceita estação virtual em Quiz e exige pista física em Boliche', async () => {
+  const inserted = [];
+  let nextId = 0;
+  const client = {
+    from: (table) => {
+      let row;
+      const query = {
+        insert: (value) => { row = value; inserted.push({ table, ...value }); return query; },
+        select: () => query,
+        single: async () => ({ data: { id: `player-${++nextId}`, ...row }, error: null }),
+      };
+      return query;
+    },
+  };
+  const app = loadApp(client);
+  app.state.encounters = [{ id: 'q', nome: 'Quiz', status: 'active', game_type: 'quiz' }];
+  app.state.activeEncounterId = 'q';
+  app.state.lanes = [{ name: '__estacao_virtual__', capacity: 20 }, { name: '1', capacity: 6 }];
+  app.renderLanes();
+  assert.match(app.get('playerLane').innerHTML, /value="__estacao_virtual__">Estação/);
+  assert.doesNotMatch(app.get('playerLane').innerHTML, /value="1"/);
+  assert.doesNotMatch(app.get('lanesList').innerHTML, /__estacao_virtual__/);
+  app.get('playerName').value = 'Ana'; app.get('playerNickname').value = 'ANA';
+  assert.equal(app.get('playerLane').value, '__estacao_virtual__');
+  await app.addPlayer();
+  assert.deepEqual(inserted, [{ table: 'players', nome: 'Ana', apelido_placar: 'ANA', pista: '__estacao_virtual__' }]);
+
+  app.state.encounters = [{ id: 'b', nome: 'Boliche', status: 'active', game_type: 'boliche' }];
+  app.state.activeEncounterId = 'b';
+  app.renderLanes();
+  app.get('playerName').value = 'Bruno'; app.get('playerNickname').value = 'BRU';
+  app.get('playerLane').value = '__estacao_virtual__';
+  await app.addPlayer();
+  assert.equal(inserted.length, 1);
+  app.get('playerLane').value = '1';
+  await app.addPlayer();
+  assert.deepEqual(inserted[1], { table: 'players', nome: 'Bruno', apelido_placar: 'BRU', pista: '1' });
+});
+
+test('Boliche oculta a estação reservada em seletores físicos e mostra rótulo humano nas classificações', () => {
+  const app = loadApp();
+  app.state.encounters = [{ id: 'b', nome: 'Boliche', status: 'active', game_type: 'boliche' }];
+  app.state.activeEncounterId = 'b'; app.state.activeGameId = 'g';
+  app.state.players = [{ id: 'ana', nome: 'Ana', apelido_placar: 'ANA', pista: '1' }, { id: 'bia', nome: 'Bia', apelido_placar: 'BIA', pista: '__estacao_virtual__' }];
+  app.state.encounterPlayers = [{ encounter_id: 'b', player_id: 'ana' }, { encounter_id: 'b', player_id: 'bia' }];
+  app.state.lanes = [{ name: '1', capacity: 6 }, { name: '__estacao_virtual__', capacity: 20 }];
+  app.state.games = [{ id: 'g', encounter_id: 'b', nome: 'Partida', status: 'final' }];
+  app.state.scores = [
+    { game_id: 'g', player_id: 'ana', pista: '1', pontos: 100, finalizado: true },
+    { game_id: 'g', player_id: 'bia', pista: '__estacao_virtual__', pontos: 110, finalizado: true },
+  ];
+  app.get('playerLane').value = '__estacao_virtual__';
+  app.get('photoGame').value = 'g'; app.get('photoLane').value = '__estacao_virtual__';
+  app.get('rankingLane').value = '__estacao_virtual__';
+
+  app.renderPlayerSelection();
+  assert.match(app.get('playerSelection').innerHTML, /value="1" selected>Pista 1<\/option>/);
+  assert.doesNotMatch(app.get('playerSelection').innerHTML, /__estacao_virtual__/);
+  app.renderLanes();
+  assert.match(app.get('lanesList').innerHTML, /Pista 1/);
+  assert.doesNotMatch(app.get('lanesList').innerHTML, /__estacao_virtual__/);
+  assert.doesNotMatch(app.get('playerLane').innerHTML, /__estacao_virtual__/);
+  app.renderPhotoOptions();
+  assert.match(app.get('photoLane').innerHTML, /value="1"/);
+  assert.doesNotMatch(app.get('photoLane').innerHTML, /__estacao_virtual__/);
+  app.renderLeaderboard();
+  assert.doesNotMatch(app.get('rankingLane').innerHTML, /__estacao_virtual__/);
+  assert.equal(app.get('rankingLane').value, '');
+  assert.match(app.get('leaderboardBody').innerHTML, /Estação/);
+  assert.doesNotMatch(app.get('leaderboardBody').innerHTML, /__estacao_virtual__/);
+  app.renderCurrentGame();
+  assert.match(app.get('currentGameBody').innerHTML, /Estação/);
+  assert.doesNotMatch(app.get('currentGameBody').innerHTML, /__estacao_virtual__/);
+});
+
+test('modalidade avançada desconhecida fica somente para leitura sem pontuação genérica ou ações de boliche', async () => {
+  const calls = [];
+  const client = { rpc: async (name, args) => { calls.push({ name, args }); return { data: null, error: null }; } };
+  const app = loadApp(client);
+  const builtins = require('../game-presentations.js');
+  app.context.window.GamePresentations = {
+    proposed: [],
+    get: (id) => id === 'duelo_avancado'
+      ? { id, name: 'Duelo Avançado', unit: 'pontos', roundBased: true, locationLabel: 'Arena', progressKind: 'rounds' }
+      : builtins.get(id),
+  };
+  app.state.session = adminSession();
+  app.state.encounters = [{ id: 'x', nome: 'Duelo', data: '2026-11-14', status: 'active', game_type: 'duelo_avancado' }];
+  app.state.activeEncounterId = 'x'; app.state.activeGameId = 'g';
+  app.state.games = [{ id: 'g', encounter_id: 'x', nome: 'Partida', status: 'partial' }];
+  app.state.players = [{ id: 'ana', nome: 'Ana' }];
+  app.state.encounterPlayers = [{ encounter_id: 'x', player_id: 'ana' }];
+  app.state.scores = [{ game_id: 'g', player_id: 'ana', pista: 'A', pontos: 999, finalizado: true }];
+
+  assert.equal(app.getGameMode().ready, false);
+  assert.equal(app.getGameMode().preparing, true);
+  app.renderLeaderboard(); app.renderCurrentGame(); app.renderGames(); app.renderEncounterBar();
+  assert.match(app.get('leaderboardBody').innerHTML, /Modalidade .* em preparação/);
+  assert.match(app.get('currentGameBody').innerHTML, /Modalidade em preparação/);
+  assert.doesNotMatch(app.get('leaderboardBody').innerHTML, /Ana|999/);
+  assert.doesNotMatch(app.get('currentGameBody').innerHTML, /Ana|999|Rodadas|Corrigir/);
+  assert.match(app.get('gamesList').innerHTML, /somente leitura/);
+  assert.doesNotMatch(app.get('gamesList').innerHTML, /999|data-edit-game|data-delete-game/);
+  assert.equal(app.get('photoButton').hidden, true);
+  assert.equal(app.get('tabletButton').hidden, true);
+  assert.equal(app.get('updateScoreButton').hidden, true);
+  assert.equal(app.get('newGameButton').disabled, true);
+  assert.equal(app.get('editEncounterButton').disabled, true);
+
+  app.openPhotoModal(); app.openTabletModal(); app.openQuickScore('ana'); app.openRoundModal();
+  await app.createGame({ preventDefault() {} });
+  await app.saveRoundScores({ preventDefault() {} });
+  assert.equal(app.get('photoModal').open, false);
+  assert.equal(app.get('tabletModal').open, false);
+  assert.equal(app.get('roundModal').open, false);
+  assert.equal(calls.length, 0);
 });
 
 test('quiz apresenta progresso por rodada no lugar da conclusão por pista', () => {
@@ -308,6 +471,46 @@ test('cartão do resultado inclui o vencedor e salva PNG da classificação fina
   assert.equal(downloaded, true);
 });
 
+test('QR de compartilhamento codifica o encontro selecionado e não quebra sem o módulo da UI', async () => {
+  const app = loadApp();
+  app.context.window.location.href = 'https://example.test/boliche/#access_token=secret-access&refresh_token=secret-refresh';
+  app.state.encounters = [{ id: 'quiz-1', nome: 'Quiz' }];
+  app.state.activeEncounterId = 'quiz-1';
+  const link = { href: '', textContent: '' };
+  app.get('shareModal').querySelector = () => link;
+  let generatedUrl = null;
+  app.context.window.JogatinaQR = { toDataURL: async (url) => { generatedUrl = url; return 'data:image/png;base64,QR'; } };
+  await app.openShareModal();
+  assert.equal(new URL(generatedUrl).searchParams.get('encontro'), 'quiz-1');
+  assert.equal(new URL(generatedUrl).hash, '');
+  assert.doesNotMatch(generatedUrl, /access_token|refresh_token|secret-access|secret-refresh/);
+  assert.equal(app.get('shareQr').src, 'data:image/png;base64,QR');
+  assert.equal(app.get('shareQr').hidden, false);
+  app.context.window.JogatinaQR = undefined;
+  await app.openShareModal();
+  assert.equal(app.get('shareQr').hidden, true);
+});
+
+test('gráfico do perfil autoescala e vitórias contam somente liderança isolada confirmada', () => {
+  const app = loadApp();
+  app.state.encounters = [{ id: 'e', game_type: 'boliche' }];
+  app.state.activeEncounterId = 'e';
+  app.state.players = [{ id: 'ana', nome: 'Ana' }, { id: 'bia', nome: 'Bia' }];
+  app.state.games = [1, 2, 3].map((n) => ({ id: `g${n}`, encounter_id: 'e', status: 'final', created_at: `2026-11-1${n}` }));
+  app.state.scores = [
+    { game_id: 'g1', player_id: 'ana', pontos: 100, finalizado: true }, { game_id: 'g1', player_id: 'bia', pontos: 50000, finalizado: false },
+    { game_id: 'g2', player_id: 'ana', pontos: 200, finalizado: true }, { game_id: 'g2', player_id: 'bia', pontos: 200, finalizado: true },
+    { game_id: 'g3', player_id: 'ana', pontos: 50000000, finalizado: true }, { game_id: 'g3', player_id: 'bia', pontos: 100, finalizado: true },
+  ];
+  app.openStatsModal('ana');
+  assert.match(app.get('statsSummary').innerHTML, /<strong>2<\/strong><span>vitórias/);
+  const chart = app.get('statsEvolution').innerHTML;
+  const coordinates = chart.match(/<polyline points="([^"]+)"/)[1].split(' ');
+  const ys = coordinates.map((point) => Number(point.split(',')[1]));
+  assert.ok(ys.every((y) => Number.isFinite(y) && y >= 20 && y <= 115));
+  assert.ok(ys[2] < ys[0]);
+});
+
 test('ranking isola encontros e calcula média por partidas concluídas', () => {
   const app = loadApp();
   app.state.players = [{ id: 'ana', nome: 'Ana', pista: '1' }, { id: 'bruno', nome: 'Bruno', pista: '2' }];
@@ -402,6 +605,77 @@ test('equipes empatadas compartilham a posição', () => {
   assert.match(app.get('teamsList').innerHTML, /3º C/);
 });
 
+test('classificação de equipes aplica métrica comum, média por jogos confirmados e remove inelegíveis', () => {
+  const app = loadApp();
+  app.state.activeEncounterId = 'e';
+  app.state.encounters = [{ id: 'e', game_type: 'boliche' }];
+  app.state.players = ['ana', 'bia', 'caio', 'dora'].map((id) => ({ id, nome: id }));
+  app.state.teams = [
+    { id: 'b', encounter_id: 'e', name: 'B', metric: 'average' },
+    { id: 'a', encounter_id: 'e', name: 'A', metric: 'average' },
+    { id: 'c', encounter_id: 'e', name: 'Sem resultado', metric: 'average' },
+  ];
+  app.state.teamPlayers = [
+    { team_id: 'a', player_id: 'ana' }, { team_id: 'a', player_id: 'bia' },
+    { team_id: 'b', player_id: 'caio' }, { team_id: 'c', player_id: 'dora' },
+  ];
+  app.state.games = [{ id: 'g1', encounter_id: 'e', status: 'final' }, { id: 'g2', encounter_id: 'e', status: 'final' }];
+  app.state.scores = [
+    { game_id: 'g1', player_id: 'ana', pontos: 100, finalizado: true },
+    { game_id: 'g2', player_id: 'ana', pontos: 200, finalizado: true },
+    { game_id: 'g1', player_id: 'bia', pontos: 900, finalizado: false },
+    { game_id: 'g1', player_id: 'caio', pontos: 150, finalizado: true },
+    { game_id: 'g2', player_id: 'caio', pontos: 150, finalizado: true },
+  ];
+  app.renderTeams();
+  assert.deepEqual(app.teamStandings().map((row) => [row.team.name, row.value, row.position, row.confirmedGames]), [['A', 150, 1, 2], ['B', 150, 1, 2]]);
+  assert.match(app.get('teamsList').innerHTML, /1º A/);
+  assert.match(app.get('teamsList').innerHTML, /1º B/);
+  assert.match(app.get('teamsList').innerHTML, /150,0 de média/);
+  assert.doesNotMatch(app.get('teamsList').innerHTML, /Sem resultado/);
+});
+
+test('métricas misturadas bloqueiam classificação e export até padronização explícita', () => {
+  const app = loadApp();
+  app.state.activeEncounterId = 'e';
+  app.state.encounters = [{ id: 'e', game_type: 'boliche' }];
+  app.state.players = [{ id: 'ana', nome: 'Ana' }, { id: 'bia', nome: 'Bia' }];
+  app.state.teams = [
+    { id: 'a', encounter_id: 'e', name: 'A', metric: 'average' },
+    { id: 'b', encounter_id: 'e', name: 'B', metric: 'sum' },
+  ];
+  app.state.teamPlayers = [{ team_id: 'a', player_id: 'ana' }, { team_id: 'b', player_id: 'bia' }];
+  app.state.games = [{ id: 'g', encounter_id: 'e', status: 'final' }];
+  app.state.scores = [
+    { game_id: 'g', player_id: 'ana', pontos: 100, finalizado: true },
+    { game_id: 'g', player_id: 'bia', pontos: 120, finalizado: true },
+  ];
+  assert.equal(app.teamStandings().length, 0);
+  app.renderTeams();
+  assert.match(app.get('teamsList').innerHTML, /Critérios diferentes entre equipes/);
+  assert.equal(app.buildResultsExport().team_rankings.length, 0);
+  app.state.teams[1].metric = 'average';
+  assert.deepEqual(Array.from(app.teamStandings(), (row) => [row.team.name, row.value]), [['B', 120], ['A', 100]]);
+});
+
+test('métrica de equipes fica única por encontro e novas equipes herdam o critério existente', async () => {
+  const calls = [];
+  const app = loadApp({ rpc: async (name, args) => { calls.push({ name, args }); return { data: null, error: null }; } });
+  app.state.activeEncounterId = 'e';
+  app.state.encounters = [{ id: 'e', status: 'active' }];
+  app.state.players = [{ id: 'bia', nome: 'Bia' }];
+  app.state.teams = [{ id: 'team-a', encounter_id: 'e', name: 'A', metric: 'average' }];
+  app.context.loadData = async () => {};
+  app.context.openTeamsModal();
+  assert.equal(app.get('teamMetric').value, 'average');
+  assert.equal(app.get('teamMetric').disabled, true);
+  app.get('teamMetric').value = 'sum';
+  app.get('teamName').value = 'B';
+  app.get('teamPlayerSelection').querySelectorAll = (selector) => selector === 'input:checked' ? [{ value: 'bia' }] : [];
+  await app.context.saveTeam({ preventDefault() {} });
+  assert.equal(calls[0].args.p_metric, 'average');
+});
+
 test('exclusão administrativa da partida usa RPC que bloqueia o encontro antes da cascata', async () => {
   const calls = [];
   const client = { rpc: async (name, args) => { calls.push({ name, args }); return { data: null, error: null }; } };
@@ -444,6 +718,146 @@ test('carrega tipo e regras dos encontros junto com os resultados por rodada', a
   assert.equal(app.state.roundScoreChanges[0].id, 12);
 });
 
+test('carregamento pagina tabelas acima do limite padrão de mil registros', async () => {
+  const ranges = [];
+  const scores = Array.from({ length: 1001 }, (_, index) => ({ id: `score-${index}`, game_id: 'g', player_id: `p-${index}`, pontos: index, finalizado: true }));
+  const client = pagedClient({
+    encounters: [{ id: 'e', nome: 'Encontro', status: 'active', game_type: 'boliche' }],
+    games: [{ id: 'g', encounter_id: 'e', nome: 'Jogo', status: 'partial' }], scores,
+  }, ranges);
+  const app = loadApp(client);
+  await app.loadData();
+  assert.equal(app.state.scores.length, 1001);
+  assert.ok(ranges.some(([table, first, last]) => table === 'scores' && first === 0 && last === 999));
+  assert.ok(ranges.some(([table, first, last]) => table === 'scores' && first === 1000 && last === 1999));
+});
+
+test('histórico administrativo pagina além dos cem eventos e deixa eventos antigos acessíveis', async () => {
+  const ranges = [];
+  const changes = Array.from({ length: 130 }, (_, index) => {
+    const id = 130 - index;
+    return { id, score_id: 'score-ana', game_id: 'g', player_id: 'ana', previous_points: 0, new_points: id, previous_finalized: false, new_finalized: true, changed_at: '2026-11-14T12:00:00Z', actor_id: 'admin' };
+  });
+  const client = pagedClient({
+    players: [{ id: 'ana', nome: 'Ana' }],
+    encounters: [{ id: 'e', nome: 'Encontro', status: 'active', game_type: 'boliche' }],
+    games: [{ id: 'g', encounter_id: 'e', nome: 'Jogo', status: 'partial' }],
+    scores: [{ id: 'score-ana', game_id: 'g', player_id: 'ana', pontos: 1, finalizado: false }],
+    score_changes: changes,
+  }, ranges);
+  const app = loadApp(client);
+  app.state.session = adminSession();
+  await app.loadData();
+  assert.equal(app.state.scoreChanges.length, 100);
+  app.renderScoreHistory();
+  assert.match(app.get('scoreHistoryList').innerHTML, /Carregar alterações anteriores/);
+  await app.loadMoreAuditHistory();
+  assert.equal(app.state.scoreChanges.length, 130);
+  assert.ok(ranges.some(([table, first]) => table === 'score_changes' && first === 100));
+  assert.match(app.get('scoreHistoryList').innerHTML, /→ 1/);
+  assert.doesNotMatch(app.get('scoreHistoryList').innerHTML, /Carregar alterações anteriores/);
+});
+
+test('reconcilia o cursor do histórico após novas alterações e não pula registros', async () => {
+  const ranges = [];
+  const oldChanges = Array.from({ length: 300 }, (_, index) => ({
+    id: 300 - index, score_id: 'score-ana', game_id: 'g', player_id: 'ana',
+    previous_points: 0, new_points: index, previous_finalized: false, new_finalized: true,
+  }));
+  const rows = {
+    players: [{ id: 'ana', nome: 'Ana' }],
+    encounters: [{ id: 'e', nome: 'Encontro', status: 'active', game_type: 'boliche' }],
+    games: [{ id: 'g', encounter_id: 'e', nome: 'Jogo', status: 'partial' }],
+    scores: [{ id: 'score-ana', game_id: 'g', player_id: 'ana', pontos: 1, finalizado: false }],
+    score_changes: oldChanges,
+  };
+  const app = loadApp(pagedClient(rows, ranges));
+  app.state.session = adminSession();
+  await app.loadData();
+  await app.loadMoreAuditHistory();
+  await app.loadMoreAuditHistory();
+  assert.equal(app.state.auditHistoryOffsets.scoreChanges, 300);
+  rows.score_changes = [
+    ...Array.from({ length: 120 }, (_, index) => ({ id: 420 - index, score_id: 'score-ana', game_id: 'g', player_id: 'ana', new_points: 500 + index })),
+    ...oldChanges,
+  ];
+  await app.loadData();
+  assert.equal(app.state.auditHistoryOffsets.scoreChanges, 100);
+  const beforeNextPage = ranges.length;
+  await app.loadMoreAuditHistory();
+  assert.ok(ranges.slice(beforeNextPage).some(([table, first]) => table === 'score_changes' && first === 100));
+  assert.equal(app.state.scoreChanges.length, 420);
+  assert.ok(app.state.scoreChanges.some((change) => change.id === 320));
+});
+
+test('páginas de auditoria antigas somem após excluir score, jogador ou partida', async () => {
+  const rows = {
+    players: [{ id: 'ana', nome: 'Ana' }, { id: 'bia', nome: 'Bia' }],
+    encounters: [{ id: 'e', nome: 'Encontro', status: 'active', game_type: 'boliche' }],
+    games: [1, 2, 3, 4].map((n) => ({ id: `g${n}`, encounter_id: 'e', nome: `Jogo ${n}`, status: 'partial' })),
+    scores: [
+      { id: 's1', game_id: 'g1', player_id: 'ana', pontos: 1 },
+      { id: 's2', game_id: 'g2', player_id: 'ana', pontos: 2 },
+      { id: 's3', game_id: 'g3', player_id: 'bia', pontos: 3 },
+      { id: 's4', game_id: 'g4', player_id: 'ana', pontos: 4 },
+    ],
+    score_changes: [
+      { id: 1, score_id: 's1', game_id: 'g1', player_id: 'ana', new_points: 1 },
+      { id: 2, score_id: 's2', game_id: 'g2', player_id: 'ana', new_points: 2 },
+      { id: 3, score_id: 's3', game_id: 'g3', player_id: 'bia', new_points: 3 },
+      { id: 4, score_id: 's4', game_id: 'g4', player_id: 'ana', new_points: 4 },
+    ],
+  };
+  const app = loadApp(pagedClient(rows));
+  app.state.session = adminSession();
+  await app.loadData();
+  assert.deepEqual(Array.from(app.state.scoreChanges, (row) => row.id), [4, 3, 2, 1]);
+  rows.scores = rows.scores.filter((score) => score.id !== 's2');
+  await app.loadData();
+  assert.deepEqual(Array.from(app.state.scoreChanges, (row) => row.id), [4, 3, 1]);
+  rows.players = rows.players.filter((player) => player.id !== 'bia');
+  rows.scores = rows.scores.filter((score) => score.player_id !== 'bia');
+  await app.loadData();
+  assert.deepEqual(Array.from(app.state.scoreChanges, (row) => row.id), [4, 1]);
+  rows.games = rows.games.filter((game) => game.id !== 'g4');
+  rows.scores = rows.scores.filter((score) => score.game_id !== 'g4');
+  await app.loadData();
+  assert.deepEqual(Array.from(app.state.scoreChanges, (row) => row.id), [1]);
+});
+
+test('resposta atrasada do histórico administrativo é descartada depois do logout', async () => {
+  let resolvePage;
+  const client = {
+    auth: { signOut: async () => ({ error: null }) },
+    rpc: async () => ({ data: [], error: null }),
+    from: (table) => {
+      let ranged = false;
+      const query = {
+        select: () => query, order: () => query, limit: () => query,
+        range: () => { ranged = true; return query; },
+        then: (resolve) => ranged && table === 'score_changes'
+          ? new Promise((done) => { resolvePage = done; }).then(resolve)
+          : Promise.resolve({ data: [], error: null }).then(resolve),
+      };
+      return query;
+    },
+  };
+  const app = loadApp(client);
+  app.state.session = adminSession();
+  app.state.auditHistoryHasMore.scoreChanges = true;
+  app.state.scoreChanges = [{ id: 1, game_id: 'g', player_id: 'ana' }];
+  const pending = app.loadMoreAuditHistory();
+  await Promise.resolve();
+  assert.equal(typeof resolvePage, 'function');
+  app.context.loadData = async () => {};
+  await app.signOut();
+  app.get('scoreHistoryList').innerHTML = 'signed out';
+  resolvePage({ data: [{ id: 2, score_id: 's', game_id: 'g', player_id: 'ana' }], error: null });
+  await pending;
+  assert.equal(app.state.scoreChanges.length, 0);
+  assert.equal(app.get('scoreHistoryList').innerHTML, 'signed out');
+});
+
 test('criação de quiz usa RPC multijogos com configuração explícita', async () => {
   let call;
   const client = { rpc: async (name, args) => { call = { name, args }; return { data: null, error: { message: 'mock sql ausente' } }; } };
@@ -460,6 +874,36 @@ test('criação de quiz usa RPC multijogos com configuração explícita', async
   assert.deepEqual(JSON.parse(JSON.stringify(call.args.p_rules_config)), { round_count: 3, max_points_per_round: 0 });
   assert.equal(call.args.p_request_id, 'photo-id');
   assert.match(app.get('encounterFormError').textContent, /mock sql ausente/);
+});
+
+test('criar partida mantém request id em retry igual e troca ao mudar o conteúdo', async () => {
+  const calls = [];
+  let attempt = 0;
+  const client = { rpc: async (name, args) => {
+    calls.push({ name, args: JSON.parse(JSON.stringify(args)) });
+    attempt += 1;
+    return attempt < 3 ? { data: null, error: { message: 'falha de rede simulada' } } : { data: { id: 'game-new' }, error: null };
+  } };
+  const app = loadApp(client);
+  let generatedRequestId = 0;
+  app.context.crypto.randomUUID = () => `request-${++generatedRequestId}`;
+  app.state.encounters = [{ id: 'e', nome: 'Quiz', status: 'active', game_type: 'quiz' }];
+  app.state.activeEncounterId = 'e';
+  app.state.players = [{ id: 'ana', nome: 'Ana' }];
+  app.state.encounterPlayers = [{ encounter_id: 'e', player_id: 'ana' }];
+  app.context.loadData = async () => {};
+  app.openGameModal();
+  app.document.querySelectorAll = (selector) => selector === '#playerSelection input:checked' ? [{ value: 'ana' }] : [];
+  app.get('playerSelection').querySelector = () => ({ value: '__estacao_virtual__' });
+  app.get('gameName').value = 'Quiz 1';
+  await app.createGame({ preventDefault() {} });
+  await app.createGame({ preventDefault() {} });
+  assert.equal(calls[0].args.p_request_id, calls[1].args.p_request_id);
+  app.get('gameName').value = 'Quiz 1 atualizado';
+  await app.createGame({ preventDefault() {} });
+  assert.notEqual(calls[1].args.p_request_id, calls[2].args.p_request_id);
+  assert.deepEqual(calls.map((call) => call.args.p_assignments), [[{ player_id: 'ana', pista: '__estacao_virtual__' }], [{ player_id: 'ana', pista: '__estacao_virtual__' }], [{ player_id: 'ana', pista: '__estacao_virtual__' }]]);
+  assert.equal(app.state.activeGameId, 'game-new');
 });
 
 test('edição de encontro conserva modalidade e regras existentes', async () => {
@@ -610,7 +1054,7 @@ test('Realtime não recria rascunho nem reenvia pontuação intocada de outro jo
   const client = {
     auth: { getSession: async () => ({ data: { session }, error: null }) },
     rpc: async (name, args) => {
-      if (name === 'save_round_score_if_current') calls.push(args);
+      if (name === 'save_round_scores_batch_if_current') calls.push(args);
       return { data: [], error: null };
     },
     from: (table) => {
@@ -644,7 +1088,7 @@ test('Realtime não recria rascunho nem reenvia pontuação intocada de outro jo
 
   app.context.loadData = async () => {};
   await app.saveRoundScores({ preventDefault() {} });
-  assert.deepEqual(JSON.parse(JSON.stringify(calls)), [{ p_game_id: 'g', p_player_id: 'bia', p_round_no: 1, p_points: 12, p_finalized: false, p_expected_points: 10, p_expected_finalized: false }]);
+  assert.deepEqual(JSON.parse(JSON.stringify(calls)), [{ p_game_id: 'g', p_round_no: 1, p_updates: [{ player_id: 'bia', points: 12, finalized: false, expected_points: 10, expected_finalized: false }] }]);
 });
 
 test('editar e voltar ao valor original não cria escrita após atualização remota', () => {
@@ -678,7 +1122,7 @@ test('rascunho resolvido não reaparece após duas confirmações remotas', asyn
   };
   const client = {
     auth: { getSession: async () => ({ data: { session }, error: null }) },
-    rpc: async (name, args) => { if (name === 'save_round_score_if_current') calls.push(args); return { data: null, error: null }; },
+    rpc: async (name, args) => { if (name === 'save_round_scores_batch_if_current') calls.push(args); return { data: null, error: null }; },
     from: (table) => {
       const result = { data: data[table] || [], error: null };
       const query = { select: () => query, order: () => query, eq: () => query, not: () => query, limit: () => query, then: (resolve, reject) => Promise.resolve(result).then(resolve, reject) };
@@ -721,7 +1165,7 @@ test('rascunho resolvido não reaparece após duas confirmações remotas', asyn
   ana.finalizedInput.checked = false; ana.dataset.baseFinalized = 'false';
   app.context.loadData = async () => {};
   await app.saveRoundScores({ preventDefault() {} });
-  assert.deepEqual(calls.map((item) => item.p_player_id), ['bia']);
+  assert.deepEqual(JSON.parse(JSON.stringify(calls)), [{ p_game_id: 'g', p_round_no: 1, p_updates: [{ player_id: 'bia', points: 12, finalized: false, expected_points: 10, expected_finalized: false }] }]);
 });
 
 test('confirmar rodada preserva pontos remotos alterados durante autenticação', async () => {
@@ -752,8 +1196,8 @@ test('confirmar rodada preserva pontos remotos alterados durante autenticação'
   app.context.loadData = async () => {};
   await app.saveRoundScores({ preventDefault() {} });
   assert.equal(calls.length, 1);
-  assert.equal(calls[0].name, 'save_round_score_if_current');
-  assert.deepEqual(JSON.parse(JSON.stringify(calls[0].args)), { p_game_id: 'g', p_player_id: 'ana', p_round_no: 1, p_points: 27, p_finalized: true, p_expected_points: 27, p_expected_finalized: false });
+  assert.equal(calls[0].name, 'save_round_scores_batch_if_current');
+  assert.deepEqual(JSON.parse(JSON.stringify(calls[0].args)), { p_game_id: 'g', p_round_no: 1, p_updates: [{ player_id: 'ana', points: 27, finalized: true, expected_points: 27, expected_finalized: false }] });
 });
 
 test('salva zero com proteção de concorrência e ignora repetição idêntica', async () => {
@@ -774,41 +1218,43 @@ test('salva zero com proteção de concorrência e ignora repetição idêntica'
   app.context.loadData = async () => {};
   await app.saveRoundScores({ preventDefault() {} });
   assert.equal(calls.length, 1);
-  assert.equal(calls[0].name, 'save_round_score_if_current');
-  assert.deepEqual(JSON.parse(JSON.stringify(calls[0].args)), { p_game_id: 'g', p_player_id: 'ana', p_round_no: 1, p_points: 0, p_finalized: true, p_expected_points: null, p_expected_finalized: null });
+  assert.equal(calls[0].name, 'save_round_scores_batch_if_current');
+  assert.deepEqual(JSON.parse(JSON.stringify(calls[0].args)), { p_game_id: 'g', p_round_no: 1, p_updates: [{ player_id: 'ana', points: 0, finalized: true, expected_points: null, expected_finalized: null }] });
   app.state.roundScores = [{ game_id: 'g', player_id: 'ana', round_no: 1, points: 0, finalized: true }];
   await app.saveRoundScores({ preventDefault() {} });
   assert.equal(calls.length, 1);
   assert.match(app.get('roundError').textContent, /Nenhuma alteração nova/);
 });
 
-test('submit parcial reconcilia linha salva e não duplica RPC na nova tentativa', async () => {
+test('falha transacional mantém todos os rascunhos e não aplica pontuação local parcial', async () => {
   const calls = [];
-  let failedSecondPlayerOnce = true;
-  let app;
   const session = adminSession();
   const client = {
     auth: { getSession: async () => ({ data: { session }, error: null }) },
-    rpc: async (name, args) => {
-      calls.push({ name, args });
-      if (args.p_player_id === 'bia' && failedSecondPlayerOnce) { failedSecondPlayerOnce = false; return { data: null, error: { message: 'falha simulada' } }; }
-      if (!app.state.roundScores.some((row) => row.player_id === args.p_player_id)) app.state.roundScores.push({ game_id: args.p_game_id, player_id: args.p_player_id, round_no: args.p_round_no, points: args.p_points, finalized: args.p_finalized });
-      return { data: null, error: null };
-    },
+    rpc: async (name, args) => { calls.push({ name, args }); return { data: null, error: { code: '23514', message: 'falha simulada' } }; },
   };
-  app = loadApp(client);
+  const app = loadApp(client);
   app.state.session = session;
   app.state.encounters = [{ id: 'e', nome: 'Quiz', status: 'active', game_type: 'quiz', rules_config: { round_count: 1, max_points_per_round: 0 } }];
   app.state.activeEncounterId = 'e'; app.state.activeGameId = 'g'; app.state.roundGameId = 'g'; app.state.roundNo = 1;
+  app.state.roundScores = [];
   app.get('roundGame').value = 'g'; app.get('roundNumber').value = '1';
   app.get('roundResults').querySelectorAll = () => [roundRow('ana', 0, true), roundRow('bia', 8, true)];
   app.context.loadData = async () => {};
   await app.saveRoundScores({ preventDefault() {} });
-  assert.match(app.get('roundError').textContent, /Falha após 1 resultado/);
-  assert.equal(app.state.roundScores.length, 1);
-  await app.saveRoundScores({ preventDefault() {} });
-  assert.deepEqual(calls.map((call) => call.args.p_player_id), ['ana', 'bia', 'bia']);
-  assert.equal(app.state.roundScores.length, 2);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].name, 'save_round_scores_batch_if_current');
+  assert.deepEqual(JSON.parse(JSON.stringify(calls[0].args)), {
+    p_game_id: 'g', p_round_no: 1,
+    p_updates: [
+      { player_id: 'ana', points: 0, finalized: true, expected_points: null, expected_finalized: null },
+      { player_id: 'bia', points: 8, finalized: true, expected_points: null, expected_finalized: null },
+    ],
+  });
+  assert.equal(app.state.roundScores.length, 0);
+  assert.equal(app.state.roundDraft.has('g:1:ana'), true);
+  assert.equal(app.state.roundDraft.has('g:1:bia'), true);
+  assert.match(app.get('roundError').textContent, /nenhum resultado foi aplicado localmente/);
 });
 
 test('modal de histórico oferece desfazer e limpar rodada com RPCs confirmadas', async () => {
@@ -841,14 +1287,14 @@ test('modal de histórico oferece desfazer e limpar rodada com RPCs confirmadas'
   await app.clearRoundScore('ana');
   await app.undoRoundScoreChange(44);
   assert.deepEqual(JSON.parse(JSON.stringify(calls.map((call) => [call.name, call.args]))), [
-    ['clear_round_score', { p_game_id: 'g', p_player_id: 'ana', p_round_no: 1 }],
+    ['clear_round_score_if_current', { p_game_id: 'g', p_player_id: 'ana', p_round_no: 1, p_expected_points: 5, p_expected_finalized: true }],
     ['undo_round_score_change', { p_change_id: 44 }],
   ]);
 });
 
 test('OCR usa a pista gravada na partida mesmo após alterar a pista padrão do jogador', () => {
   const app = loadApp();
-  app.state.players = [{ id: 'ana', nome: 'Ana', pista: '2' }];
+  app.state.players = [{ id: 'ana', nome: 'Ana', pista: '__estacao_virtual__' }];
   app.state.scores = [{ game_id: 'game', player_id: 'ana', pista: '1' }];
   assert.deepEqual(app.playersOnLane('1', 'game').map((player) => player.id), ['ana']);
   assert.equal(app.playersOnLane('2', 'game').length, 0);
@@ -882,8 +1328,12 @@ test('exportação inclui jogadores, partidas e pista histórica no CSV e no JSO
   app.state.players = [{ id: 'ana', nome: 'Ana', pista: '2' }];
   app.state.encounterPlayers = [{ encounter_id: 'meet-1', player_id: 'ana' }];
   app.state.games = [{ id: 'game-1', encounter_id: 'meet-1', nome: 'Partida', status: 'final' }];
-  app.state.scores = [{ game_id: 'game-1', player_id: 'ana', pista: '1', pontos: 213, finalizado: true }];
+  app.state.scores = [{ game_id: 'game-1', player_id: 'ana', pista: '__estacao_virtual__', pontos: 213, finalizado: true }];
+  app.state.teams = [{ id: 'team-1', encounter_id: 'meet-1', name: 'Equipe A', metric: 'average' }];
+  app.state.teamPlayers = [{ team_id: 'team-1', player_id: 'ana' }];
   app.state.roundScores = [{ game_id: 'game-1', player_id: 'ana', round_no: 1, points: 213, finalized: true }];
+  app.state.predictions = [{ encounter_id: 'meet-1', user_id: 'private-auth-user-7d91', predicted_player_id: 'ana', created_at: '2026-11-13T12:00:00Z' }];
+  app.state.predictionStandings = [{ player_id: 'ana', player_name: 'Ana', hits: 2, picks: 3 }];
   const exports = [];
   app.context.Blob = class { constructor(parts) { exports.push(parts.join('')); } };
   app.context.URL = { createObjectURL: () => 'blob:export', revokeObjectURL() {} };
@@ -891,14 +1341,32 @@ test('exportação inclui jogadores, partidas e pista histórica no CSV e no JSO
   app.downloadResults('csv');
   app.downloadResults('json');
   assert.ok(exports[0].startsWith('\uFEFF'));
-  assert.match(exports[0], /"participante".*"Ana"/);
-  assert.match(exports[0], /"partida".*"Partida"/);
-  assert.match(exports[0], /"pontuacao".*"Ana";"1";"213";"true"/);
-  assert.match(exports[0], /"rodada".*"Ana";"1";"";"true"/);
-  assert.match(exports[0], /"ranking".*"ana".*"213"/);
-  assert.equal(JSON.parse(exports[1]).scores[0].pista, '1');
-  assert.equal(JSON.parse(exports[1]).round_scores[0].points, 213);
-  assert.equal(JSON.parse(exports[1]).rankings[0].total, 213);
+  const csvLines = exports[0].slice(1).split('\r\n');
+  const csvHeader = csvLines[0].split(';').map((value) => value.replace(/^"|"$/g, ''));
+  assert.equal(csvHeader[0], 'schema_version');
+  assert.ok(csvHeader.includes('rules_config_json'));
+  assert.ok(csvLines.some((line) => line.includes('"participante"') && line.includes('"Ana"')));
+  assert.ok(csvLines.some((line) => line.includes('"partida"') && line.includes('"Partida"')));
+  assert.ok(csvLines.some((line) => line.includes('"pontuacao"') && line.includes('"213"')));
+  assert.ok(csvLines.some((line) => line.includes('"rodada"') && line.includes('"213"')));
+  assert.ok(csvLines.some((line) => line.includes('"__estacao_virtual__"')));
+  assert.ok(csvLines.some((line) => line.includes('"ranking"') && line.includes('"213"')));
+  assert.ok(csvLines.some((line) => line.includes('"equipe"') && line.includes('"Equipe A"')));
+  assert.ok(csvLines.some((line) => line.includes('"membro_equipe"') && line.includes('"Ana"')));
+  assert.ok(csvLines.every((line) => line.split(';').length === csvHeader.length));
+  const json = JSON.parse(exports[1]);
+  assert.equal(json.schema_version, 3);
+  assert.equal(json.encounters[0].rules_config.round_count, 1);
+  assert.equal(json.scores[0].pista, '__estacao_virtual__');
+  assert.equal(json.players[0].pista, '2');
+  assert.equal(Object.hasOwn(json, 'predictions'), false);
+  assert.deepEqual(JSON.parse(JSON.stringify(json.prediction_standings)), [{ player_id: 'ana', player_name: 'Ana', hits: 2, picks: 3 }]);
+  assert.doesNotMatch(JSON.stringify(json), /user_id|private-auth-user-7d91/);
+  assert.equal(json.round_scores[0].points, 213);
+  assert.equal(json.rankings[0].total, 213);
+  assert.deepEqual(JSON.parse(JSON.stringify(json.teams)), [{ id: 'team-1', encounter_id: 'meet-1', name: 'Equipe A', metric: 'average' }]);
+  assert.deepEqual(JSON.parse(JSON.stringify(json.team_memberships)), [{ team_id: 'team-1', player_id: 'ana' }]);
+  assert.equal(json.team_rankings[0].average, 213);
 });
 
 test('edição manual e confirmação sobrevivem a leituras OCR repetidas', () => {
