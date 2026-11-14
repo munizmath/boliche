@@ -543,6 +543,57 @@ revoke all on function public.save_round_score(uuid, uuid, integer, bigint, bool
 grant execute on function public.save_round_score(uuid, uuid, integer, bigint, boolean)
   to authenticated;
 
+-- UI writes use a compare-and-swap wrapper so a second device cannot silently
+-- replace a result that changed after the first device loaded the form.
+-- Lock order matches save_round_score: encounter, game, score, round.
+create or replace function public.save_round_score_if_current(
+  p_game_id uuid,
+  p_player_id uuid,
+  p_round_no integer,
+  p_points bigint,
+  p_finalized boolean,
+  p_expected_points bigint,
+  p_expected_finalized boolean
+)
+returns public.scores
+language plpgsql
+security definer
+set search_path = pg_catalog, public
+as $$
+declare
+  target_encounter_id uuid;
+  actual_points bigint;
+  actual_finalized boolean;
+begin
+  if not public.is_admin() then
+    raise exception 'Acesso de administrador necessário' using errcode = '42501';
+  end if;
+  select g.encounter_id into target_encounter_id
+    from public.games g where g.id = p_game_id;
+  if not found then raise exception 'Partida não encontrada' using errcode = 'P0002'; end if;
+  perform 1 from public.encounters e where e.id = target_encounter_id for update;
+  if not found then raise exception 'Encontro não encontrado' using errcode = 'P0002'; end if;
+  perform 1 from public.games g where g.id = p_game_id and g.encounter_id = target_encounter_id for update;
+  if not found then raise exception 'Partida não encontrada' using errcode = 'P0002'; end if;
+  perform 1 from public.scores s where s.game_id = p_game_id and s.player_id = p_player_id for update;
+  if not found then raise exception 'Jogador não vinculado à partida' using errcode = '23503'; end if;
+  select rs.points, rs.finalized into actual_points, actual_finalized
+    from public.round_scores rs
+   where rs.game_id = p_game_id and rs.player_id = p_player_id and rs.round_no = p_round_no
+   for update;
+  if actual_points is distinct from p_expected_points
+     or actual_finalized is distinct from p_expected_finalized then
+    raise exception 'A rodada mudou em outro aparelho; atualize e confira novamente'
+      using errcode = '40001';
+  end if;
+  return public.save_round_score(p_game_id, p_player_id, p_round_no, p_points, p_finalized);
+end;
+$$;
+revoke all on function public.save_round_score_if_current(uuid, uuid, integer, bigint, boolean, bigint, boolean)
+  from public, anon;
+grant execute on function public.save_round_score_if_current(uuid, uuid, integer, bigint, boolean, bigint, boolean)
+  to authenticated;
+
 create or replace function public.clear_round_score(
   p_game_id uuid,
   p_player_id uuid,
@@ -936,6 +987,45 @@ end;
 $$;
 revoke all on function public.delete_encounter_game(uuid) from public, anon;
 grant execute on function public.delete_encounter_game(uuid) to authenticated;
+
+-- The legacy deletion path removed scores before obtaining encounter locks.
+-- Acquire every affected encounter first, in a stable order, before cascading.
+create or replace function public.delete_player_cascade(p_player_id uuid)
+returns void
+language plpgsql
+security invoker
+set search_path = public
+as $$
+declare
+  affected_encounter_id uuid;
+begin
+  if not public.is_admin() then
+    raise exception 'Acesso de administrador necessário' using errcode = '42501';
+  end if;
+  for affected_encounter_id in
+    select affected.id from (
+      select ep.encounter_id as id
+        from public.encounter_players ep where ep.player_id = p_player_id
+      union
+      select g.encounter_id as id
+        from public.games g
+        join public.scores s on s.game_id = g.id
+       where s.player_id = p_player_id
+    ) affected
+    order by affected.id
+  loop
+    perform 1 from public.encounters e where e.id = affected_encounter_id for update;
+  end loop;
+  update public.profiles set status = 'pending', player_id = null where player_id = p_player_id;
+  delete from public.scores where player_id = p_player_id;
+  delete from public.players where id = p_player_id;
+  if not found then
+    raise exception 'Jogador não encontrado' using errcode = 'P0002';
+  end if;
+end;
+$$;
+revoke all on function public.delete_player_cascade(uuid) from public, anon;
+grant execute on function public.delete_player_cascade(uuid) to authenticated;
 
 do $$
 begin

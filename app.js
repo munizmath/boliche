@@ -142,11 +142,13 @@ function reconcileRoundDrafts(roundScores = state.roundScores) {
     const fresh = roundScores.find((row) => roundScoreKey(row.game_id, row.round_no, row.player_id) === draft.key);
     const freshPoints = fresh ? String(roundPoints(fresh) ?? "") : "";
     const freshFinalized = roundFinalized(fresh);
-    if (freshPoints === String(draft.points ?? "") && freshFinalized === Boolean(draft.finalized)) {
+    if ((!draft.dirtyPoints || freshPoints === String(draft.points ?? ""))
+        && (!draft.dirtyFinalized || freshFinalized === Boolean(draft.finalized))) {
       state.roundDraft.delete(draft.key);
       continue;
     }
-    if (freshPoints !== String(draft.basePoints ?? "") || freshFinalized !== Boolean(draft.baseFinalized)) conflict = true;
+    if ((draft.dirtyPoints && freshPoints !== String(draft.basePoints ?? "") && freshPoints !== String(draft.points ?? ""))
+        || (draft.dirtyFinalized && freshFinalized !== Boolean(draft.baseFinalized) && freshFinalized !== Boolean(draft.finalized))) conflict = true;
   }
   state.roundConflict = conflict;
 }
@@ -599,7 +601,7 @@ function renderEncounterBar() {
   $("deleteEncounterButton").disabled = !encounterOpen();
   $("manageTeamsButton").disabled = !encounterOpen();
   $("manageBracketButton").disabled = !encounterOpen();
-  if (document.body.classList.contains("tv-mode")) document.querySelector(".page-title h1").textContent = activeEncounter()?.nome || "Boliche dos Amigos";
+  if (document.body.classList.contains("tv-mode")) document.querySelector(".page-title h1").textContent = activeEncounter()?.nome || "Jogatina dos Amigos";
   $("newGameButton").disabled = !encounterOpen();
   $("photoButton").disabled = !encounterActive();
   if ($("tabletButton")) $("tabletButton").disabled = !encounterActive();
@@ -695,28 +697,29 @@ async function saveEncounter(event) {
   showToast(editing ? "Encontro atualizado." : "Encontro criado.", "success");
 }
 
+function updateRoundDraftFromRow(row, gameId, roundNo) {
+  const playerId = row.dataset.roundPlayer;
+  const pointsInput = row.querySelector(".round-points");
+  const finalizedInput = row.querySelector(".round-final");
+  if (!playerId || !pointsInput || !finalizedInput) return;
+  const key = roundScoreKey(gameId, roundNo, playerId);
+  const existing = state.roundScores.find((item) => roundScoreKey(item.game_id, item.round_no, item.player_id) === key);
+  const prior = state.roundDraft.get(key);
+  const points = pointsInput.value;
+  const finalized = Boolean(finalizedInput.checked);
+  const basePoints = prior?.dirtyPoints ? prior.basePoints : row.dataset.basePoints !== undefined ? (row.dataset.basePoints === "" ? null : row.dataset.basePoints) : (existing ? roundPoints(existing) : null);
+  const baseFinalized = prior?.dirtyFinalized ? prior.baseFinalized : row.dataset.baseFinalized !== undefined ? row.dataset.baseFinalized === "true" : roundFinalized(existing);
+  const dirtyPoints = String(points) !== String(basePoints ?? "");
+  const dirtyFinalized = finalized !== Boolean(baseFinalized);
+  if (!dirtyPoints && !dirtyFinalized) { state.roundDraft.delete(key); return; }
+  state.roundDraft.set(key, { key, gameId, roundNo, points, finalized, manual: true, dirtyPoints, dirtyFinalized, basePoints, baseFinalized });
+}
+
 function captureRoundDraft(gameIdOverride = null, roundNoOverride = null) {
-  const results = $("roundResults");
-  if (!results) return;
   const gameId = gameIdOverride || $("roundGame")?.value || state.roundGameId;
   const roundNo = Number(roundNoOverride || $("roundNumber")?.value || state.roundNo);
   if (!gameId || !Number.isInteger(roundNo) || roundNo < 1) return;
-  results.querySelectorAll("[data-round-player]").forEach((row) => {
-    const playerId = row.dataset.roundPlayer;
-    const pointsInput = row.querySelector(".round-points");
-    const finalizedInput = row.querySelector(".round-final");
-    if (!playerId || !pointsInput || !finalizedInput) return;
-    const key = roundScoreKey(gameId, roundNo, playerId);
-    const existing = state.roundScores.find((item) => roundScoreKey(item.game_id, item.round_no, item.player_id) === key);
-    const prior = state.roundDraft.get(key);
-    const points = pointsInput.value;
-    const finalized = Boolean(finalizedInput.checked);
-    const basePoints = prior?.manual ? prior.basePoints : row.dataset.basePoints !== undefined ? (row.dataset.basePoints === "" ? null : row.dataset.basePoints) : (existing ? roundPoints(existing) : null);
-    const baseFinalized = prior?.manual ? prior.baseFinalized : row.dataset.baseFinalized !== undefined ? row.dataset.baseFinalized === "true" : roundFinalized(existing);
-    const changedFromServer = String(points) !== String(basePoints ?? "") || finalized !== Boolean(baseFinalized);
-    if (!changedFromServer) { state.roundDraft.delete(key); return; }
-    state.roundDraft.set(key, { key, gameId, roundNo, points, finalized, manual: true, basePoints, baseFinalized });
-  });
+  $("roundResults")?.querySelectorAll("[data-round-player]").forEach((row) => updateRoundDraftFromRow(row, gameId, roundNo));
 }
 
 function markRoundEdited(event) {
@@ -728,20 +731,7 @@ function markRoundEdited(event) {
   const roundNo = Number($("roundNumber")?.value || state.roundNo);
   const playerId = row.dataset.roundPlayer;
   if (!gameId || !playerId || !Number.isInteger(roundNo)) return;
-  const existing = state.roundScores.find((item) => item.game_id === gameId && Number(item.round_no) === roundNo && item.player_id === playerId);
-  const key = roundScoreKey(gameId, roundNo, playerId);
-  const previousDraft = state.roundDraft.get(key);
-  const points = row.querySelector(".round-points")?.value ?? "";
-  const finalized = Boolean(row.querySelector(".round-final")?.checked);
-  const basePoints = previousDraft?.manual ? previousDraft.basePoints : row.dataset.basePoints !== undefined ? (row.dataset.basePoints === "" ? null : row.dataset.basePoints) : (existing ? roundPoints(existing) : null);
-  const baseFinalized = previousDraft?.manual ? previousDraft.baseFinalized : row.dataset.baseFinalized !== undefined ? row.dataset.baseFinalized === "true" : roundFinalized(existing);
-  if (String(points) === String(basePoints ?? "") && finalized === Boolean(baseFinalized)) {
-    state.roundDraft.delete(key);
-    return;
-  }
-  state.roundDraft.set(key, {
-    key, gameId, roundNo, points, finalized, manual: true, basePoints, baseFinalized,
-  });
+  updateRoundDraftFromRow(row, gameId, roundNo);
   if ($("roundError")) $("roundError").hidden = true;
 }
 
@@ -797,8 +787,8 @@ function renderRoundResults() {
       const key = roundScoreKey(game.id, roundNo, player.id);
       const existing = state.roundScores.find((item) => item.game_id === game.id && Number(item.round_no) === roundNo && item.player_id === player.id);
       const draft = state.roundDraft.get(key);
-      const value = draft?.manual ? draft.points : existing ? String(roundPoints(existing) ?? "") : "";
-      const finalized = draft?.manual ? draft.finalized : roundFinalized(existing);
+      const value = draft?.dirtyPoints ? draft.points : existing ? String(roundPoints(existing) ?? "") : "";
+      const finalized = draft?.dirtyFinalized ? draft.finalized : roundFinalized(existing);
       const gameTotal = score.pontos == null ? "aguardando banco" : `${Number(score.pontos).toLocaleString("pt-BR")} ${mode.unit}`;
       const clearButton = existing && isAdmin() && encounterActive() ? `<button class="text-button text-button--danger" type="button" data-clear-round="${esc(player.id)}">Limpar rodada</button>` : "";
       return `<div class="round-result-row" data-round-player="${esc(player.id)}" data-base-points="${esc(existing ? String(roundPoints(existing) ?? "") : "")}" data-base-finalized="${roundFinalized(existing)}"><div class="round-result-player"><strong>${esc(player.nome)}</strong><small>Total do jogo: ${esc(gameTotal)}</small></div><label>Pontos da rodada ${roundNo}<input class="round-points" type="number" min="0"${max > 0 ? ` max="${max}"` : ""} step="1" inputmode="numeric" value="${value === "" ? "" : esc(value)}" aria-label="Pontos da rodada ${roundNo} de ${esc(player.nome)}" /></label><label class="round-confirm"><input class="round-final" type="checkbox" ${finalized ? "checked" : ""} /> Confirmar</label>${clearButton}</div>`;
@@ -826,25 +816,7 @@ async function saveRoundScores(event) {
   const resultRows = [...($("roundResults")?.querySelectorAll("[data-round-player]") || [])];
   if (!gameId || !Number.isInteger(roundNo) || roundNo < 1 || roundNo > configuredRoundCount()) return fail("Escolha uma partida e uma rodada válida.");
   if (!resultRows.length) return fail("Não há participantes para salvar nesta rodada.");
-  const updates = [];
-  for (const row of resultRows) {
-    const key = roundScoreKey(gameId, roundNo, row.dataset.roundPlayer);
-    if (!state.roundDraft.get(key)?.manual) continue;
-    const raw = row.querySelector(".round-points")?.value?.trim() ?? "";
-    if (raw === "") continue;
-    const points = Number(raw);
-    if (!/^\d+$/.test(raw) || !Number.isSafeInteger(points) || (max > 0 && points > max)) {
-      return fail(max > 0 ? `Use pontos inteiros entre 0 e ${max}.` : "Use pontos inteiros não negativos.");
-    }
-    const playerId = row.dataset.roundPlayer;
-    const finalized = Boolean(row.querySelector(".round-final")?.checked);
-    const existing = state.roundScores.find((item) => item.game_id === gameId && Number(item.round_no) === roundNo && item.player_id === playerId);
-    const existingPoints = roundPoints(existing);
-    if (existing && existingPoints != null && Number(existingPoints) === points && roundFinalized(existing) === finalized) continue;
-    updates.push({ playerId, points, finalized, key });
-  }
-  if (!updates.length) return fail("Nenhuma alteração nova nesta rodada.");
-  if (state.roundConflict && !window.confirm("Os resultados mudaram em outro aparelho. Salvar seus valores locais sobre os atuais?")) return;
+  if (!resultRows.some((row) => state.roundDraft.get(roundScoreKey(gameId, roundNo, row.dataset.roundPlayer))?.manual)) return fail("Nenhuma alteração nova nesta rodada.");
   if (!client) return fail("Supabase não configurado.");
   const button = $("roundSaveButton");
   if (button) { button.disabled = true; button.textContent = "Salvando…"; }
@@ -855,14 +827,40 @@ async function saveRoundScores(event) {
       state.session = data?.session || null;
       if (authError || !isAdmin()) return fail("Sua sessão de administrador expirou. Entre novamente para salvar resultados.");
     } else if (!isAdmin()) return fail("Entre como administrador para salvar resultados.");
+    if (($("roundGame")?.value || state.roundGameId) !== gameId
+        || Number($("roundNumber")?.value || state.roundNo) !== roundNo) return fail("A partida ou rodada mudou. Confira os resultados e salve novamente.");
+    reconcileRoundDrafts(state.roundScores);
+    if (state.roundConflict && !window.confirm("Os resultados mudaram em outro aparelho. Salvar somente os campos que você editou sobre os valores atuais?")) return;
+    const updates = [];
+    for (const row of [...($("roundResults")?.querySelectorAll("[data-round-player]") || [])]) {
+      const playerId = row.dataset.roundPlayer;
+      const key = roundScoreKey(gameId, roundNo, playerId);
+      const draft = state.roundDraft.get(key);
+      if (!draft?.manual) continue;
+      const existing = state.roundScores.find((item) => item.game_id === gameId && Number(item.round_no) === roundNo && item.player_id === playerId);
+      const existingPoints = roundPoints(existing);
+      const raw = String(draft.dirtyPoints ? draft.points : existingPoints ?? "").trim();
+      if (raw === "") return fail("Informe os pontos antes de salvar a rodada.");
+      const points = Number(raw);
+      if (!/^\d+$/.test(raw) || !Number.isSafeInteger(points) || (max > 0 && points > max)) {
+        return fail(max > 0 ? `Use pontos inteiros entre 0 e ${max}.` : "Use pontos inteiros não negativos.");
+      }
+      const finalized = draft.dirtyFinalized ? Boolean(draft.finalized) : roundFinalized(existing);
+      if (existing && existingPoints != null && Number(existingPoints) === points && roundFinalized(existing) === finalized) continue;
+      updates.push({ playerId, points, finalized, key,
+        expectedPoints: existingPoints ?? null,
+        expectedFinalized: existing ? roundFinalized(existing) : null });
+    }
+    if (!updates.length) return fail("Nenhuma alteração nova nesta rodada.");
     for (const update of updates) {
-      const { error } = await client.rpc("save_round_score", {
+      const { error } = await client.rpc("save_round_score_if_current", {
         p_game_id: gameId, p_player_id: update.playerId, p_round_no: roundNo,
         p_points: update.points, p_finalized: update.finalized,
+        p_expected_points: update.expectedPoints, p_expected_finalized: update.expectedFinalized,
       });
       if (error) {
         const message = `Falha após ${saved} resultado(s): ${error.message || "não foi possível salvar a rodada"}.`;
-        if (saved) {
+        if (saved || error.code === "40001") {
           try { await loadData(); render(); }
           catch (refreshError) { console.error(refreshError); }
         }
@@ -976,7 +974,7 @@ function downloadResults(format) {
   }
   const url = URL.createObjectURL(new Blob([content], { type: mime }));
   const link = document.createElement("a");
-  link.href = url; link.download = `boliche-resultados-${localIsoDate()}.${format}`; link.click();
+  link.href = url; link.download = `jogatina-resultados-${localIsoDate()}.${format}`; link.click();
   window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
@@ -2091,7 +2089,7 @@ function editGame(id) {
 async function removeGame(id) {
   const game = getGame(id);
   if (!window.confirm(`Excluir ${game?.nome || "esta partida"}? Todos os pontos e o histórico desta partida serão removidos permanentemente; o ranking será recalculado.`)) return;
-  const { error } = await client.from("games").delete().eq("id", id).select("id").single();
+  const { error } = await client.rpc("delete_encounter_game", { p_game_id: id });
   if (error) return showToast("Não foi possível excluir a partida.", "error");
   await loadData(); render(); showToast("Partida e resultados excluídos.", "success");
 }
@@ -2238,7 +2236,7 @@ async function copyShareLink() {
 
 async function shareScoreboard() {
   if (!navigator.share) return copyShareLink();
-  try { await navigator.share({ title: "Boliche dos Amigos", url: shareUrl() }); }
+  try { await navigator.share({ title: "Jogatina dos Amigos", url: shareUrl() }); }
   catch (error) { if (error.name !== "AbortError") showToast("Não foi possível compartilhar o link.", "error"); }
 }
 
@@ -2253,7 +2251,7 @@ async function shareResultCard() {
   const context = canvas.getContext("2d");
   context.fillStyle = "#f6f4ef"; context.fillRect(0, 0, canvas.width, canvas.height);
   context.fillStyle = "#bd8d52"; context.fillRect(0, 0, canvas.width, 18);
-  context.fillStyle = "#2f312f"; context.font = "bold 62px Georgia"; context.fillText("Boliche dos Amigos", 80, 110);
+  context.fillStyle = "#2f312f"; context.font = "bold 62px Georgia"; context.fillText("Jogatina dos Amigos", 80, 110);
   context.font = "28px Arial"; context.fillText("Classificação oficial do encontro", 80, 160);
   context.fillStyle = "#777a76"; context.font = "22px Arial";
   const lastGameDate = finalGames.map((game) => game.created_at).filter(Boolean).sort().at(-1);
@@ -2277,9 +2275,9 @@ async function shareResultCard() {
   context.fillStyle = "#777a76"; context.font = "21px Arial"; context.fillText("munizmath.github.io/boliche", 80, canvas.height - 70);
   const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
   if (!blob) return showToast("Não foi possível gerar a imagem.", "error");
-  const file = new File([blob], "resultado-boliche.png", { type: "image/png" });
+  const file = new File([blob], "resultado-jogatina.png", { type: "image/png" });
   if (navigator.share && navigator.canShare?.({ files: [file] })) {
-    try { await navigator.share({ title: "Resultado do Boliche dos Amigos", files: [file] }); return; }
+    try { await navigator.share({ title: "Resultado da Jogatina dos Amigos", files: [file] }); return; }
     catch (error) { if (error.name === "AbortError") return; }
   }
   const url = URL.createObjectURL(blob);
@@ -2582,7 +2580,7 @@ function bindEvents() {
     selected.forEach((label) => grid.append(label));
   });
   $("savePredictionButton").addEventListener("click", savePrediction);
-  const toggleTvMode = () => { const tv = document.body.classList.toggle("tv-mode"); if (!tv) document.body.classList.remove("tv-provisional"); $("tvExitButton").hidden = !tv; $("tvRankingToggle").hidden = !tv; $("tvRankingToggle").textContent = "Classificação provisória"; document.querySelector(".page-title h1").textContent = tv ? activeEncounter()?.nome || "Boliche dos Amigos" : "Placar"; };
+  const toggleTvMode = () => { const tv = document.body.classList.toggle("tv-mode"); if (!tv) document.body.classList.remove("tv-provisional"); $("tvExitButton").hidden = !tv; $("tvRankingToggle").hidden = !tv; $("tvRankingToggle").textContent = "Classificação provisória"; document.querySelector(".page-title h1").textContent = tv ? activeEncounter()?.nome || "Jogatina dos Amigos" : "Placar"; };
   $("tvModeButton").addEventListener("click", toggleTvMode);
   $("tvExitButton").addEventListener("click", toggleTvMode);
   $("tvRankingToggle").addEventListener("click", () => { const provisional = document.body.classList.toggle("tv-provisional"); $("tvRankingToggle").textContent = provisional ? "Classificação oficial" : "Classificação provisória"; });

@@ -1,7 +1,7 @@
 {
   "id": "/boliche/",
-  "name": "Boliche dos Amigos",
-  "short_name": "Boliche",
+  "name": "Jogatina dos Amigos",
+  "short_name": "Jogatina",
   "description": "Placar e ranking compartilhado dos amigos",
   "start_url": "/boliche/",
   "scope": "/boliche/",

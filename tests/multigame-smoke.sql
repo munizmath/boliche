@@ -155,15 +155,30 @@ begin
   perform public.activate_encounter(quiz.id);
 
   -- Zero significa sem teto. 301 é válido no quiz e a conclusão espera todas as rodadas.
-  perform public.save_round_score(
+  perform public.save_round_score_if_current(
     p_game_id => quiz_game.id, p_player_id => p1, p_round_no => 1,
-    p_points => 301, p_finalized => true
+    p_points => 301, p_finalized => true,
+    p_expected_points => null, p_expected_finalized => null
   );
   if not exists (
     select 1 from public.scores
      where game_id = quiz_game.id and player_id = p1
        and pontos = 301 and not finalizado
   ) then raise exception '301 no quiz não foi aceito ou finalizou cedo'; end if;
+  caught := false;
+  begin
+    perform public.save_round_score_if_current(
+      p_game_id => quiz_game.id, p_player_id => p1, p_round_no => 1,
+      p_points => 302, p_finalized => true,
+      p_expected_points => 300, p_expected_finalized => true
+    );
+  exception when serialization_failure then caught := true;
+  end;
+  if not caught then raise exception 'Gravação concorrente não foi rejeitada'; end if;
+  if not exists (
+    select 1 from public.round_scores
+     where game_id = quiz_game.id and player_id = p1 and round_no = 1 and points = 301
+  ) then raise exception 'Gravação concorrente alterou os pontos'; end if;
   select count(*) into audit_before from public.score_changes
    where game_id = quiz_game.id and player_id = p1;
   perform public.save_round_score(
@@ -232,6 +247,12 @@ begin
     select 1 from public.scores
      where game_id = quiz_game.id and player_id = p1 and pontos = 301 and finalizado
   ) then raise exception 'Desfazer alteração da rodada não restaurou o total'; end if;
+  caught := false;
+  begin
+    perform public.undo_round_score_change(round_change_id);
+  exception when serialization_failure then caught := true;
+  end;
+  if not caught then raise exception 'Desfazer obsoleto foi aceito'; end if;
 
   perform public.save_round_score(
     p_game_id => quiz_game.id, p_player_id => p1, p_round_no => 1,
@@ -508,6 +529,15 @@ begin
   end;
   if not caught then raise exception 'RPC aceitou valor fora do inteiro seguro do JS'; end if;
 
+  -- Excluir o encontro com partidas e rodadas ainda vinculadas deve preservar
+  -- a auditoria sem deixar resultados ativos órfãos.
+  perform public.delete_encounter(unlimited.id);
+  if exists (select 1 from public.round_scores where game_id in (unlimited_game.id, unlimited_game_2.id))
+     or exists (select 1 from public.games where encounter_id = unlimited.id)
+     or not exists (select 1 from public.round_score_changes where game_id = unlimited_game.id) then
+    raise exception 'Cascade do encontro com rodadas falhou';
+  end if;
+
   -- Boliche continua limitado a 300 tanto na escrita direta quanto na RPC antiga.
   caught := false;
   begin
@@ -546,6 +576,16 @@ begin
   exception when insufficient_privilege then caught := true;
   end;
   if not caught then raise exception 'Usuário comum salvou rodada'; end if;
+  caught := false;
+  begin
+    perform public.save_round_score_if_current(
+      p_game_id => quiz_game.id, p_player_id => p1, p_round_no => 1,
+      p_points => 20, p_finalized => true,
+      p_expected_points => 250, p_expected_finalized => true
+    );
+  exception when insufficient_privilege then caught := true;
+  end;
+  if not caught then raise exception 'Usuário comum usou RPC condicional'; end if;
   perform set_config(
     'request.jwt.claims',
     '{"sub":"00000000-0000-4000-8000-000000000099","role":"authenticated","app_metadata":{"role":"admin"},"amr":[{"method":"password"}]}',
@@ -579,6 +619,16 @@ begin
   exception when insufficient_privilege then caught := true;
   end;
   if not caught then raise exception 'Encontro fechado aceitou nova rodada'; end if;
+  caught := false;
+  begin
+    perform public.save_round_score_if_current(
+      p_game_id => quiz_game.id, p_player_id => p1, p_round_no => 1,
+      p_points => 11, p_finalized => true,
+      p_expected_points => 10, p_expected_finalized => true
+    );
+  exception when insufficient_privilege then caught := true;
+  end;
+  if not caught then raise exception 'Encontro fechado aceitou RPC condicional'; end if;
 end;
 $$;
 
@@ -597,6 +647,17 @@ begin
   exception when insufficient_privilege then caught := true;
   end;
   if not caught then raise exception 'anon executou save_round_score'; end if;
+  caught := false;
+  begin
+    perform public.save_round_score_if_current(
+      p_game_id => '00000000-0000-4000-8000-000000000422',
+      p_player_id => '00000000-0000-4000-8000-000000000411',
+      p_round_no => 1, p_points => 1, p_finalized => true,
+      p_expected_points => null, p_expected_finalized => null
+    );
+  exception when insufficient_privilege then caught := true;
+  end;
+  if not caught then raise exception 'anon executou RPC condicional'; end if;
 end;
 $$;
 reset role;
