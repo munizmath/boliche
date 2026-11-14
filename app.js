@@ -19,6 +19,7 @@ const state = {
   games: [],
   scores: [],
   advancedFeeds: new Map(),
+  advancedSchemaReady: false,
   invalidAdvancedFeeds: new Set(),
   advancedFeedErrors: new Map(),
   roundScores: [],
@@ -130,12 +131,25 @@ function advancedModeModulesReady(id) {
 }
 function selectableGameTypes() {
   return [...BUILTIN_GAME_TYPES, ...(window.GamePresentations?.advanced || [])
-    .filter((mode) => advancedModeModulesReady(mode.id)).map((mode) => mode.id)];
+    .filter((mode) => state.advancedSchemaReady && advancedModeModulesReady(mode.id)).map((mode) => mode.id)];
 }
 function isModeReady(encounter = activeEncounter()) {
   const id = typeof encounter === "string" ? encounter : encounter?.game_type || "boliche";
   return Object.prototype.hasOwnProperty.call(BUILTIN_MODES, id)
-    || Boolean(advancedModeController && advancedModeModulesReady(id));
+    || Boolean(state.advancedSchemaReady && advancedModeController && advancedModeModulesReady(id));
+}
+async function probeAdvancedSchema() {
+  if (!client?.rpc) { state.advancedSchemaReady = false; return false; }
+  try {
+    // v19 is installed after v16-v18. Its public read RPC is a safe capability check.
+    const { error } = await client.rpc("get_darts_match_results", {
+      p_game_id: "00000000-0000-0000-0000-000000000000",
+    });
+    state.advancedSchemaReady = !error;
+  } catch {
+    state.advancedSchemaReady = false;
+  }
+  return state.advancedSchemaReady;
 }
 function requireReadyMode(encounter = activeEncounter()) {
   if (isModeReady(encounter)) return true;
@@ -779,8 +793,10 @@ function subscribeRealtime() {
     .on("postgres_changes", { event: "*", schema: "public", table: "teams" }, refreshFromRealtime)
     .on("postgres_changes", { event: "*", schema: "public", table: "team_players" }, refreshFromRealtime)
     .on("postgres_changes", { event: "*", schema: "public", table: "brackets" }, refreshFromRealtime);
-  for (const table of ["match_sets", "match_player_status", "mode_player_scores", "darts_legs", "darts_leg_players", "darts_turns"]) {
-    channel = channel.on("postgres_changes", { event: "*", schema: "public", table }, refreshFromRealtime);
+  if (state.advancedSchemaReady) {
+    for (const table of ["match_sets", "match_player_status", "mode_player_scores", "darts_legs", "darts_leg_players", "darts_turns"]) {
+      channel = channel.on("postgres_changes", { event: "*", schema: "public", table }, refreshFromRealtime);
+    }
   }
   if (state.scoreDetailsAvailable) channel = channel
     .on("postgres_changes", { event: "*", schema: "public", table: "score_details" }, refreshFromRealtime)
@@ -3679,6 +3695,7 @@ async function start() {
     if (data.session?.user?.id === sessionStorage.getItem("boliche-recovery-user")) state.recovering = true;
     await loadProfile();
   }
+  await probeAdvancedSchema();
   try { await loadData(); render(); showProfileIfNeeded(); subscribeRealtime(); } catch (error) { console.error(error); setConnection("Falha ao carregar", "error"); showToast("Não foi possível carregar o placar. Verifique o Supabase.", "error"); }
 }
 

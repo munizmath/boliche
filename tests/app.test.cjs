@@ -25,11 +25,12 @@ function loadApp(client = null) {
   const source = fs.readFileSync(path.join(__dirname, '..', 'app.js'), 'utf8')
     .replace(/\nstart\(\);\s*$/, '\n');
   vm.runInContext(`${source}\nconst appRender = render;\nrender = () => {};\nrefreshAfterReconnect = async () => {};\nglobalThis.testApp = { state, loadData, renderApp: appRender, buildSuggestions, playersOnLane, updateReviewTable, updatePhotoConfirmState, captureReviewDraft, markRoundEdited, markReviewEdited, changeReviewContext, runOcr, drawOrientedPhoto, applyPhotoInteractionMode, canvasPoint, renderLeaderboard, renderCurrentGame, renderGames, renderLanes, renderPhotoOptions, removeGame, renderTeams, renderRecords, renderScoreHistory, loadMoreAuditHistory, shareResultCard, openShareModal, openPhotoModal, openTabletModal, openQuickScore, openStatsModal, confirmPhotoUpdate, submitAuth, submitProfile, prepareProfilePhoto, cleanupUnusedProfilePhotos, officialTotals, officialPosition, encounterGames, bracketRounds, bracketWinner, balancedLaneDraw, buildResultsExport, downloadResults, openEncounterModal, saveEncounter, renderEncounterRules, renderEncounterBar, renderGameSwitcher, selectEncounter, openGameModal, createGame, renderPlayerSelection, addPlayer, signOut, openRoundModal, renderRoundModal, renderRoundResults, saveRoundScores, clearRoundScore, undoRoundScoreChange, getGameMode, isRoundBased, configuredRoundMax, rankScoreRows, teamStandings, bowlingFrames, tabletStandingPins };`, context);
-  vm.runInContext('testApp.start = start; testApp.initializeAdvancedModeUI = initializeAdvancedModeUI; testApp.renderAdvancedLeaderboard = renderAdvancedLeaderboard;', context);
+  vm.runInContext('testApp.start = start; testApp.initializeAdvancedModeUI = initializeAdvancedModeUI; testApp.renderAdvancedLeaderboard = renderAdvancedLeaderboard; testApp.probeAdvancedSchema = probeAdvancedSchema; testApp.isModeReady = isModeReady; testApp.selectableGameTypes = selectableGameTypes;', context);
   return { ...context.testApp, get, rows, document, context };
 }
 
 function installAdvancedTestModules(app, feeds, aggregateOfficial = () => ({ rows: [], missingGameIds: [] })) {
+  app.state.advancedSchemaReady = true;
   const getFeed = (modeId, gameId) => feeds.get(`${modeId}:${gameId}`) || null;
   app.context.window.AdvancedGameModes = {
     rankResults: (_modeId, rows) => rows.map((row, index) => ({
@@ -53,6 +54,26 @@ function installAdvancedTestModules(app, feeds, aggregateOfficial = () => ({ row
   app.context.window.AdvancedRanking = { aggregateOfficial };
   assert.equal(app.initializeAdvancedModeUI(), true);
 }
+
+test('novos jogos ficam indisponíveis até a última migração estar acessível', async () => {
+  let deployed = false;
+  const client = { rpc: async (name, args) => {
+    assert.equal(name, 'get_darts_match_results');
+    assert.equal(args.p_game_id, '00000000-0000-0000-0000-000000000000');
+    return { data: [], error: deployed ? null : { message: 'Function not found' } };
+  } };
+  const app = loadApp(client);
+  app.context.window.AdvancedGameModes = { rankResults: () => [] };
+  app.context.window.AdvancedModeUI = { create: () => ({ init() {} }) };
+  assert.equal(app.initializeAdvancedModeUI(), true);
+  assert.equal(await app.probeAdvancedSchema(), false);
+  assert.equal(app.isModeReady('pebolim'), false);
+  assert.equal(app.selectableGameTypes().includes('pebolim'), false);
+  deployed = true;
+  assert.equal(await app.probeAdvancedSchema(), true);
+  assert.equal(app.isModeReady('pebolim'), true);
+  assert.equal(app.selectableGameTypes().includes('pebolim'), true);
+});
 
 function adminSession() {
   const payload = Buffer.from(JSON.stringify({ amr: [{ method: 'password' }] })).toString('base64url');
@@ -200,6 +221,7 @@ test("placar da partida exibe erro do feed e oferece retry explícito", async ()
   }) };
   app.context.window.AdvancedRanking = { aggregateOfficial: () => ({ rows: [], missingGameIds: [] }) };
   assert.equal(app.initializeAdvancedModeUI(), true);
+  app.state.advancedSchemaReady = true;
   app.state.activeEncounterId = "e";
   app.state.activeGameId = "g";
   app.state.encounters = [{ id: "e", game_type: "pinball", status: "active" }];
@@ -229,6 +251,7 @@ test("ranking oficial trata feed final inválido como erro recuperável sem loop
   }) };
   app.context.window.AdvancedRanking = { aggregateOfficial: () => ({ rows: [], missingGameIds: ["g"] }) };
   assert.equal(app.initializeAdvancedModeUI(), true);
+  app.state.advancedSchemaReady = true;
   app.state.activeEncounterId = "e";
   app.state.activeGameId = "g";
   app.state.encounters = [{ id: "e", game_type: "pinball", status: "closed" }];
