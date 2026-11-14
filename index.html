@@ -9,7 +9,7 @@
     <link rel="icon" href="favicon.ico" type="image/x-icon" />
     <link rel="apple-touch-icon" href="apple-touch-icon.png" />
     <link rel="manifest" href="manifest.webmanifest" />
-    <link rel="stylesheet" href="styles.css?v=20261113-13" />
+    <link rel="stylesheet" href="styles.css?v=20261113-14" />
   </head>
   <body>
     <div id="toastContainer" class="toast-container" aria-live="polite"></div>
@@ -20,56 +20,30 @@
           <div class="brand-mark"><img src="logo.png" alt="" /></div>
           <strong>Boliche</strong>
         </div>
-        <button id="mobileMenuToggle" class="mobile-menu-toggle" type="button" aria-expanded="false" aria-controls="topbarMenus">Menu ☰</button>
         <nav class="sidebar-nav" aria-label="Navegação principal">
           <button class="nav-link nav-link--active" type="button" data-scroll-to="partidas" aria-current="page"><span class="nav-icon">▦</span>Partidas</button>
           <button class="nav-link" type="button" data-scroll-to="historico"><span class="nav-icon">↺</span>Histórico</button>
           <button class="nav-link" type="button" data-scroll-to="ranking"><span class="nav-icon">♜</span>Ranking</button>
         </nav>
-        <div id="topbarMenus" class="topbar-menus" aria-label="Ações">
-          <details class="topbar-menu admin-only" hidden>
-            <summary>Partida</summary>
-            <div class="topbar-menu-panel">
-              <button id="newGameButton" type="button">Nova partida</button>
-              <button id="photoButton" type="button">Atualizar por foto</button>
-            </div>
-          </details>
-          <details class="topbar-menu admin-only" hidden>
-            <summary>Encontro</summary>
-            <div class="topbar-menu-panel">
-              <button id="newEncounterButton" type="button">Novo encontro</button>
-              <button id="editEncounterButton" type="button">Editar encontro</button>
-              <button id="startEncounterButton" type="button" hidden>Iniciar encontro</button>
-              <button id="closeEncounterButton" type="button">Encerrar encontro</button>
-              <button id="deleteEncounterButton" class="menu-danger" type="button">Excluir encontro</button>
-            </div>
-          </details>
-          <details class="topbar-menu admin-only" hidden>
-            <summary>Gestão</summary>
-            <div class="topbar-menu-panel">
-              <button id="playersButton" type="button">Participantes</button>
-              <button id="approvalsButton" type="button">Aprovações</button>
-              <button id="historyButton" type="button">Alterações</button>
-            </div>
-          </details>
-          <details class="topbar-menu">
-            <summary>Mais</summary>
-            <div class="topbar-menu-panel">
-              <button id="shareButton" type="button">Compartilhar</button>
-              <button id="exportCsvButton" type="button">Exportar CSV</button>
-              <button id="exportJsonButton" type="button">Exportar JSON</button>
-              <button id="tvModeButton" type="button">Modo telão</button>
-              <button id="themeToggle" type="button" aria-label="Alternar tema">Alternar tema</button>
-            </div>
-          </details>
-          <details class="topbar-menu topbar-menu--account">
-            <summary>Conta</summary>
-            <div class="topbar-menu-panel">
-              <button id="registerButton" type="button">Criar cadastro</button>
-              <button id="profileButton" type="button" hidden>Meu cadastro</button>
-              <button id="authButton" type="button">Entrar</button>
-            </div>
-          </details>
+        <div class="topbar-actions" aria-label="Ações">
+          <button id="newGameButton" class="topbar-action topbar-action--primary admin-only" type="button" hidden>Nova partida</button>
+          <button id="photoButton" class="topbar-action admin-only" type="button" hidden>Foto</button>
+          <button id="newEncounterButton" class="topbar-action admin-only" type="button" hidden>Novo encontro</button>
+          <button id="editEncounterButton" class="topbar-action admin-only" type="button" hidden>Editar encontro</button>
+          <button id="startEncounterButton" class="topbar-action admin-only" type="button" hidden>Iniciar</button>
+          <button id="closeEncounterButton" class="topbar-action admin-only" type="button" hidden>Encerrar</button>
+          <button id="deleteEncounterButton" class="topbar-action topbar-action--danger admin-only" type="button" hidden>Excluir</button>
+          <button id="playersButton" class="topbar-action admin-only" type="button" hidden>Participantes</button>
+          <button id="approvalsButton" class="topbar-action admin-only" type="button" hidden>Aprovações</button>
+          <button id="historyButton" class="topbar-action admin-only" type="button" hidden>Alterações</button>
+          <button id="shareButton" class="topbar-action" type="button">Compartilhar</button>
+          <button id="exportCsvButton" class="topbar-action" type="button">CSV</button>
+          <button id="exportJsonButton" class="topbar-action" type="button">JSON</button>
+          <button id="tvModeButton" class="topbar-action" type="button">Telão</button>
+          <button id="themeToggle" class="topbar-action" type="button" aria-label="Alternar tema">Tema escuro</button>
+          <button id="registerButton" class="topbar-action" type="button">Criar cadastro</button>
+          <button id="profileButton" class="topbar-action" type="button" hidden>Meu cadastro</button>
+          <button id="authButton" class="topbar-action" type="button">Entrar</button>
         </div>
       </header>
 
@@ -351,6 +325,6 @@
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
     <script src="supabase-config.js"></script>
-    <script src="app.js?v=20261113-13"></script>
+    <script src="app.js?v=20261113-14"></script>
   </body>
 </html>

@@ -46,13 +46,13 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 
 .app-shell { min-height: 100vh; }
 .app-frame { min-width: 0; }
-.topbar { position: sticky; z-index: 20; top: 0; display: flex; align-items: center; width: 100%; min-height: 64px; border-bottom: 1px solid var(--color-divider); background: var(--color-surface); }
+.topbar { position: sticky; z-index: 20; top: 0; display: flex; align-items: center; width: 100%; min-height: 64px; overflow-x: auto; border-bottom: 1px solid var(--color-divider); background: var(--color-surface); scrollbar-width: thin; }
 .sidebar-brand { display: flex; flex: none; align-items: center; gap: 12px; padding: 10px 18px; }
 .sidebar-brand .brand-mark { width: 34px; height: 34px; border: 1px solid var(--color-divider); background: transparent; }
 .sidebar-brand .brand-mark img { width: 23px; height: 23px; }
 .sidebar-brand strong { display: block; font-family: var(--font-heading); font-size: 26px; font-weight: 600; line-height: 1; }
 .sidebar-brand span { display: block; margin-top: 5px; color: color-mix(in srgb, var(--color-text) 58%, transparent); font-size: 10px; letter-spacing: .1em; text-transform: uppercase; }
-.sidebar-nav { display: flex; flex: 1; align-items: center; gap: 2px; min-width: 0; padding: 0 10px; overflow-x: auto; scrollbar-width: thin; }
+.sidebar-nav { display: flex; flex: 0 0 auto; align-items: center; gap: 2px; min-width: 0; padding: 0 10px; }
 .nav-group-label { display: none; }
 .nav-link { display: flex; flex: none; align-items: center; gap: 8px; min-height: 63px; padding: 10px 13px; border: 0; border-bottom: 2px solid transparent; color: var(--color-text); background: transparent; font-size: 13px; text-align: left; white-space: nowrap; }
 .nav-link:hover, .nav-link--active { color: var(--color-accent-700); border-bottom-color: var(--color-accent); background: color-mix(in srgb, var(--color-accent) 10%, transparent); }
@@ -60,7 +60,12 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .sidebar-footer { display: flex; flex: none; align-items: center; gap: 10px; max-width: 260px; padding: 10px 18px; border-left: 1px solid var(--color-divider); }
 .operator-mark { display: grid; place-items: center; width: 30px; height: 30px; border: 1px solid var(--color-divider); color: var(--color-accent-700); font-family: var(--font-heading); font-size: 14px; }
 .sidebar-footer strong, .sidebar-footer span { display: block; }.sidebar-footer strong { font-size: 13px; line-height: 1.3; }.sidebar-footer span { margin-top: 2px; color: color-mix(in srgb, var(--color-text) 60%, transparent); font-size: 11px; }
-.topbar-menus { display: flex; flex: none; align-items: stretch; gap: 1px; padding-right: 12px; }
+.topbar-actions { display: flex; flex: 0 0 auto; align-items: center; gap: 4px; padding: 0 12px 0 4px; }
+.topbar-action { min-height: 40px; padding: 0 11px; border: 1px solid var(--color-divider); border-radius: 0; color: var(--color-text); background: var(--color-surface); font-size: 12px; font-weight: 700; white-space: nowrap; }
+.topbar-action:hover, .topbar-action:focus-visible { border-color: var(--color-accent); color: var(--color-accent-700); background: color-mix(in srgb, var(--color-accent) 9%, transparent); }
+.topbar-action--primary { border-color: var(--color-accent); color: var(--color-bg); background: var(--color-accent); }
+.topbar-action--primary:hover { color: var(--color-bg); background: var(--color-accent-600); }
+.topbar-action--danger { color: var(--color-danger); }
 .topbar-menu { position: relative; }
 .topbar-menu summary { display: flex; align-items: center; min-height: 63px; padding: 0 10px; color: var(--color-text); font-size: 13px; list-style: none; white-space: nowrap; cursor: pointer; }
 .topbar-menu summary::-webkit-details-marker { display: none; }
@@ -72,7 +77,6 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .topbar-menu-panel button:hover { color: var(--color-accent-700); background: var(--color-surface-soft); }
 .topbar-menu-panel button:disabled { opacity: .45; cursor: default; }
 .topbar-menu-panel .menu-danger { color: var(--color-danger); }
-.mobile-menu-toggle { display: none; border: 0; color: var(--color-text); background: transparent; font-size: 13px; font-weight: 700; }
 
 .shell { width: 100%; max-width: 1360px; margin: 0 auto; padding: 34px 40px 56px; }
 .app-header, .brand, .header-actions, .intro-row, .section-heading, .game-card-top, .current-row, .current-player, .current-score, .player-row, .modal-actions, .photo-tools, .review-heading { display: flex; align-items: center; }
@@ -219,6 +223,23 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .profile-current { display: flex; align-items: center; gap: 12px; padding: 10px; border: 1px solid var(--color-divider); border-radius: var(--radius); color: var(--color-text); font-size: 12px; }
 .profile-current[hidden], .profile-current img[hidden] { display: none; }
 .profile-current img { width: 52px; height: 52px; border-radius: 50%; object-fit: cover; }
+
+/* A barra continua mantém todas as ações visíveis no padrão clássico do placar. */
+.topbar { flex-wrap: nowrap !important; overscroll-behavior-x: contain; }
+.topbar-actions { min-width: max-content; }
+@media (max-width: 920px) {
+  .sidebar-brand { flex: 0 0 auto !important; }
+  .sidebar-nav { order: initial !important; width: auto !important; flex: 0 0 auto !important; border-top: 0 !important; }
+  .topbar-actions { flex: 0 0 auto !important; }
+}
+@media (max-width: 620px) {
+  .topbar { min-height: 56px; }
+  .sidebar-brand { padding: 7px 12px; }
+  .sidebar-brand strong { font-size: 20px; }
+  .nav-link { min-height: 48px; padding: 8px 10px; font-size: 11px; }
+  .topbar-actions { gap: 3px; padding-right: 10px; }
+  .topbar-action { min-height: 36px; padding: 0 9px; font-size: 11px; }
+}
 .profile-photo-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; width: 100%; }
 .modal-card .profile-photo-choice { position: relative; display: flex !important; align-items: center; justify-content: center; min-height: 42px; padding: 8px; border: 1px solid var(--color-accent); border-radius: var(--radius); color: var(--color-text); background: var(--color-surface); font-size: 12px; cursor: pointer; }
 .modal-card .profile-photo-choice input[type="file"] { position: absolute; inset: 0; width: 100%; height: 100%; min-height: 0; padding: 0; border: 0; opacity: 0; cursor: pointer; }

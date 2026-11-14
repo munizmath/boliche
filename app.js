@@ -1838,24 +1838,6 @@ function bindEvents() {
     });
   }));
   document.querySelectorAll(".modal-close").forEach((button) => button.addEventListener("click", () => button.closest("dialog").close()));
-  const topbar = document.querySelector(".topbar");
-  const mobileMenuToggle = $("mobileMenuToggle");
-  const closeTopbarMenus = () => {
-    topbar.classList.remove("topbar--menu-open");
-    mobileMenuToggle.setAttribute("aria-expanded", "false");
-    document.querySelectorAll(".topbar-menu").forEach((menu) => { menu.open = false; });
-  };
-  mobileMenuToggle.addEventListener("click", () => {
-    const open = topbar.classList.toggle("topbar--menu-open");
-    mobileMenuToggle.setAttribute("aria-expanded", String(open));
-    if (!open) document.querySelectorAll(".topbar-menu").forEach((menu) => { menu.open = false; });
-  });
-  document.querySelectorAll(".topbar-menu").forEach((menu) => {
-    menu.addEventListener("toggle", () => { if (menu.open) document.querySelectorAll(".topbar-menu").forEach((other) => { if (other !== menu) other.open = false; }); });
-    menu.querySelectorAll("button").forEach((button) => button.addEventListener("click", closeTopbarMenus));
-  });
-  document.addEventListener("click", (event) => { if (!topbar.contains(event.target)) closeTopbarMenus(); });
-  document.addEventListener("keydown", (event) => { if (event.key === "Escape") closeTopbarMenus(); });
 }
 
 async function start() {
