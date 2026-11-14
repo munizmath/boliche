@@ -344,7 +344,7 @@ function renderEncounterBar() {
   const selected = state.activeEncounterId;
   $("encounterSelect").innerHTML = state.encounters.map((item) => `<option value="${esc(item.id)}">${esc(item.nome)} · ${esc(new Intl.DateTimeFormat("pt-BR", { timeZone: "UTC" }).format(new Date(`${item.data}T12:00:00Z`)))}</option>`).join("");
   $("encounterSelect").value = selected || "";
-  $("encounterStatus").textContent = !activeEncounter() ? "Sem encontro" : activeEncounter().status === "closed" ? "Encerrado" : activeEncounter().status === "preparing" ? "Preparação" : "Em andamento";
+  $("encounterStatus").textContent = !activeEncounter() ? "Sem encontro" : activeEncounter().status === "closed" ? "Encerrado" : activeEncounter().status === "preparing" ? "Preparação" : "Ativo";
   $("encounterStatus").className = `status-pill status-pill--${!activeEncounter() ? "muted" : encounterOpen() ? "warning" : "success"}`;
   $("editEncounterButton").disabled = !encounterOpen();
   $("startEncounterButton").hidden = !isAdmin() || activeEncounter()?.status !== "preparing";
@@ -356,7 +356,6 @@ function renderEncounterBar() {
   if (document.body.classList.contains("tv-mode")) document.querySelector(".page-title h1").textContent = activeEncounter()?.nome || "Boliche dos Amigos";
   $("newGameButton").disabled = !encounterOpen();
   $("photoButton").disabled = !encounterActive();
-  document.querySelector(".intro-row h2").textContent = activeEncounter() ? `O ranking de ${activeEncounter().nome}, em um só lugar.` : "O ranking do encontro, em um só lugar.";
 }
 
 function selectEncounter(id) {
@@ -1764,8 +1763,8 @@ async function confirmPhotoUpdate(event) {
 
 function initTheme() {
   const stored = localStorage.getItem("boliche-theme"); const dark = stored === "dark";
-  document.documentElement.classList.toggle("dark", dark); $("themeToggle").textContent = dark ? "☀" : "◐";
-  $("themeToggle").addEventListener("click", () => { const next = !document.documentElement.classList.contains("dark"); document.documentElement.classList.toggle("dark", next); localStorage.setItem("boliche-theme", next ? "dark" : "light"); $("themeToggle").textContent = next ? "☀" : "◐"; });
+  document.documentElement.classList.toggle("dark", dark); $("themeToggle").textContent = dark ? "Tema claro" : "Tema escuro";
+  $("themeToggle").addEventListener("click", () => { const next = !document.documentElement.classList.contains("dark"); document.documentElement.classList.toggle("dark", next); localStorage.setItem("boliche-theme", next ? "dark" : "light"); $("themeToggle").textContent = next ? "Tema claro" : "Tema escuro"; });
 }
 
 function bindEvents() {
@@ -1795,7 +1794,9 @@ function bindEvents() {
     selected.forEach((label) => grid.append(label));
   });
   $("savePredictionButton").addEventListener("click", savePrediction);
-  $("tvModeButton").addEventListener("click", () => { const tv = document.body.classList.toggle("tv-mode"); if (!tv) document.body.classList.remove("tv-provisional"); $("tvRankingToggle").hidden = !tv; $("tvRankingToggle").textContent = "Classificação provisória"; $("tvModeButton").textContent = tv ? "Sair do telão" : "Modo telão"; document.querySelector(".page-title h1").textContent = tv ? activeEncounter()?.nome || "Boliche dos Amigos" : "Placar compartilhado"; });
+  const toggleTvMode = () => { const tv = document.body.classList.toggle("tv-mode"); if (!tv) document.body.classList.remove("tv-provisional"); $("tvExitButton").hidden = !tv; $("tvRankingToggle").hidden = !tv; $("tvRankingToggle").textContent = "Classificação provisória"; document.querySelector(".page-title h1").textContent = tv ? activeEncounter()?.nome || "Boliche dos Amigos" : "Placar"; };
+  $("tvModeButton").addEventListener("click", toggleTvMode);
+  $("tvExitButton").addEventListener("click", toggleTvMode);
   $("tvRankingToggle").addEventListener("click", () => { const provisional = document.body.classList.toggle("tv-provisional"); $("tvRankingToggle").textContent = provisional ? "Classificação oficial" : "Classificação provisória"; });
   document.querySelectorAll("[data-close-modal]").forEach((button) => button.addEventListener("click", () => button.closest("dialog").close()));
   window.addEventListener("online", refreshAfterReconnect);
@@ -1824,7 +1825,7 @@ function bindEvents() {
   $("photoContrast").addEventListener("input", (event) => { state.photoContrast = Number(event.target.value); updatePhotoPreview(); });
   const canvas = $("photoCanvas"); canvas.addEventListener("pointerdown", startCrop); canvas.addEventListener("pointermove", moveCrop); canvas.addEventListener("pointerup", endCrop); canvas.addEventListener("pointercancel", endCrop);
   document.addEventListener("keydown", (event) => { if (event.key === "Escape" && !state.recovering) document.querySelectorAll("dialog[open]").forEach((dialog) => dialog.close()); });
-  $("authButton").insertAdjacentHTML("beforebegin", `<button id="playersButton" class="button button--quiet admin-only" type="button" hidden>Participantes</button>`); $("playersButton").addEventListener("click", openPlayersModal);
+  $("playersButton").addEventListener("click", openPlayersModal);
   document.querySelectorAll("[data-scroll-to]").forEach((button) => button.addEventListener("click", () => {
     const target = button.dataset.scrollTo;
     if (target === "importacao") return openPhotoModal();
@@ -1837,6 +1838,24 @@ function bindEvents() {
     });
   }));
   document.querySelectorAll(".modal-close").forEach((button) => button.addEventListener("click", () => button.closest("dialog").close()));
+  const topbar = document.querySelector(".topbar");
+  const mobileMenuToggle = $("mobileMenuToggle");
+  const closeTopbarMenus = () => {
+    topbar.classList.remove("topbar--menu-open");
+    mobileMenuToggle.setAttribute("aria-expanded", "false");
+    document.querySelectorAll(".topbar-menu").forEach((menu) => { menu.open = false; });
+  };
+  mobileMenuToggle.addEventListener("click", () => {
+    const open = topbar.classList.toggle("topbar--menu-open");
+    mobileMenuToggle.setAttribute("aria-expanded", String(open));
+    if (!open) document.querySelectorAll(".topbar-menu").forEach((menu) => { menu.open = false; });
+  });
+  document.querySelectorAll(".topbar-menu").forEach((menu) => {
+    menu.addEventListener("toggle", () => { if (menu.open) document.querySelectorAll(".topbar-menu").forEach((other) => { if (other !== menu) other.open = false; }); });
+    menu.querySelectorAll("button").forEach((button) => button.addEventListener("click", closeTopbarMenus));
+  });
+  document.addEventListener("click", (event) => { if (!topbar.contains(event.target)) closeTopbarMenus(); });
+  document.addEventListener("keydown", (event) => { if (event.key === "Escape") closeTopbarMenus(); });
 }
 
 async function start() {
