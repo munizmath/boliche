@@ -9,7 +9,7 @@
     <link rel="icon" href="favicon.ico" type="image/x-icon" />
     <link rel="apple-touch-icon" href="apple-touch-icon.png" />
     <link rel="manifest" href="manifest.webmanifest" />
-    <link rel="stylesheet" href="styles.css?v=20261114-22" />
+    <link rel="stylesheet" href="styles.css?v=20261114-23" />
   </head>
   <body>
     <div id="toastContainer" class="toast-container" aria-live="polite"></div>
@@ -92,9 +92,9 @@
       </header>
 
       <section class="encounter-bar" aria-label="Encontro atual">
+        <button id="gameSwitchButton" class="game-switch-button" type="button" aria-haspopup="dialog" aria-controls="gameSwitchModal" aria-label="Escolher jogo"><span>Jogo</span><strong id="gameSwitchLabel">Escolher</strong><span aria-hidden="true">▾</span></button>
         <label>Encontro <select id="encounterSelect" aria-label="Selecionar encontro"></select></label>
         <span id="encounterStatus" class="status-pill status-pill--muted"></span>
-        <span id="gameTypeBadge" class="game-type-badge status-pill status-pill--muted" role="status" aria-live="polite">Boliche</span>
         <span class="encounter-sync"><span id="connectionStatus" class="status-pill status-pill--muted">Conectando…</span><span id="lastUpdated">Aguardando dados</span></span>
         <button id="tvExitButton" class="button button--quiet" type="button" hidden>Sair do telão</button>
         <button id="tvRankingToggle" class="button button--quiet" type="button" hidden>Classificação provisória</button>
@@ -139,13 +139,14 @@
         <article id="importacao" class="glass-card blueprint current-card">
           <div class="section-heading">
             <div>
-              <p class="eyebrow">operação da partida · ao vivo</p>
+              <p id="currentGameEyebrow" class="eyebrow">operação da partida · ao vivo</p>
               <h3 id="currentGameTitle">Nenhuma partida aberta</h3>
             </div>
             <div class="current-card-actions"><span id="currentGameStatus" class="status-pill status-pill--muted">Aguardando</span><button id="updateScoreButton" class="button button--primary admin-only" type="button" aria-expanded="false" aria-controls="scoreUpdateMenu" hidden>Atualizar placar</button><div id="scoreUpdateMenu" class="context-menu" hidden><button type="button" data-score-action="photo">Atualizar por foto</button><button type="button" data-score-action="manual">Informar pontuação</button><button type="button" data-score-action="tablet">Registro no tablet</button><button class="admin-only" type="button" data-score-action="round" hidden>Registrar rodada</button></div></div>
           </div>
           <div id="currentGameBody" class="current-game-body"></div>
           <div id="laneProgress" class="lane-progress"></div>
+          <div id="roundProgress" class="round-progress" hidden></div>
           <button id="currentGameSelect" class="text-button admin-only" type="button" hidden>Selecionar outra partida</button>
         </article>
       </section>
@@ -200,6 +201,16 @@
       <button id="mobileMoreButton" type="button" aria-expanded="false" aria-controls="mobileMoreMenu"><span aria-hidden="true">⋯</span>Mais</button>
       <div id="mobileMoreMenu" class="mobile-more-menu" hidden><button class="admin-only" type="button" data-area-target="admin" hidden>Administração</button><button type="button" data-mobile-action="share">Compartilhar</button><button type="button" data-mobile-action="theme">Tema</button><button type="button" data-mobile-action="auth">Conta</button></div>
     </nav>
+
+    <dialog id="gameSwitchModal" class="modal modal--game-switch" aria-labelledby="gameSwitchTitle">
+      <div class="modal-card modal-card--wide">
+        <button class="modal-close" type="button" aria-label="Fechar escolha de jogo">×</button>
+        <p class="eyebrow">jogos</p><h2 id="gameSwitchTitle">Escolher jogo</h2>
+        <p class="modal-copy">Cada encontro pertence a um jogo. Escolha um encontro para abrir o placar correspondente.</p>
+        <div id="gameSwitchList" class="game-switch-list"></div>
+        <details class="game-proposals"><summary>Outras modalidades da proposta</summary><p id="gameProposalsList"></p><small>As regras de cálculo existem, mas essas modalidades ainda não têm cadastro e placar utilizáveis.</small></details>
+      </div>
+    </dialog>
 
     <dialog id="authModal" class="modal">
       <form method="dialog" class="modal-card" id="authForm">
@@ -262,9 +273,9 @@
         <p class="eyebrow">preparação</p>
         <h2 id="gameModalTitle">Nova partida</h2>
         <label>Nome da partida<input id="gameName" type="text" maxlength="80" placeholder="Sexta à noite" required /></label>
-        <div class="form-section-heading"><span>Participantes</span><small>Escolha a divisão real das pistas</small></div>
+        <div class="form-section-heading"><span>Participantes</span><small id="gamePlayerHelp">Escolha a divisão real das pistas</small></div>
         <div id="playerSelection" class="selection-grid"></div>
-        <div class="modal-actions"><button id="drawLanesButton" class="button button--quiet" type="button">Sortear pistas</button><small>Respeita a capacidade de cada pista; você pode ajustar depois.</small></div>
+        <div class="modal-actions"><button id="drawLanesButton" class="button button--quiet" type="button">Sortear pistas</button><small id="gameLocationHelp">Respeita a capacidade de cada pista; você pode ajustar depois.</small></div>
         <p id="playerSelectionEmpty" class="empty-inline" hidden>Cadastre os participantes antes de abrir uma partida.</p>
         <div class="modal-actions"><button class="button button--quiet" value="cancel">Cancelar</button><button id="gameSubmitButton" class="button button--primary" type="submit">Abrir partida</button></div>
       </form>
@@ -457,6 +468,7 @@
     <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
     <script src="supabase-config.js"></script>
     <script src="game-rules.js?v=20261114-01"></script>
-    <script src="app.js?v=20261114-21"></script>
+    <script src="game-presentations.js?v=20261114-01"></script>
+    <script src="app.js?v=20261114-22"></script>
   </body>
 </html>

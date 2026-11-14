@@ -96,19 +96,24 @@ const BUILTIN_MODES = {
   quiz: { id: "quiz", name: "Quiz", unit: "pontos", roundBased: true, locationLabel: "Estação" },
   gincana: { id: "gincana", name: "Gincana", unit: "pontos", roundBased: true, locationLabel: "Estação" },
 };
+const SELECTABLE_GAME_TYPES = ["boliche", "quiz", "gincana"];
+function getGamePresentation(id = getGameMode().id) {
+  return window.GamePresentations?.get?.(id) || BUILTIN_MODES[id] || BUILTIN_MODES.boliche;
+}
 function getGameMode(encounter = activeEncounter()) {
   const id = typeof encounter === "string" ? encounter : encounter?.game_type || "boliche";
   const fallback = BUILTIN_MODES[id] || { id, name: id || "Boliche", unit: "pontos", roundBased: false, locationLabel: "Local" };
-  const configured = window.GameRules?.getMode?.(id);
-  if (!configured) return fallback;
+  const configured = window.GameRules?.getMode?.(id) || {};
+  const presentation = window.GamePresentations?.get?.(id) || {};
   return {
     ...fallback,
     ...configured,
+    ...presentation,
     id: configured.id || id,
     name: configured.name || configured.label || configured.title || fallback.name,
     unit: configured.unit || configured.scoreUnit || fallback.unit,
-    roundBased: configured.roundBased ?? configured.hasRounds ?? fallback.roundBased,
-    locationLabel: configured.locationLabel || configured.placeLabel || fallback.locationLabel,
+    roundBased: presentation.roundBased ?? configured.roundBased ?? configured.hasRounds ?? fallback.roundBased,
+    locationLabel: presentation.locationLabel || configured.locationLabel || configured.placeLabel || fallback.locationLabel,
   };
 }
 function isRoundBased(encounter = activeEncounter()) { return Boolean(getGameMode(encounter).roundBased); }
@@ -595,6 +600,10 @@ function renderEncounterBar() {
   const selected = state.activeEncounterId;
   $("encounterSelect").innerHTML = state.encounters.map((item) => `<option value="${esc(item.id)}">${esc(item.nome)} · ${esc(getGameMode(item).name)} · ${esc(new Intl.DateTimeFormat("pt-BR", { timeZone: "UTC" }).format(new Date(`${item.data}T12:00:00Z`)))}</option>`).join("");
   $("encounterSelect").value = selected || "";
+  const currentModeName = activeEncounter() ? getGameMode().name : "Escolher";
+  $("gameSwitchLabel").textContent = currentModeName;
+  $("gameSwitchButton").setAttribute("aria-label", activeEncounter() ? `Trocar jogo. Atual: ${currentModeName}` : "Escolher jogo");
+  renderGameSwitcher();
   $("encounterStatus").textContent = !activeEncounter() ? "Sem encontro" : activeEncounter().status === "closed" ? "Encerrado" : activeEncounter().status === "preparing" ? "Preparação" : "Ativo";
   $("encounterStatus").className = `status-pill status-pill--${!activeEncounter() ? "muted" : encounterOpen() ? "warning" : "success"}`;
   $("editEncounterButton").disabled = !encounterOpen();
@@ -618,6 +627,17 @@ function renderEncounterBar() {
   if (updateMenu && !bowling) updateMenu.hidden = true;
 }
 
+function renderGameSwitcher() {
+  const list = $("gameSwitchList");
+  list.innerHTML = SELECTABLE_GAME_TYPES.map((id) => {
+    const mode = getGamePresentation(id);
+    const encounters = state.encounters.filter((item) => (item.game_type || "boliche") === id);
+    const selected = activeEncounter()?.game_type === id;
+    return `<section class="game-choice${selected ? " game-choice--selected" : ""}" aria-label="${esc(mode.name)}"><div class="game-choice-heading"><strong>${esc(mode.name)}</strong><span>${encounters.length} ${encounters.length === 1 ? "encontro" : "encontros"}</span></div><p>${esc(mode.summary || "Placar do encontro.")}</p><div class="game-choice-encounters">${encounters.length ? encounters.map((encounter) => `<button type="button" data-select-encounter="${esc(encounter.id)}" ${encounter.id === state.activeEncounterId ? 'aria-current="true"' : ""}>${esc(encounter.nome)}<small>${encounter.status === "closed" ? "Encerrado" : encounter.status === "preparing" ? "Preparação" : "Em andamento"}</small></button>`).join("") : `<span class="empty-inline">Nenhum encontro de ${esc(mode.name)}.</span>`}</div>${isAdmin() ? `<button class="game-choice-create" type="button" data-create-game-type="${id}">+ Novo encontro de ${esc(mode.name)}</button>` : ""}</section>`;
+  }).join("");
+  $("gameProposalsList").textContent = (window.GamePresentations?.proposed || []).join(" · ");
+}
+
 function selectEncounter(id) {
   if (!state.encounters.some((item) => item.id === id)) return;
   state.activeEncounterId = id;
@@ -628,7 +648,7 @@ function selectEncounter(id) {
   render();
 }
 
-function openEncounterModal(editing = false) {
+function openEncounterModal(editing = false, preferredGameType = "boliche") {
   const encounter = editing ? activeEncounter() : null;
   if (editing && !encounterOpen()) return showToast("Reabra o encontro para editá-lo.", "error");
   state.editingEncounterId = encounter?.id || null;
@@ -637,11 +657,11 @@ function openEncounterModal(editing = false) {
   $("encounterName").value = encounter?.nome || "";
   $("encounterDate").value = encounter?.data || localIsoDate();
   const gameType = $("encounterGameType");
-  if (gameType) { gameType.value = encounter?.game_type || "boliche"; gameType.disabled = Boolean(editing); }
+  if (gameType) { gameType.value = encounter?.game_type || preferredGameType; gameType.disabled = Boolean(editing); }
   const rules = encounterRules(encounter);
   const roundCount = $("encounterRoundCount");
   const roundMax = $("encounterRoundMax");
-  if (roundCount) { roundCount.value = editing ? (rules.round_count ?? rules.rounds ?? "") : ""; roundCount.disabled = Boolean(editing); }
+  if (roundCount) { roundCount.value = editing ? (rules.round_count ?? rules.rounds ?? "") : "3"; roundCount.disabled = Boolean(editing); }
   if (roundMax) { const configuredMax = rules.max_points_per_round ?? rules.round_max; roundMax.value = editing && Number(configuredMax) > 0 ? configuredMax : ""; roundMax.disabled = Boolean(editing); }
   renderEncounterRules();
   const roster = new Set(state.encounterPlayers.filter((row) => row.encounter_id === encounter?.id).map((row) => row.player_id));
@@ -1315,6 +1335,7 @@ function renderLeaderboard() {
   const laneSelect = $("rankingLane");
   const selectedLane = laneSelect?.value || "";
   const gameMode = getGameMode();
+  $("rankingUnitLabel").textContent = `${gameMode.name} · ${gameMode.unit}`;
   const gameIds = new Set(encounterGames().map((game) => game.id));
   const lanes = [...new Set(state.scores.filter((score) => gameIds.has(score.game_id)).map(scoreLane).filter(Boolean))].sort((a, b) => a.localeCompare(b, "pt-BR", { numeric: true }));
   if (laneSelect) {
@@ -1364,16 +1385,42 @@ function renderLeaderboard() {
   $("leaderboardMeta").textContent = `${isCurrent ? (currentGame ? `${currentItems.filter((item) => item.score.pontos != null).length}/${currentItems.length} totais informados pelo banco` : "Nenhuma partida aberta") : finalGames.length ? `${finalGames.length} ${finalGames.length === 1 ? "partida finalizada" : "partidas finalizadas"}` : "Nenhuma partida finalizada"} · ${gameMode.name} · unidade: ${gameMode.unit}`;
 }
 
+function renderRoundProgress(game, scores) {
+  const rounds = window.GamePresentations?.roundProgress?.(state.roundScores, game.id, scores.map(({ score }) => score.player_id), configuredRoundCount()) || [];
+  const complete = rounds.filter((round) => round.participants > 0 && round.confirmed === round.participants).length;
+  const wasOpen = $("roundProgress").querySelector("details")?.open || false;
+  $("roundProgress").innerHTML = `<details class="round-progress-details" ${wasOpen ? "open" : ""}><summary>Rodadas <strong>${complete}/${rounds.length} concluídas</strong></summary><div class="round-progress-grid">${rounds.map((round) => `<div class="round-progress-card"><strong>Rodada ${round.round} · ${round.confirmed}/${round.participants}</strong><small>${round.informed} informados · ${round.pending} pendentes</small><progress max="100" value="${round.percent}" aria-label="Conclusão da rodada ${round.round}"></progress></div>`).join("")}</div></details>`;
+  $("laneProgress").innerHTML = "";
+}
+
+function renderLaneProgress(scores, gameMode) {
+  $("roundProgress").innerHTML = "";
+  $("laneProgress").innerHTML = [...new Set(scores.map(({ score }) => scoreLane(score)))].map((lane) => {
+    const laneScores = scores.filter(({ score }) => scoreLane(score) === lane);
+    const informed = laneScores.filter(({ score }) => score.pontos != null).length;
+    const confirmed = laneScores.filter(({ score }) => score.finalizado && score.pontos != null).length;
+    const pending = laneScores.length - confirmed;
+    const percent = Math.round(100 * confirmed / laneScores.length);
+    return `<div class="lane-progress-card"><strong>${esc(gameMode.locationLabel)} ${esc(lane || "—")} · ${confirmed}/${laneScores.length} confirmados</strong><small>${laneScores.length} participantes · ${informed} informados · ${pending} pendentes · ${percent}% concluído</small><progress max="100" value="${percent}" aria-label="Conclusão de ${esc(gameMode.locationLabel)} ${esc(lane || "—")}"></progress></div>`;
+  }).join("");
+}
+
 function renderCurrentGame() {
   const game = getGame(state.activeGameId);
   const gameMode = getGameMode();
+  const presentation = getGamePresentation(gameMode.id);
+  const hasRounds = presentation.progressKind === "rounds";
   const body = $("currentGameBody");
+  $("currentGameEyebrow").textContent = hasRounds ? "rodadas do encontro · ao vivo" : "operação da partida · ao vivo";
+  $("laneProgress").hidden = hasRounds;
+  $("roundProgress").hidden = !hasRounds;
   if (!game) {
     $("currentGameTitle").textContent = "Nenhuma partida aberta";
     $("currentGameStatus").textContent = "Aguardando";
     $("currentGameStatus").className = "status-pill status-pill--muted";
-    body.innerHTML = `<div class="empty-state"><span class="empty-icon">⌁</span><strong>Abra uma partida para começar</strong><span>Os participantes e as pistas ficam vinculados a ela.</span></div>`;
+    body.innerHTML = `<div class="empty-state"><span class="empty-icon">⌁</span><strong>Abra uma partida para começar</strong><span>${esc(presentation.emptyHelp || "Os participantes e as pistas ficam vinculados a ela.")}</span></div>`;
     $("laneProgress").innerHTML = "";
+    $("roundProgress").innerHTML = "";
     return;
   }
   const scores = gameScores(game.id).map((score) => ({ score, player: getPlayer(score.player_id) })).filter((item) => item.player).sort((a, b) => String(scoreLane(a.score)).localeCompare(String(scoreLane(b.score))) || a.player.nome.localeCompare(b.player.nome, "pt-BR"));
@@ -1394,14 +1441,8 @@ function renderCurrentGame() {
   body.querySelectorAll("[data-stats-player]").forEach((button) => button.addEventListener("click", () => openStatsModal(button.dataset.statsPlayer)));
   body.querySelectorAll("[data-quick-score]").forEach((button) => button.addEventListener("click", () => openQuickScore(button.dataset.quickScore)));
   body.querySelectorAll("[data-clear-score]").forEach((button) => button.addEventListener("click", () => clearScore(button.dataset.clearScore)));
-  $("laneProgress").innerHTML = [...new Set(scores.map(({ score }) => scoreLane(score)))].map((lane) => {
-    const laneScores = scores.filter(({ score }) => scoreLane(score) === lane);
-    const informed = laneScores.filter(({ score }) => score.pontos != null).length;
-    const confirmed = laneScores.filter(({ score }) => score.finalizado && score.pontos != null).length;
-    const pending = laneScores.length - confirmed;
-    const percent = Math.round(100 * confirmed / laneScores.length);
-    return `<div class="lane-progress-card"><strong>${esc(gameMode.locationLabel)} ${esc(lane || "—")} · ${confirmed}/${laneScores.length} confirmados</strong><small>${laneScores.length} participantes · ${informed} informados · ${pending} pendentes · ${percent}% concluído</small><progress max="100" value="${percent}" aria-label="Conclusão de ${esc(gameMode.locationLabel)} ${esc(lane || "—")}"></progress></div>`;
-  }).join("");
+  if (hasRounds) renderRoundProgress(game, scores);
+  else renderLaneProgress(scores, gameMode);
 }
 
 async function clearScore(playerId) {
@@ -1570,7 +1611,11 @@ async function undoTabletThrow() {
 function renderPlayerSelection() {
   const container = $("playerSelection");
   const players = encounterPlayers();
-  container.innerHTML = players.map((player) => `<label class="selection-item"><input class="game-player-check" type="checkbox" value="${esc(player.id)}" checked /><span><strong>${esc(player.nome)}</strong><small>${esc(player.apelido_placar || "sem apelido")}</small></span><select class="game-player-lane" data-player-lane="${esc(player.id)}" aria-label="Pista de ${esc(player.nome)}">${state.lanes.map((lane) => `<option value="${esc(lane.name)}" ${lane.name === player.pista ? "selected" : ""}>Pista ${esc(lane.name)}</option>`).join("")}</select></label>`).join("");
+  const location = getGameMode().locationLabel;
+  $("gamePlayerHelp").textContent = location === "Pista" ? "Escolha a divisão real das pistas" : "Distribua os participantes entre as estações";
+  $("gameLocationHelp").textContent = location === "Pista" ? "Respeita a capacidade de cada pista; você pode ajustar depois." : "Respeita a capacidade de cada estação; você pode ajustar depois.";
+  $("drawLanesButton").textContent = location === "Pista" ? "Sortear pistas" : "Sortear estações";
+  container.innerHTML = players.map((player) => `<label class="selection-item"><input class="game-player-check" type="checkbox" value="${esc(player.id)}" checked /><span><strong>${esc(player.nome)}</strong><small>${esc(player.apelido_placar || "sem apelido")}</small></span><select class="game-player-lane" data-player-lane="${esc(player.id)}" aria-label="${esc(location)} de ${esc(player.nome)}">${state.lanes.map((lane) => `<option value="${esc(lane.name)}" ${lane.name === player.pista ? "selected" : ""}>${esc(location)} ${esc(lane.name)}</option>`).join("")}</select></label>`).join("");
   $("playerSelectionEmpty").hidden = players.length > 0;
 }
 
@@ -2556,6 +2601,21 @@ function bindEvents() {
   initTheme();
   initTopbarMenu();
   $("encounterSelect").addEventListener("change", (event) => selectEncounter(event.target.value));
+  $("gameSwitchButton").addEventListener("click", () => { renderGameSwitcher(); setModal("gameSwitchModal", true); });
+  $("gameSwitchList").addEventListener("click", (event) => {
+    const encounterButton = event.target.closest("[data-select-encounter]");
+    if (encounterButton) {
+      setModal("gameSwitchModal", false);
+      state.activeArea = "placar";
+      selectEncounter(encounterButton.dataset.selectEncounter);
+      return;
+    }
+    const createButton = event.target.closest("[data-create-game-type]");
+    if (createButton && isAdmin() && SELECTABLE_GAME_TYPES.includes(createButton.dataset.createGameType)) {
+      setModal("gameSwitchModal", false);
+      openEncounterModal(false, createButton.dataset.createGameType);
+    }
+  });
   $("encounterGameType")?.addEventListener("change", renderEncounterRules);
   $("encounterRoundCount")?.addEventListener("input", renderEncounterRules);
   $("encounterRoundMax")?.addEventListener("input", renderEncounterRules);

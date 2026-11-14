@@ -8,7 +8,7 @@ function loadApp(client = null) {
   const elements = new Map();
   const rows = [];
   const get = (id) => {
-    if (!elements.has(id)) elements.set(id, { value: '', hidden: false, disabled: false, textContent: '', innerHTML: '', style: {}, open: false, focus() {}, showModal() { this.open = true; }, close() { this.open = false; }, addEventListener() {}, setAttribute() {}, querySelectorAll: () => [] });
+    if (!elements.has(id)) elements.set(id, { value: '', hidden: false, disabled: false, textContent: '', innerHTML: '', style: {}, open: false, focus() {}, showModal() { this.open = true; }, close() { this.open = false; }, addEventListener() {}, setAttribute() {}, querySelector: () => null, querySelectorAll: () => [] });
     return elements.get(id);
   };
   const document = {
@@ -19,12 +19,12 @@ function loadApp(client = null) {
   };
   get('toastContainer').append = () => {};
   const context = vm.createContext({
-    window: { SUPABASE_CONFIG: client ? { url: 'https://example.test', publishableKey: 'test' } : {}, supabase: client ? { createClient: () => client } : null, location: { hash: '', search: '' }, setTimeout: () => {}, confirm: () => true },
-    document, URLSearchParams, Intl, atob, console, crypto: { randomUUID: () => 'photo-id' },
+    window: { SUPABASE_CONFIG: client ? { url: 'https://example.test', publishableKey: 'test' } : {}, supabase: client ? { createClient: () => client } : null, GamePresentations: require('../game-presentations.js'), location: { hash: '', search: '', href: 'https://example.test/boliche/' }, history: { replaceState() {} }, setTimeout: () => {}, confirm: () => true },
+    document, URL, URLSearchParams, Intl, atob, console, crypto: { randomUUID: () => 'photo-id' },
   });
   const source = fs.readFileSync(path.join(__dirname, '..', 'app.js'), 'utf8')
     .replace(/\nstart\(\);\s*$/, '\n');
-  vm.runInContext(`${source}\nconst appRender = render;\nrender = () => {};\nrefreshAfterReconnect = async () => {};\nglobalThis.testApp = { state, loadData, renderApp: appRender, buildSuggestions, playersOnLane, updateReviewTable, updatePhotoConfirmState, captureReviewDraft, markRoundEdited, markReviewEdited, changeReviewContext, runOcr, drawOrientedPhoto, applyPhotoInteractionMode, canvasPoint, renderLeaderboard, renderCurrentGame, removeGame, renderTeams, renderRecords, renderScoreHistory, shareResultCard, confirmPhotoUpdate, submitAuth, submitProfile, prepareProfilePhoto, cleanupUnusedProfilePhotos, officialTotals, officialPosition, encounterGames, bracketRounds, bracketWinner, balancedLaneDraw, buildResultsExport, downloadResults, openEncounterModal, saveEncounter, renderEncounterRules, renderEncounterBar, openRoundModal, renderRoundModal, renderRoundResults, saveRoundScores, clearRoundScore, undoRoundScoreChange, getGameMode, isRoundBased, configuredRoundMax, rankScoreRows, bowlingFrames, tabletStandingPins };`, context);
+  vm.runInContext(`${source}\nconst appRender = render;\nrender = () => {};\nrefreshAfterReconnect = async () => {};\nglobalThis.testApp = { state, loadData, renderApp: appRender, buildSuggestions, playersOnLane, updateReviewTable, updatePhotoConfirmState, captureReviewDraft, markRoundEdited, markReviewEdited, changeReviewContext, runOcr, drawOrientedPhoto, applyPhotoInteractionMode, canvasPoint, renderLeaderboard, renderCurrentGame, removeGame, renderTeams, renderRecords, renderScoreHistory, shareResultCard, confirmPhotoUpdate, submitAuth, submitProfile, prepareProfilePhoto, cleanupUnusedProfilePhotos, officialTotals, officialPosition, encounterGames, bracketRounds, bracketWinner, balancedLaneDraw, buildResultsExport, downloadResults, openEncounterModal, saveEncounter, renderEncounterRules, renderEncounterBar, renderGameSwitcher, selectEncounter, openRoundModal, renderRoundModal, renderRoundResults, saveRoundScores, clearRoundScore, undoRoundScoreChange, getGameMode, isRoundBased, configuredRoundMax, rankScoreRows, bowlingFrames, tabletStandingPins };`, context);
   return { ...context.testApp, get, rows, document, context };
 }
 
@@ -42,6 +42,51 @@ function roundRow(playerId, points, finalized) {
     querySelector: (selector) => selector === '.round-points' ? pointsInput : selector === '.round-final' ? finalizedInput : null,
   };
 }
+
+test('troca de jogo agrupa encontros e muda o placar sem alterar a modalidade histórica', () => {
+  const app = loadApp();
+  app.state.encounters = [
+    { id: 'b', nome: 'Boliche de sexta', data: '2026-11-13', status: 'active', game_type: 'boliche' },
+    { id: 'q', nome: 'Quiz de sábado', data: '2026-11-14', status: 'active', game_type: 'quiz' },
+  ];
+  app.state.games = [{ id: 'b1', encounter_id: 'b', status: 'partial' }, { id: 'q1', encounter_id: 'q', status: 'partial' }];
+  app.state.activeEncounterId = 'b';
+  app.renderEncounterBar();
+  assert.match(app.get('gameSwitchList').innerHTML, /Boliche de sexta/);
+  assert.match(app.get('gameSwitchList').innerHTML, /Quiz de sábado/);
+  assert.match(app.get('gameSwitchList').innerHTML, /data-select-encounter="q"/);
+  app.selectEncounter('q');
+  app.renderEncounterBar();
+  assert.equal(app.state.activeGameId, 'q1');
+  assert.equal(app.get('gameSwitchLabel').textContent, 'Quiz');
+  assert.equal(app.state.encounters[0].game_type, 'boliche');
+});
+
+test('novo encontro aberto a partir de Quiz inicia com modalidade e rodadas prontas para editar', () => {
+  const app = loadApp();
+  app.state.session = adminSession();
+  app.openEncounterModal(false, 'quiz');
+  assert.equal(app.get('encounterModal').open, true);
+  assert.equal(app.get('encounterGameType').value, 'quiz');
+  assert.equal(app.get('encounterRoundCount').value, '3');
+  assert.match(app.get('encounterRulesSummary').textContent, /Quiz/);
+});
+
+test('quiz apresenta progresso por rodada no lugar da conclusão por pista', () => {
+  const app = loadApp();
+  app.state.encounters = [{ id: 'q', nome: 'Quiz', game_type: 'quiz', rules_config: { round_count: 2 } }];
+  app.state.activeEncounterId = 'q'; app.state.activeGameId = 'g';
+  app.state.games = [{ id: 'g', encounter_id: 'q', nome: 'Partida 1', status: 'partial' }];
+  app.state.players = [{ id: 'a', nome: 'Ana', pista: '1' }, { id: 'b', nome: 'Bruno', pista: '1' }];
+  app.state.scores = [{ game_id: 'g', player_id: 'a', pista: '1', pontos: 0, finalizado: false }, { game_id: 'g', player_id: 'b', pista: '1', pontos: null, finalizado: false }];
+  app.state.roundScores = [{ game_id: 'g', player_id: 'a', round_no: 1, points: 0, finalized: true }, { game_id: 'g', player_id: 'b', round_no: 1, points: 8, finalized: false }];
+  app.renderCurrentGame();
+  assert.equal(app.get('laneProgress').hidden, true);
+  assert.equal(app.get('roundProgress').hidden, false);
+  assert.match(app.get('roundProgress').innerHTML, /Rodadas <strong>0\/2 concluídas/);
+  assert.match(app.get('roundProgress').innerHTML, /Rodada 1 · 1\/2/);
+  assert.match(app.get('currentGameEyebrow').textContent, /rodadas/);
+});
 
 test('OCR só sugere total alinhado à última coluna para jogadores vinculados à partida e pista', () => {
   const app = loadApp();

@@ -1,6 +1,6 @@
-const CACHE_NAME = 'jogatina-shell-v22';
+const CACHE_NAME = 'jogatina-shell-v23';
 const SHELL = [
-  './', './index.html', './styles.css?v=20261114-22', './game-rules.js?v=20261114-01', './app.js?v=20261114-21', './supabase-config.js',
+  './', './index.html', './styles.css?v=20261114-23', './game-rules.js?v=20261114-01', './game-presentations.js?v=20261114-01', './app.js?v=20261114-22', './supabase-config.js',
   './logo.png', './share-qr.png', './manifest.webmanifest',
   './pwa-192.png', './pwa-512.png',
 ];
