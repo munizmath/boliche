@@ -705,7 +705,7 @@ function officialTotals(lane = "") {
 }
 
 function rankingValue(item, metric = $("rankingMetric")?.value || "total") {
-  return metric === "average" ? item.average : metric === "best" ? item.best : item.points;
+  return metric === "average" ? item.average : metric === "best" ? item.best : metric === "games" ? item.gamesPlayed : item.points;
 }
 
 function officialPosition(totals, index) {
@@ -724,13 +724,13 @@ function renderLeaderboard() {
   if (lanes.includes(selectedLane)) laneSelect.value = selectedLane;
   const totals = officialTotals(laneSelect.value);
   const metric = $("rankingMetric").value;
-  $("rankingValueHeader").textContent = metric === "average" ? "Média" : metric === "best" ? "Melhor" : "Pontos";
-  $("rankingTitle").textContent = metric === "average" ? "Classificação por média" : metric === "best" ? "Melhor partida" : "Classificação acumulada";
+  $("rankingValueHeader").textContent = metric === "average" ? "Média" : metric === "best" ? "Melhor" : metric === "games" ? "Partidas" : "Pontos";
+  $("rankingTitle").textContent = metric === "average" ? "Classificação por média" : metric === "best" ? "Melhor partida" : metric === "games" ? "Participações" : "Classificação acumulada";
   const podium = $("podium");
   podium.hidden = totals.length === 0;
   podium.innerHTML = totals.slice(0, 3).map((item, index) => {
     const photoUrl = state.playerPhotos.get(item.player.id);
-    return `<div class="podium-place podium-place--${index + 1}"><span class="podium-medal">${officialPosition(totals, index)}º</span>${photoUrl ? `<img class="podium-avatar" src="${esc(photoUrl)}" alt="Foto de ${esc(item.player.nome)}" loading="lazy" />` : `<span class="podium-avatar podium-avatar--empty" aria-hidden="true">${esc(item.player.nome.slice(0, 1))}</span>`}<strong>${esc(item.player.nome)}</strong><small>${metric === "average" ? item.average.toFixed(1).replace(".", ",") + " média" : rankingValue(item, metric).toLocaleString("pt-BR") + " pontos"}</small></div>`;
+    return `<div class="podium-place podium-place--${index + 1}"><span class="podium-medal">${officialPosition(totals, index)}º</span>${photoUrl ? `<img class="podium-avatar" src="${esc(photoUrl)}" alt="Foto de ${esc(item.player.nome)}" loading="lazy" />` : `<span class="podium-avatar podium-avatar--empty" aria-hidden="true">${esc(item.player.nome.slice(0, 1))}</span>`}<strong>${esc(item.player.nome)}</strong><small>${metric === "average" ? item.average.toFixed(1).replace(".", ",") + " média" : rankingValue(item, metric).toLocaleString("pt-BR") + (metric === "games" ? " partidas" : " pontos")}</small></div>`;
   }).join("");
   let previousPoints = null;
   let previousPosition = 0;

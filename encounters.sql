@@ -153,6 +153,10 @@ create trigger encounter_players_guard_closed before insert or update or delete 
 create or replace function public.guard_closed_encounter()
 returns trigger language plpgsql security invoker set search_path = public as $$
 begin
+  if tg_op='INSERT' then
+    if new.status='closed' then raise exception 'Encontros novos não podem nascer encerrados' using errcode='42501'; end if;
+    return new;
+  end if;
   if tg_op='DELETE' then
     if old.status='closed' then raise exception 'Reabra o encontro antes de excluí-lo' using errcode='42501'; end if;
     return old;
@@ -173,14 +177,14 @@ begin
     raise exception 'Inicie o encontro antes de encerrá-lo';
   end if;
   if old.status = 'closed' then
-    if new.status = 'closed' and (new.nome is distinct from old.nome or new.data is distinct from old.data) then
+    if new.status = 'closed' and (new.nome is distinct from old.nome or new.data is distinct from old.data or new.closed_at is distinct from old.closed_at) then
       raise exception 'Reabra o encontro antes de editá-lo' using errcode = '42501';
     end if;
   end if;
   return new;
 end $$;
 drop trigger if exists encounters_guard_closed on public.encounters;
-create trigger encounters_guard_closed before update or delete on public.encounters
+create trigger encounters_guard_closed before insert or update or delete on public.encounters
   for each row execute function public.guard_closed_encounter();
 
 create or replace function public.create_encounter(p_name text, p_date date, p_player_ids uuid[], p_request_id uuid)

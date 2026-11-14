@@ -269,6 +269,10 @@ test('ranking isola encontros e calcula média por partidas concluídas', () => 
   assert.equal(totals[0].player.id, 'bruno');
   assert.equal(totals[1].average, 150);
   assert.equal(app.officialTotals('2').find((item) => item.player.id === 'ana').points, 200);
+  app.get('rankingMetric').value = 'best';
+  assert.equal(app.officialTotals()[0].player.id, 'ana');
+  app.get('rankingMetric').value = 'games';
+  assert.equal(app.officialTotals()[0].gamesPlayed, 2);
   app.state.activeEncounterId = 'b';
   assert.equal(app.officialTotals()[0].points, 300);
 });

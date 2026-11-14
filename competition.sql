@@ -63,6 +63,9 @@ returns trigger language plpgsql security invoker set search_path=public as $$
 declare target_encounter uuid;
 begin
   if tg_table_name='team_players' then
+    if tg_op='UPDATE' then
+      if new.team_id<>old.team_id then raise exception 'Vínculo de equipe não pode mudar de encontro' using errcode='42501'; end if;
+    end if;
     if tg_op='DELETE' then
       select encounter_id into target_encounter from public.teams where id=old.team_id;
     else
@@ -79,6 +82,9 @@ begin
       end if;
     end if;
   else
+    if tg_op='UPDATE' then
+      if new.encounter_id<>old.encounter_id then raise exception 'Equipe não pode mudar de encontro' using errcode='42501'; end if;
+    end if;
     if tg_op='DELETE' then target_encounter:=old.encounter_id; else target_encounter:=new.encounter_id; end if;
   end if;
   if exists(select 1 from public.encounters where id=target_encounter and status='closed') then
@@ -120,6 +126,9 @@ create or replace function public.guard_bracket_change()
 returns trigger language plpgsql security invoker set search_path=public as $$
 declare target_encounter uuid;
 begin
+  if tg_op='UPDATE' then
+    if new.encounter_id<>old.encounter_id then raise exception 'Chave não pode mudar de encontro' using errcode='42501'; end if;
+  end if;
   if tg_op='DELETE' then target_encounter:=old.encounter_id; else target_encounter:=new.encounter_id; end if;
   if exists(select 1 from public.encounters where id=target_encounter and status='closed') then
     raise exception 'Reabra o encontro antes de alterar o torneio' using errcode='42501';
