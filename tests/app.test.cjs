@@ -618,6 +618,67 @@ test('editar e voltar ao valor original não cria escrita após atualização re
   assert.equal(app.state.roundDraft.has('g:1:ana'), false);
 });
 
+test('rascunho resolvido não reaparece após duas confirmações remotas', async () => {
+  const calls = [];
+  const session = adminSession();
+  let resolvePhoto;
+  const data = {
+    players: [{ id: 'ana', nome: 'Ana' }, { id: 'bia', nome: 'Bia' }], lanes: [],
+    encounters: [{ id: 'e', nome: 'Quiz', status: 'active', game_type: 'quiz', rules_config: { round_count: 1, max_points_per_round: 0 } }],
+    encounter_players: [{ encounter_id: 'e', player_id: 'ana' }, { encounter_id: 'e', player_id: 'bia' }],
+    games: [{ id: 'g', encounter_id: 'e', status: 'partial' }],
+    scores: [{ game_id: 'g', player_id: 'ana', pontos: 10, finalizado: false }, { game_id: 'g', player_id: 'bia', pontos: 10, finalizado: false }],
+    round_scores: [{ game_id: 'g', player_id: 'ana', round_no: 1, points: 10, finalized: true }, { game_id: 'g', player_id: 'bia', round_no: 1, points: 10, finalized: false }],
+    profiles: [{ player_id: 'ana', foto_path: 'ana.jpg' }],
+  };
+  const client = {
+    auth: { getSession: async () => ({ data: { session }, error: null }) },
+    rpc: async (name, args) => { if (name === 'save_round_score_if_current') calls.push(args); return { data: null, error: null }; },
+    from: (table) => {
+      const result = { data: data[table] || [], error: null };
+      const query = { select: () => query, order: () => query, eq: () => query, not: () => query, limit: () => query, then: (resolve, reject) => Promise.resolve(result).then(resolve, reject) };
+      return query;
+    },
+    storage: { from: () => ({ createSignedUrl: () => new Promise((resolve) => { resolvePhoto = resolve; }) }) },
+  };
+  const app = loadApp(client);
+  app.state.session = session; app.state.encounters = data.encounters; app.state.activeEncounterId = 'e';
+  app.state.players = data.players; app.state.games = data.games; app.state.activeGameId = 'g';
+  app.state.roundGameId = 'g'; app.state.roundNo = 1;
+  app.state.roundScores = [{ game_id: 'g', player_id: 'ana', round_no: 1, points: 10, finalized: false }, data.round_scores[1]];
+  app.get('roundModal').open = true; app.get('roundGame').value = 'g'; app.get('roundNumber').value = '1';
+  const ana = roundRow('ana', 10, true);
+  const bia = roundRow('bia', 12, false);
+  for (const row of [ana, bia]) { row.dataset.basePoints = '10'; row.dataset.baseFinalized = 'false'; }
+  ana.finalizedInput.matches = (selector) => selector.includes('.round-final');
+  ana.finalizedInput.closest = () => ana;
+  bia.pointsInput.matches = (selector) => selector.includes('.round-points');
+  bia.pointsInput.closest = () => bia;
+  app.get('roundResults').querySelectorAll = () => [ana, bia];
+  app.markRoundEdited({ target: ana.finalizedInput });
+  app.markRoundEdited({ target: bia.pointsInput });
+
+  const firstLoad = app.loadData();
+  await new Promise(setImmediate);
+  assert.equal(app.state.roundDraft.has('g:1:ana'), false);
+  assert.match(app.get('roundResults').innerHTML, /data-round-player="ana"[^>]*data-base-finalized="true"/);
+  resolvePhoto({ data: { signedUrl: 'https://example.test/ana.jpg' }, error: null });
+  await firstLoad;
+  ana.dataset.baseFinalized = 'true';
+
+  data.round_scores[0] = { ...data.round_scores[0], finalized: false };
+  const secondLoad = app.loadData();
+  await new Promise(setImmediate);
+  assert.equal(app.state.roundDraft.has('g:1:ana'), false);
+  assert.match(app.get('roundResults').innerHTML, /data-round-player="ana"[^>]*data-base-finalized="false"/);
+  resolvePhoto({ data: { signedUrl: 'https://example.test/ana.jpg' }, error: null });
+  await secondLoad;
+  ana.finalizedInput.checked = false; ana.dataset.baseFinalized = 'false';
+  app.context.loadData = async () => {};
+  await app.saveRoundScores({ preventDefault() {} });
+  assert.deepEqual(calls.map((item) => item.p_player_id), ['bia']);
+});
+
 test('confirmar rodada preserva pontos remotos alterados durante autenticação', async () => {
   const calls = [];
   const session = adminSession();

@@ -393,6 +393,16 @@ async function loadData() {
   state.predictionStandings = standingsResult.data || [];
   state.profiles = isAdmin() ? (profilesResult.data || []) : [];
   state.scoreChanges = isAdmin() ? (changesResult.data || []) : [];
+  const requestedEncounterId = new URLSearchParams(window.location.search).get("encontro");
+  state.activeEncounterId = state.encounters.some((item) => item.id === state.activeEncounterId)
+    ? state.activeEncounterId
+    : state.encounters.find((item) => item.id === requestedEncounterId)?.id || state.encounters.find((item) => item.status === "active")?.id || state.encounters[0]?.id || null;
+  state.activeGameId = encounterGames().some((game) => game.id === state.activeGameId)
+    ? state.activeGameId
+    : (encounterGames().find((game) => game.status === "partial")?.id || encounterGames()[0]?.id || null);
+  // Update the form before any further await; a delayed photo URL cannot leave
+  // stale controls in the DOM for another Realtime event or a save action.
+  if ($("roundModal")?.open) renderRoundModal(false);
   const publicPhotos = publicPhotosResult.data || [];
   const signedPhotos = await Promise.all(publicPhotos.map(async (profile) => {
     const { data, error: photoError } = await client.storage.from("profile-photos").createSignedUrl(profile.foto_path, 300);
@@ -407,13 +417,6 @@ async function loadData() {
       profile.photoUrl = data?.signedUrl || null;
     }));
   }
-  const requestedEncounterId = new URLSearchParams(window.location.search).get("encontro");
-  state.activeEncounterId = state.encounters.some((item) => item.id === state.activeEncounterId)
-    ? state.activeEncounterId
-    : state.encounters.find((item) => item.id === requestedEncounterId)?.id || state.encounters.find((item) => item.status === "active")?.id || state.encounters[0]?.id || null;
-  state.activeGameId = encounterGames().some((game) => game.id === state.activeGameId)
-    ? state.activeGameId
-    : (encounterGames().find((game) => game.status === "partial")?.id || encounterGames()[0]?.id || null);
   const latest = [...state.scores, ...state.games].map((item) => item.updated_at || item.created_at).filter(Boolean).sort().at(-1);
   setUpdated(latest || new Date().toISOString());
   setConnection("Sincronizado", "success");
