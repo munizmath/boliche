@@ -9,37 +9,52 @@
     <link rel="icon" href="favicon.ico" type="image/x-icon" />
     <link rel="apple-touch-icon" href="apple-touch-icon.png" />
     <link rel="manifest" href="manifest.webmanifest" />
-    <link rel="stylesheet" href="styles.css?v=20261114-18" />
+    <link rel="stylesheet" href="styles.css?v=20261114-19" />
   </head>
   <body>
     <div id="toastContainer" class="toast-container" aria-live="polite"></div>
 
     <div class="app-shell">
       <header class="topbar">
-        <button id="brandMenuButton" class="sidebar-brand" type="button" aria-expanded="false" aria-controls="topbarMenu" aria-label="Abrir menu principal">
+        <button id="brandMenuButton" class="sidebar-brand" type="button" aria-expanded="false" aria-controls="topbarMenu" aria-label="Ir para o placar">
           <div class="brand-mark"><img src="logo.png" alt="" /></div>
           <strong>Boliche</strong>
-          <span class="brand-caret" aria-hidden="true">▸</span>
         </button>
-        <div id="topbarMenu" class="topbar-menu-shell" aria-hidden="true" inert>
-          <nav class="sidebar-nav" aria-label="Navegação principal">
-            <button class="nav-link nav-link--active" type="button" data-scroll-to="partidas" aria-current="page"><span class="nav-icon">▦</span>Partidas</button>
-            <button class="nav-link" type="button" data-scroll-to="historico"><span class="nav-icon">↺</span>Histórico</button>
-            <button class="nav-link" type="button" data-scroll-to="ranking"><span class="nav-icon">♜</span>Ranking</button>
+        <div id="topbarMenu" class="topbar-menu-shell">
+          <nav class="primary-nav" aria-label="Navegação principal">
+            <button class="nav-link nav-link--active" type="button" data-area-target="placar" aria-current="page"><span class="nav-icon">▦</span>Placar</button>
+            <button class="nav-link" type="button" data-area-target="historico"><span class="nav-icon">↺</span>Histórico</button>
+            <button class="nav-link" type="button" data-area-target="competicoes"><span class="nav-icon">♜</span>Competições</button>
+            <button id="adminAreaNav" class="nav-link admin-only" type="button" data-area-target="admin" hidden><span class="nav-icon">⚙</span>Administração</button>
           </nav>
           <div class="topbar-actions topbar-actions--admin admin-only" aria-label="Administração" hidden>
             <span class="topbar-divider" aria-hidden="true"></span>
-            <button id="newGameButton" class="topbar-action topbar-action--primary" type="button">Nova partida</button>
-            <button id="tabletButton" class="topbar-action" type="button">Tablet</button>
-            <button id="photoButton" class="topbar-action" type="button">Foto</button>
-            <button id="newEncounterButton" class="topbar-action" type="button">Novo encontro</button>
-            <button id="editEncounterButton" class="topbar-action" type="button">Editar encontro</button>
-            <button id="startEncounterButton" class="topbar-action" type="button" hidden>Iniciar</button>
-            <button id="closeEncounterButton" class="topbar-action" type="button">Encerrar</button>
-            <button id="deleteEncounterButton" class="topbar-action topbar-action--danger" type="button">Excluir</button>
-            <button id="playersButton" class="topbar-action" type="button">Participantes</button>
-            <button id="approvalsButton" class="topbar-action" type="button">Aprovações</button>
-            <button id="historyButton" class="topbar-action" type="button">Alterações</button>
+            <div class="topbar-menu-item">
+              <button class="topbar-action topbar-menu-trigger" type="button" aria-expanded="false" aria-haspopup="true">Encontro <span aria-hidden="true">▾</span></button>
+              <div class="topbar-submenu" role="menu" aria-label="Encontro">
+                <button id="newEncounterButton" type="button" role="menuitem">Novo encontro</button>
+                <button id="editEncounterButton" type="button" role="menuitem">Editar encontro</button>
+                <button id="startEncounterButton" type="button" role="menuitem" hidden>Iniciar encontro</button>
+                <button id="closeEncounterButton" type="button" role="menuitem">Encerrar encontro</button>
+                <button id="deleteEncounterButton" class="menu-item--danger" type="button" role="menuitem">Excluir encontro</button>
+                <button id="newGameButton" type="button" role="menuitem">Nova partida</button>
+              </div>
+            </div>
+            <div class="topbar-menu-item">
+              <button class="topbar-action topbar-menu-trigger" type="button" aria-expanded="false" aria-haspopup="true">Participantes <span aria-hidden="true">▾</span></button>
+              <div class="topbar-submenu" role="menu" aria-label="Participantes">
+                <button id="playersButton" type="button" role="menuitem">Jogadores e pistas</button>
+                <button id="approvalsButton" type="button" role="menuitem">Aprovações</button>
+              </div>
+            </div>
+            <div class="topbar-menu-item">
+              <button class="topbar-action topbar-menu-trigger" type="button" aria-expanded="false" aria-haspopup="true">Operação <span aria-hidden="true">▾</span></button>
+              <div class="topbar-submenu" role="menu" aria-label="Operação">
+                <button id="photoButton" type="button" role="menuitem">Atualizar por foto</button>
+                <button id="tabletButton" type="button" role="menuitem">Registro no tablet</button>
+                <button id="historyButton" type="button" role="menuitem">Histórico de alterações</button>
+              </div>
+            </div>
           </div>
           <div class="topbar-actions topbar-actions--tools" aria-label="Ferramentas">
             <span class="topbar-divider" aria-hidden="true"></span>
@@ -72,7 +87,7 @@
     <main class="shell">
       <header class="app-header">
         <div class="page-title">
-          <h1>Placar</h1>
+          <h1 id="pageTitle">Placar</h1>
         </div>
       </header>
 
@@ -89,6 +104,7 @@
         <span>Configure o Project URL e a Publishable Key em <code>supabase-config.js</code> antes de compartilhar o link.</span>
       </section>
 
+      <section id="placarArea" class="app-area" data-area="placar">
       <section id="partidas" class="dashboard-grid">
         <article id="ranking" class="glass-card blueprint leaderboard-card">
           <div class="section-heading">
@@ -96,7 +112,11 @@
               <p class="eyebrow">ranking geral</p>
               <h3 id="rankingTitle">Classificação acumulada</h3>
             </div>
-            <div class="ranking-controls"><select id="rankingMetric" aria-label="Critério do ranking"><option value="total">Pontos acumulados</option><option value="average">Média por partida</option><option value="best">Melhor partida</option><option value="games">Partidas disputadas</option></select><select id="rankingLane" aria-label="Filtrar ranking por pista"><option value="">Todas as pistas</option></select><span id="leaderboardMeta" class="section-meta">Nenhuma partida finalizada</span></div>
+            <div class="ranking-controls">
+              <label class="ranking-view-label">Ver<select id="rankingMode" aria-label="Visualização do ranking"><option value="current">Partida atual</option><option value="official">Ranking oficial</option></select></label>
+              <details class="filter-disclosure"><summary>Filtros</summary><div class="ranking-filter-popover"><label>Critério<select id="rankingMetric" aria-label="Critério do ranking"><option value="total">Pontos acumulados</option><option value="average">Média por partida</option><option value="best">Melhor partida</option><option value="games">Partidas disputadas</option></select></label><label>Pista<select id="rankingLane" aria-label="Filtrar ranking por pista"><option value="">Todas as pistas</option></select></label></div></details>
+              <span id="leaderboardMeta" class="section-meta">Nenhuma partida finalizada</span>
+            </div>
           </div>
           <div id="podium" class="podium" aria-label="Pódio da classificação" hidden></div>
           <div class="table-wrap">
@@ -117,22 +137,24 @@
         <article id="importacao" class="glass-card blueprint current-card">
           <div class="section-heading">
             <div>
-              <p class="eyebrow">classificação provisória da partida · ao vivo</p>
+              <p class="eyebrow">operação da partida · ao vivo</p>
               <h3 id="currentGameTitle">Nenhuma partida aberta</h3>
             </div>
-            <span id="currentGameStatus" class="status-pill status-pill--muted">Aguardando</span>
+            <div class="current-card-actions"><span id="currentGameStatus" class="status-pill status-pill--muted">Aguardando</span><button id="updateScoreButton" class="button button--primary admin-only" type="button" aria-expanded="false" aria-controls="scoreUpdateMenu" hidden>Atualizar placar</button><div id="scoreUpdateMenu" class="context-menu" hidden><button type="button" data-score-action="photo">Atualizar por foto</button><button type="button" data-score-action="manual">Informar pontuação</button><button type="button" data-score-action="tablet">Registro no tablet</button></div></div>
           </div>
           <div id="currentGameBody" class="current-game-body"></div>
           <div id="laneProgress" class="lane-progress"></div>
           <button id="currentGameSelect" class="text-button admin-only" type="button" hidden>Selecionar outra partida</button>
         </article>
       </section>
+      </section>
 
+      <section id="historicoArea" class="app-area" data-area="historico" hidden>
       <section id="historico" class="history-section">
         <div class="section-heading">
           <div>
             <p class="eyebrow">arquivo do encontro</p>
-            <h3>Partidas</h3>
+            <h2>Histórico</h2>
           </div>
           <span id="gameCount" class="section-meta">0 partidas</span>
         </div>
@@ -142,14 +164,25 @@
         </div>
         <div id="gamesList" class="games-grid"></div>
       </section>
-
-      <section class="extras-grid" aria-label="Competição e recordes">
-        <article class="glass-card blueprint"><div class="section-heading"><div><p class="eyebrow">competição</p><h3>Equipes</h3></div><button id="manageTeamsButton" class="button button--quiet admin-only" type="button" hidden>Gerenciar</button></div><div id="teamsList" class="extras-list"></div></article>
-        <article class="glass-card blueprint"><div class="section-heading"><div><p class="eyebrow">oito jogadores</p><h3>Torneio eliminatório</h3></div><button id="manageBracketButton" class="button button--quiet admin-only" type="button" hidden>Configurar</button></div><div id="bracketBoard" class="extras-list"></div></article>
-        <article class="glass-card blueprint"><div class="section-heading"><div><p class="eyebrow">histórico do grupo</p><h3>Recordes</h3></div></div><div id="groupRecords" class="extras-list"></div></article>
+      <article class="glass-card blueprint history-records-card"><div class="section-heading"><div><p class="eyebrow">histórico do grupo</p><h3>Recordes</h3></div></div><div id="groupRecords" class="extras-list"></div></article>
       </section>
 
-      <section id="predictionsSection" class="prediction-panel glass-card blueprint" hidden><div><p class="eyebrow">antes do encontro</p><h3>Seu palpite</h3><p id="predictionHint" class="intro-copy"></p></div><select id="predictionPlayer" aria-label="Quem vencerá o encontro"></select><button id="savePredictionButton" class="button button--primary" type="button">Salvar palpite</button><span id="predictionAccuracy" class="section-meta"></span><div id="predictionBoard" class="extras-list"></div><div class="admin-only" hidden><label>Fechar palpites em<input id="predictionDeadline" type="datetime-local" /></label><button id="savePredictionDeadline" class="button button--quiet" type="button">Salvar prazo</button></div></section>
+      <section id="competicoesArea" class="app-area" data-area="competicoes" hidden>
+        <div class="area-heading"><div><p class="eyebrow">modalidades</p><h2>Competições</h2></div><p class="intro-copy">Escolha uma modalidade para ver seus detalhes.</p></div>
+        <nav class="competition-tabs" aria-label="Modalidades de competição"><button class="competition-tab is-active" type="button" data-competition-tab="teams" aria-selected="true">Equipes</button><button class="competition-tab" type="button" data-competition-tab="bracket" aria-selected="false">Torneio</button><button class="competition-tab" type="button" data-competition-tab="predictions" aria-selected="false">Palpites</button></nav>
+        <div id="competitionTeamsPanel" class="competition-panel" data-competition-panel="teams"><article class="glass-card blueprint"><div class="section-heading"><div><p class="eyebrow">competição</p><h3>Equipes</h3></div><button id="manageTeamsButton" class="button button--quiet admin-only" type="button" hidden>Gerenciar</button></div><div id="teamsList" class="extras-list"></div></article></div>
+        <div id="competitionBracketPanel" class="competition-panel" data-competition-panel="bracket" hidden><article class="glass-card blueprint"><div class="section-heading"><div><p class="eyebrow">oito jogadores</p><h3>Torneio eliminatório</h3></div><button id="manageBracketButton" class="button button--quiet admin-only" type="button" hidden>Configurar</button></div><div id="bracketBoard" class="extras-list"></div></article></div>
+        <div id="competitionPredictionsPanel" class="competition-panel" data-competition-panel="predictions" hidden><section id="predictionsSection" class="prediction-panel glass-card blueprint"><div><p class="eyebrow">antes do encontro</p><h3>Seu palpite</h3><p id="predictionHint" class="intro-copy"></p></div><select id="predictionPlayer" aria-label="Quem vencerá o encontro"></select><button id="savePredictionButton" class="button button--primary" type="button">Salvar palpite</button><span id="predictionAccuracy" class="section-meta"></span><div id="predictionBoard" class="extras-list"></div><div class="admin-only" hidden><label>Fechar palpites em<input id="predictionDeadline" type="datetime-local" /></label><button id="savePredictionDeadline" class="button button--quiet" type="button">Salvar prazo</button></div></section></div>
+      </section>
+
+      <section id="adminArea" class="app-area admin-area admin-only" data-area="admin" hidden>
+        <div class="area-heading"><div><p class="eyebrow">acesso restrito</p><h2>Administração</h2></div><p class="intro-copy">Operações do encontro ficam agrupadas aqui.</p></div>
+        <div class="admin-area-grid">
+          <article class="glass-card blueprint"><p class="eyebrow">encontro</p><h3>Encontro e partidas</h3><div class="admin-action-list"><button type="button" data-admin-action="newEncounter">Novo encontro</button><button type="button" data-admin-action="editEncounter">Editar encontro</button><button type="button" data-admin-action="startEncounter">Iniciar encontro</button><button type="button" data-admin-action="closeEncounter">Encerrar encontro</button><button class="menu-item--danger" type="button" data-admin-action="deleteEncounter">Excluir encontro</button><button type="button" data-admin-action="newGame">Nova partida</button></div></article>
+          <article class="glass-card blueprint"><p class="eyebrow">cadastros</p><h3>Participantes</h3><div class="admin-action-list"><button type="button" data-admin-action="players">Jogadores e pistas</button><button type="button" data-admin-action="approvals">Aprovações</button></div></article>
+          <article class="glass-card blueprint"><p class="eyebrow">operação</p><h3>Placar e dados</h3><div class="admin-action-list"><button type="button" data-admin-action="photo">Atualizar por foto</button><button type="button" data-admin-action="tablet">Registro no tablet</button><button type="button" data-admin-action="history">Histórico de alterações</button><button type="button" data-admin-action="exportCsv">Exportar CSV</button><button type="button" data-admin-action="exportJson">Exportar JSON</button></div></article>
+        </div>
+      </section>
     </main>
 
     <section id="participantes" class="admin-section-anchor" aria-label="Cadastro de participantes"></section>
@@ -157,6 +190,14 @@
     </div>
 
     <footer class="app-footer">Boliche dos Amigos · pontos publicados somente após conferência</footer>
+
+    <nav id="mobileBottomNav" class="mobile-bottom-nav" aria-label="Navegação principal">
+      <button type="button" data-area-target="placar" aria-current="page"><span aria-hidden="true">▦</span>Placar</button>
+      <button type="button" data-area-target="historico"><span aria-hidden="true">↺</span>Histórico</button>
+      <button type="button" data-area-target="competicoes"><span aria-hidden="true">♜</span>Competições</button>
+      <button id="mobileMoreButton" type="button" aria-expanded="false" aria-controls="mobileMoreMenu"><span aria-hidden="true">⋯</span>Mais</button>
+      <div id="mobileMoreMenu" class="mobile-more-menu" hidden><button class="admin-only" type="button" data-area-target="admin" hidden>Administração</button><button type="button" data-mobile-action="share">Compartilhar</button><button type="button" data-mobile-action="theme">Tema</button><button type="button" data-mobile-action="auth">Conta</button></div>
+    </nav>
 
     <dialog id="authModal" class="modal">
       <form method="dialog" class="modal-card" id="authForm">
@@ -367,6 +408,6 @@
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
     <script src="supabase-config.js"></script>
-    <script src="app.js?v=20261114-18"></script>
+    <script src="app.js?v=20261114-19"></script>
   </body>
 </html>

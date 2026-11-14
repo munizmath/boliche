@@ -54,6 +54,8 @@ const state = {
   tabletGameId: null,
   tabletPlayerId: null,
   tabletSelectedPins: [],
+  activeArea: "placar",
+  activeCompetition: "teams",
 };
 
 const $ = (id) => document.getElementById(id);
@@ -466,6 +468,7 @@ function renderEncounterBar() {
   $("newGameButton").disabled = !encounterOpen();
   $("photoButton").disabled = !encounterActive();
   if ($("tabletButton")) $("tabletButton").disabled = !encounterActive();
+  if ($("updateScoreButton")) $("updateScoreButton").disabled = !encounterActive() || !state.activeGameId;
 }
 
 function selectEncounter(id) {
@@ -787,8 +790,51 @@ async function savePredictionDeadline() {
   await loadData(); render(); showToast("Prazo dos palpites atualizado.", "success");
 }
 
+const AREA_TITLES = { placar: "Placar", historico: "Histórico", competicoes: "Competições", admin: "Administração" };
+
+function setActiveArea(area, { scroll = true } = {}) {
+  const requested = AREA_TITLES[area] ? area : "placar";
+  const next = requested === "admin" && !isAdmin() ? "placar" : requested;
+  state.activeArea = next;
+  document.querySelectorAll("[data-area]").forEach((element) => { element.hidden = element.dataset.area !== next; });
+  document.querySelectorAll("[data-area-target]").forEach((button) => {
+    const active = button.dataset.areaTarget === next;
+    button.classList.toggle("nav-link--active", active);
+    button.classList.toggle("is-active", active);
+    if (active) button.setAttribute("aria-current", "page"); else button.removeAttribute("aria-current");
+  });
+  const title = $("pageTitle");
+  if (title && !document.body.classList.contains("tv-mode")) title.textContent = AREA_TITLES[next];
+  closeMobileMoreMenu();
+  if (scroll) window.scrollTo({ top: 0, behavior: window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches ? "auto" : "smooth" });
+}
+
+function renderAreaNavigation() {
+  setActiveArea(state.activeArea || "placar", { scroll: false });
+}
+
+function renderCompetitionArea() {
+  const selected = state.activeCompetition || "teams";
+  document.querySelectorAll("[data-competition-panel]").forEach((panel) => { panel.hidden = panel.dataset.competitionPanel !== selected; });
+  document.querySelectorAll("[data-competition-tab]").forEach((button) => {
+    const active = button.dataset.competitionTab === selected;
+    button.classList.toggle("is-active", active);
+    button.setAttribute("aria-selected", String(active));
+  });
+}
+
+function closeMobileMoreMenu() {
+  const menu = $("mobileMoreMenu");
+  if (!menu) return;
+  menu.hidden = true;
+  $("mobileMoreButton")?.setAttribute("aria-expanded", "false");
+}
+
 function render() {
   applyAuthUi();
+  if (!isAdmin() && state.activeArea === "admin") state.activeArea = "placar";
+  renderAreaNavigation();
+  renderCompetitionArea();
   renderLeaderboard();
   renderEncounterBar();
   renderCurrentGame();
@@ -827,36 +873,50 @@ function renderLeaderboard() {
   const body = $("leaderboardBody");
   const finalGames = encounterGames().filter((game) => game.status === "final");
   const laneSelect = $("rankingLane");
-  const selectedLane = laneSelect.value;
+  const selectedLane = laneSelect?.value || "";
   const gameIds = new Set(encounterGames().map((game) => game.id));
   const lanes = [...new Set(state.scores.filter((score) => gameIds.has(score.game_id)).map(scoreLane).filter(Boolean))].sort((a, b) => a.localeCompare(b, "pt-BR", { numeric: true }));
-  laneSelect.innerHTML = `<option value="">Todas as pistas</option>${lanes.map((lane) => `<option value="${esc(lane)}">Pista ${esc(lane)}</option>`).join("")}`;
-  if (lanes.includes(selectedLane)) laneSelect.value = selectedLane;
-  const totals = officialTotals(laneSelect.value);
-  const metric = $("rankingMetric").value;
-  $("rankingValueHeader").textContent = metric === "average" ? "Média" : metric === "best" ? "Melhor" : metric === "games" ? "Partidas" : "Pontos";
-  $("rankingTitle").textContent = metric === "average" ? "Classificação por média" : metric === "best" ? "Melhor partida" : metric === "games" ? "Participações" : "Classificação acumulada";
+  if (laneSelect) {
+    laneSelect.innerHTML = `<option value="">Todas as pistas</option>${lanes.map((lane) => `<option value="${esc(lane)}">Pista ${esc(lane)}</option>`).join("")}`;
+    if (lanes.includes(selectedLane)) laneSelect.value = selectedLane;
+  }
+  const mode = $("rankingMode")?.value || "official";
+  const metric = $("rankingMetric")?.value || "total";
   const podium = $("podium");
-  podium.hidden = totals.length === 0;
+  const currentGame = getGame(state.activeGameId);
+  const currentItems = currentGame ? gameScores(currentGame.id).map((score) => ({ score, player: getPlayer(score.player_id) })).filter((item) => item.player && (!selectedLane || scoreLane(item.score) === selectedLane)).sort((a, b) => (b.score.pontos ?? -1) - (a.score.pontos ?? -1) || a.player.nome.localeCompare(b.player.nome, "pt-BR")) : [];
+  const totals = officialTotals(laneSelect?.value || "");
+  const items = mode === "current" ? currentItems : totals;
+  const isCurrent = mode === "current";
+  const rankingTitle = $("rankingTitle");
+  const valueHeader = $("rankingValueHeader");
+  if (valueHeader) valueHeader.textContent = isCurrent ? "Pontos" : metric === "average" ? "Média" : metric === "best" ? "Melhor" : metric === "games" ? "Partidas" : "Pontos";
+  if (rankingTitle) rankingTitle.textContent = isCurrent ? `Partida atual${currentGame ? ` · ${currentGame.nome}` : ""}` : metric === "average" ? "Classificação por média" : metric === "best" ? "Melhor partida" : metric === "games" ? "Participações" : "Classificação acumulada";
+  const encounterClosed = activeEncounter()?.status === "closed";
+  podium.hidden = isCurrent || !encounterClosed || totals.length === 0;
   podium.innerHTML = totals.slice(0, 3).map((item, index) => {
     const photoUrl = state.playerPhotos.get(item.player.id);
     return `<div class="podium-place podium-place--${index + 1}"><span class="podium-medal">${officialPosition(totals, index)}º</span>${photoUrl ? `<img class="podium-avatar" src="${esc(photoUrl)}" alt="Foto de ${esc(item.player.nome)}" loading="lazy" />` : `<span class="podium-avatar podium-avatar--empty" aria-hidden="true">${esc(item.player.nome.slice(0, 1))}</span>`}<strong>${esc(item.player.nome)}</strong><small>${metric === "average" ? item.average.toFixed(1).replace(".", ",") + " média" : rankingValue(item, metric).toLocaleString("pt-BR") + (metric === "games" ? " partidas" : " pontos")}</small></div>`;
   }).join("");
-  let previousPoints = null;
+  let previousValue = null;
   let previousPosition = 0;
-  body.innerHTML = totals.map((item, index) => {
-    const value = rankingValue(item, metric);
-    const position = value === previousPoints ? previousPosition : index + 1;
-    previousPoints = value;
+  body.innerHTML = items.map((item, index) => {
+    const player = isCurrent ? item.player : item.player;
+    const score = isCurrent ? item.score : item.current;
+    const value = isCurrent ? score?.pontos : rankingValue(item, metric);
+    const position = value === previousValue ? previousPosition : index + 1;
+    previousValue = value;
     previousPosition = position;
-    const situation = item.current?.finalizado ? "Final" : (item.current ? "Parcial" : "—");
+    const situation = isCurrent ? (score?.finalizado ? "Final" : (score?.pontos != null ? "Pendente" : "Sem pontos")) : (item.current?.finalizado ? "Final" : (item.current ? "Parcial" : "—"));
     const chipClass = situation === "Final" ? "status-chip status-chip--final" : "status-chip status-chip--partial";
-    const photoUrl = state.playerPhotos.get(item.player.id);
-    return `<tr><td class="rank-cell">${position}</td><td><div class="ranking-player">${photoUrl ? `<img class="ranking-avatar" src="${esc(photoUrl)}" alt="Foto de ${esc(item.player.nome)}" loading="lazy" />` : ""}<span><button class="player-stats-link" type="button" data-stats-player="${esc(item.player.id)}">${esc(item.player.nome)}</button><small>${esc(item.player.apelido_placar || "sem apelido")}</small></span></div></td><td>${esc(item.lane || "—")}</td><td>${item.gamesPlayed}</td><td class="points-cell">${metric === "average" ? item.average.toFixed(1).replace(".", ",") : value.toLocaleString("pt-BR")}</td><td><span class="${chipClass}">${situation}</span></td></tr>`;
+    const photoUrl = state.playerPhotos.get(player.id);
+    const lane = isCurrent ? scoreLane(score) : item.lane;
+    const points = value == null ? "—" : isCurrent ? Number(value).toLocaleString("pt-BR") : metric === "average" ? item.average.toFixed(1).replace(".", ",") : value.toLocaleString("pt-BR");
+    return `<tr><td class="rank-cell">${position}</td><td><div class="ranking-player">${photoUrl ? `<img class="ranking-avatar" src="${esc(photoUrl)}" alt="Foto de ${esc(player.nome)}" loading="lazy" />` : ""}<span><button class="player-stats-link" type="button" data-stats-player="${esc(player.id)}">${esc(player.nome)}</button><small>${esc(player.apelido_placar || "sem apelido")}</small></span></div></td><td>${esc(lane || "—")}</td><td>${isCurrent ? "—" : item.gamesPlayed}</td><td class="points-cell">${points}</td><td><span class="${chipClass}">${situation}</span></td></tr>`;
   }).join("");
   body.querySelectorAll("[data-stats-player]").forEach((button) => button.addEventListener("click", () => openStatsModal(button.dataset.statsPlayer)));
-  $("leaderboardEmpty").hidden = totals.length > 0;
-  $("leaderboardMeta").textContent = finalGames.length ? `${finalGames.length} ${finalGames.length === 1 ? "partida finalizada" : "partidas finalizadas"}` : "Nenhuma partida finalizada";
+  $("leaderboardEmpty").hidden = items.length > 0;
+  $("leaderboardMeta").textContent = isCurrent ? (currentGame ? `${currentItems.filter((item) => item.score.pontos != null).length}/${currentItems.length} pontuações informadas` : "Nenhuma partida aberta") : finalGames.length ? `${finalGames.length} ${finalGames.length === 1 ? "partida finalizada" : "partidas finalizadas"}` : "Nenhuma partida finalizada";
 }
 
 function renderCurrentGame() {
@@ -1991,15 +2051,16 @@ function initTheme() {
 }
 
 function initTopbarMenu() {
-  const topbar = document.querySelector(".topbar"); const trigger = $("brandMenuButton"); const menu = $("topbarMenu");
+  const topbar = document.querySelector(".topbar"); const trigger = $("brandMenuButton");
   const positionSubmenu = (item) => { const button = item.querySelector(".topbar-menu-trigger"); if (!button) return; const rect = button.getBoundingClientRect(); item.style.setProperty("--submenu-left", `${Math.max(4, Math.min(rect.left, window.innerWidth - 180))}px`); item.style.setProperty("--submenu-top", `${rect.bottom + 4}px`); };
   const positionOpenSubmenus = () => document.querySelectorAll(".topbar-menu-item.is-open").forEach(positionSubmenu);
   const closeSubmenus = () => document.querySelectorAll(".topbar-menu-item.is-open").forEach((item) => { item.classList.remove("is-open"); item.querySelector(".topbar-menu-trigger")?.setAttribute("aria-expanded", "false"); });
-  const closeMenu = () => { closeSubmenus(); topbar.classList.remove("topbar--menu-open"); trigger.setAttribute("aria-expanded", "false"); menu.setAttribute("aria-hidden", "true"); menu.inert = true; };
-  trigger.addEventListener("click", () => { const open = !topbar.classList.contains("topbar--menu-open"); if (open) { topbar.classList.add("topbar--menu-open"); trigger.setAttribute("aria-expanded", "true"); menu.setAttribute("aria-hidden", "false"); menu.inert = false; } else closeMenu(); });
+  const closeMenus = () => { closeSubmenus(); closeMobileMoreMenu(); $("scoreUpdateMenu")?.setAttribute("hidden", ""); $("updateScoreButton")?.setAttribute("aria-expanded", "false"); };
+  trigger.addEventListener("click", () => setActiveArea("placar"));
   document.querySelectorAll(".topbar-menu-trigger").forEach((button) => { button.addEventListener("click", (event) => { event.stopPropagation(); const item = button.closest(".topbar-menu-item"); const open = !item.classList.contains("is-open"); closeSubmenus(); item.classList.toggle("is-open", open); button.setAttribute("aria-expanded", String(open)); if (open) positionSubmenu(item); }); button.addEventListener("focus", () => positionSubmenu(button.closest(".topbar-menu-item"))); });
-  document.addEventListener("click", (event) => { if (!event.target.closest(".topbar")) closeMenu(); });
-  document.addEventListener("keydown", (event) => { if (event.key === "Escape") { closeSubmenus(); if (topbar.classList.contains("topbar--menu-open")) { closeMenu(); trigger.focus(); } } });
+  document.querySelectorAll(".topbar-submenu button").forEach((button) => button.addEventListener("click", closeSubmenus));
+  document.addEventListener("click", (event) => { if (!event.target.closest(".topbar") && !event.target.closest(".context-menu") && !event.target.closest("#mobileMoreMenu")) closeMenus(); });
+  document.addEventListener("keydown", (event) => { if (event.key === "Escape") { closeMenus(); } });
   window.addEventListener("resize", positionOpenSubmenus); topbar.addEventListener("scroll", positionOpenSubmenus);
 }
 
@@ -2053,7 +2114,7 @@ function bindEvents() {
   $("tabletRegisterButton").addEventListener("click", saveTabletThrow);
   $("tabletUndoButton").addEventListener("click", undoTabletThrow);
   $("gameForm").addEventListener("submit", createGame); $("authForm").addEventListener("submit", submitAuth); $("registerForm").addEventListener("submit", submitRegister); $("profileForm").addEventListener("submit", submitProfile); $("profilePhoto").addEventListener("change", profilePhotoSelected); $("profileCamera").addEventListener("change", profilePhotoSelected); $("playersForm").addEventListener("click", (event) => { if (event.target.id === "addPlayerButton") addPlayer(); }); $("cancelPlayerEditButton").addEventListener("click", cancelPlayerEdit);
-  $("currentGameSelect").addEventListener("click", () => $("historico").scrollIntoView({ behavior: "smooth", block: "start" }));
+  $("currentGameSelect").addEventListener("click", () => setActiveArea("historico"));
   $("saveLaneButton").addEventListener("click", saveLane);
   $("cancelLaneEditButton").addEventListener("click", cancelLaneEdit);
   $("approvalsButton").addEventListener("click", openApprovalsModal);
@@ -2064,6 +2125,7 @@ function bindEvents() {
   $("shareResultButton").addEventListener("click", shareResultCard);
   $("rankingLane").addEventListener("change", renderLeaderboard);
   $("rankingMetric").addEventListener("change", renderLeaderboard);
+  $("rankingMode")?.addEventListener("change", renderLeaderboard);
   $("gameHistoryFilter").addEventListener("change", renderGames);
   $("gameHistorySearch").addEventListener("input", renderGames);
   $("photoForm").addEventListener("submit", confirmPhotoUpdate); $("photoInput").addEventListener("change", loadPhoto); $("photoLane").addEventListener("change", changeReviewContext); $("photoGame").addEventListener("change", changeReviewContext); $("reviewTable").addEventListener("input", markReviewEdited); $("reviewTable").addEventListener("change", markReviewEdited); $("runOcrButton").addEventListener("click", runOcr); $("clearCropButton").addEventListener("click", () => { state.crop = null; drawCanvas(); });
@@ -2074,17 +2136,37 @@ function bindEvents() {
   const canvas = $("photoCanvas"); canvas.addEventListener("pointerdown", startCrop); canvas.addEventListener("pointermove", moveCrop); canvas.addEventListener("pointerup", endCrop); canvas.addEventListener("pointercancel", endCrop);
   document.addEventListener("keydown", (event) => { if (event.key === "Escape" && !state.recovering) document.querySelectorAll("dialog[open]").forEach((dialog) => dialog.close()); });
   $("playersButton").addEventListener("click", openPlayersModal);
-  document.querySelectorAll("[data-scroll-to]").forEach((button) => button.addEventListener("click", () => {
-    const target = button.dataset.scrollTo;
-    if (target === "importacao") return openPhotoModal();
-    if (target === "participantes") return openPlayersModal();
-    document.getElementById(target)?.scrollIntoView({ behavior: "smooth", block: "start" });
-    document.querySelectorAll(".nav-link").forEach((navLink) => {
-      const active = navLink === button;
-      navLink.classList.toggle("nav-link--active", active);
-      if (active) navLink.setAttribute("aria-current", "page"); else navLink.removeAttribute("aria-current");
-    });
+  document.querySelectorAll("[data-area-target]").forEach((button) => button.addEventListener("click", () => setActiveArea(button.dataset.areaTarget)));
+  document.querySelectorAll("[data-competition-tab]").forEach((button) => button.addEventListener("click", () => { state.activeCompetition = button.dataset.competitionTab; renderCompetitionArea(); }));
+  $("mobileMoreButton")?.addEventListener("click", (event) => {
+    event.stopPropagation();
+    const menu = $("mobileMoreMenu");
+    const open = menu.hidden;
+    menu.hidden = !open;
+    $("mobileMoreButton").setAttribute("aria-expanded", String(open));
+  });
+  document.querySelectorAll("[data-mobile-action]").forEach((button) => button.addEventListener("click", () => {
+    const action = button.dataset.mobileAction;
+    if (action === "share") $("shareButton")?.click();
+    if (action === "theme") $("themeToggle")?.click();
+    if (action === "auth") $("accountMenuButton")?.click();
+    closeMobileMoreMenu();
   }));
+  $("updateScoreButton")?.addEventListener("click", (event) => {
+    event.stopPropagation();
+    const menu = $("scoreUpdateMenu");
+    const open = menu.hidden;
+    menu.hidden = !open;
+    $("updateScoreButton").setAttribute("aria-expanded", String(open));
+  });
+  document.querySelectorAll("[data-score-action]").forEach((button) => button.addEventListener("click", () => {
+    const action = button.dataset.scoreAction;
+    if (action === "tablet") openTabletModal(); else openPhotoModal();
+    $("scoreUpdateMenu").hidden = true;
+    $("updateScoreButton").setAttribute("aria-expanded", "false");
+  }));
+  const adminActions = { newEncounter: "newEncounterButton", editEncounter: "editEncounterButton", startEncounter: "startEncounterButton", closeEncounter: "closeEncounterButton", deleteEncounter: "deleteEncounterButton", newGame: "newGameButton", players: "playersButton", approvals: "approvalsButton", photo: "photoButton", tablet: "tabletButton", history: "historyButton", exportCsv: "exportCsvButton", exportJson: "exportJsonButton" };
+  document.querySelectorAll("[data-admin-action]").forEach((button) => button.addEventListener("click", () => $(adminActions[button.dataset.adminAction])?.click()));
   document.querySelectorAll(".modal-close").forEach((button) => button.addEventListener("click", () => button.closest("dialog").close()));
 }
 
