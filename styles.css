@@ -368,6 +368,38 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .round-results { display: grid; gap: 10px; min-width: 0; }
 .round-results > * { min-width: 0; }
 
+/* Advanced mode panels stay dormant until an app handler selects one mode. */
+.advanced-rules-settings, .advanced-score-card { min-width: 0; }
+.advanced-rules-settings fieldset, .advanced-score-card fieldset { min-width: 0; margin: 0; padding: 14px; border: 1px solid var(--color-divider); background: var(--color-surface); }
+.advanced-rules-settings legend, .advanced-score-card legend { max-width: 100%; padding: 0 6px; color: var(--color-text); font-size: 13px; font-weight: 800; line-height: 1.4; }
+.advanced-help { margin: 0 0 12px; color: var(--color-muted); font-size: 12px; line-height: 1.5; }
+.advanced-fields { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; min-width: 0; }
+.advanced-fields label, .advanced-dart label { min-width: 0; color: var(--color-text); font-size: 12px; line-height: 1.35; }
+.advanced-fields input, .advanced-fields select, .advanced-dart input, .advanced-dart select { min-width: 0; min-height: 44px; }
+.advanced-check { display: flex !important; align-items: center; gap: 10px !important; min-height: 44px; margin-top: 12px; color: var(--color-text) !important; font-size: 12px !important; line-height: 1.4; }
+.modal-card .advanced-check input { flex: none; width: 18px; height: 18px; min-height: 18px; margin: 0; }
+.modal--advanced-score { width: min(760px, calc(100% - 16px)); max-height: calc(100dvh - 16px); }
+.advanced-score-card { width: 100%; max-height: calc(100dvh - 16px); gap: 12px; padding: 16px; overflow-y: auto; overscroll-behavior: contain; }
+.advanced-score-card h2 { padding-right: 60px; overflow-wrap: anywhere; }
+.advanced-score-card .modal-close { min-width: 44px; min-height: 44px; }
+.advanced-score-card .modal-actions { flex-wrap: wrap; }
+.advanced-score-card .modal-actions .button { flex: 1 1 130px; min-height: 44px; }
+.advanced-score-card .modal-actions .button:disabled { opacity: .55; cursor: not-allowed; }
+.advanced-darts { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; margin-top: 12px; }
+.advanced-dart { display: grid; grid-template-columns: minmax(0, 1fr); gap: 9px; min-width: 0; padding: 11px; border: 1px solid var(--color-divider); }
+.advanced-dart strong { grid-column: 1 / -1; color: var(--color-text); font-size: 12px; }
+.advanced-score-card :focus-visible, .advanced-rules-settings :focus-visible { outline: 2px solid var(--color-accent-700); outline-offset: 2px; }
+
+@media (min-width: 400px) {
+  .advanced-dart { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (min-width: 700px) {
+  .advanced-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .advanced-score-card { padding: 24px; }
+  .advanced-darts { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+
 /* Mode cards identify the activity before opening an encounter. */
 .game-choice::before { display: inline-flex; width: fit-content; margin-bottom: 9px; padding: 4px 7px; border: 1px solid var(--color-divider); color: var(--color-muted); font-size: 9px; font-weight: 800; letter-spacing: .08em; line-height: 1.2; }
 .game-choice[aria-label="Boliche"]::before { content: "FRAMES · PISTAS"; }

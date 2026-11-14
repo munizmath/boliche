@@ -304,6 +304,44 @@
             <input id="encounterRoundMax" type="number" min="0" max="2147483647" step="1" value="0" inputmode="numeric" />
           </label>
         </div>
+        <div id="advancedRulesSettings" class="advanced-rules-settings" role="group" aria-label="Regras da modalidade avançada" hidden>
+          <fieldset id="advanced-rules-pebolim" data-advanced-rules-mode="pebolim" disabled hidden>
+            <legend>Pebolim · regras do confronto</legend>
+            <div class="advanced-fields">
+              <label for="advanced-rule-pebolim-sets-to-win">Sets para vencer<input id="advanced-rule-pebolim-sets-to-win" name="sets_to_win" type="number" min="1" max="9" step="1" inputmode="numeric" required /></label>
+              <label for="advanced-rule-pebolim-points-to-win">Gols para vencer o set<input id="advanced-rule-pebolim-points-to-win" name="points_to_win" type="number" min="1" max="99" step="1" inputmode="numeric" required /></label>
+              <label for="advanced-rule-pebolim-win-by">Vantagem mínima em gols<input id="advanced-rule-pebolim-win-by" name="win_by" type="number" min="1" max="10" step="1" inputmode="numeric" required /></label>
+            </div>
+          </fieldset>
+          <fieldset id="advanced-rules-sinuca" data-advanced-rules-mode="sinuca" disabled hidden>
+            <legend>Sinuca · regras do confronto</legend>
+            <div class="advanced-fields"><label for="advanced-rule-sinuca-sets-to-win">Sets para vencer<input id="advanced-rule-sinuca-sets-to-win" name="sets_to_win" type="number" min="1" max="9" step="1" inputmode="numeric" required /></label></div>
+          </fieldset>
+          <fieldset id="advanced-rules-tenis_mesa" data-advanced-rules-mode="tenis_mesa" disabled hidden>
+            <legend>Tênis de mesa · regras do confronto</legend>
+            <div class="advanced-fields">
+              <label for="advanced-rule-tenis_mesa-sets-to-win">Sets para vencer<input id="advanced-rule-tenis_mesa-sets-to-win" name="sets_to_win" type="number" min="1" max="9" step="1" inputmode="numeric" required /></label>
+              <label for="advanced-rule-tenis_mesa-points-to-win">Pontos para vencer o set<input id="advanced-rule-tenis_mesa-points-to-win" name="points_to_win" type="number" min="1" max="99" step="1" inputmode="numeric" required /></label>
+              <label for="advanced-rule-tenis_mesa-win-by">Vantagem mínima em pontos<input id="advanced-rule-tenis_mesa-win-by" name="win_by" type="number" min="1" max="10" step="1" inputmode="numeric" required /></label>
+            </div>
+          </fieldset>
+          <fieldset id="advanced-rules-truco" data-advanced-rules-mode="truco" disabled hidden>
+            <legend>Truco · regras do confronto</legend>
+            <p class="advanced-help">Defina o alvo e a vantagem desta partida; não há padrão regional aplicado automaticamente.</p>
+            <div class="advanced-fields">
+              <label for="advanced-rule-truco-sets-to-win">Sets para vencer<input id="advanced-rule-truco-sets-to-win" name="sets_to_win" type="number" min="1" max="9" step="1" inputmode="numeric" required /></label>
+              <label for="advanced-rule-truco-points-to-win">Pontos para vencer o set<input id="advanced-rule-truco-points-to-win" name="points_to_win" type="number" min="1" max="99" step="1" inputmode="numeric" required /></label>
+              <label for="advanced-rule-truco-win-by">Vantagem mínima em pontos<input id="advanced-rule-truco-win-by" name="win_by" type="number" min="1" max="10" step="1" inputmode="numeric" required /></label>
+            </div>
+          </fieldset>
+          <fieldset id="advanced-rules-pinball" data-advanced-rules-mode="pinball" disabled hidden><legend>Pinball · regras</legend><p class="advanced-help">Sem regras adicionais para configurar.</p></fieldset>
+          <fieldset id="advanced-rules-minigolfe" data-advanced-rules-mode="minigolfe" disabled hidden><legend>Minigolfe · regras</legend><p class="advanced-help">Sem regras adicionais para configurar. Vence o menor número de tacadas.</p></fieldset>
+          <fieldset id="advanced-rules-tempo" data-advanced-rules-mode="tempo" disabled hidden><legend>Tempo · regras</legend><p class="advanced-help">Sem regras adicionais para configurar. Vence o menor tempo em milissegundos.</p></fieldset>
+          <fieldset id="advanced-rules-dardos_501" data-advanced-rules-mode="dardos_501" disabled hidden>
+            <legend>Dardos 501 · regras da partida</legend>
+            <div class="advanced-fields"><label for="advanced-rule-dardos_501-legs-to-win">Pernas para vencer<input id="advanced-rule-dardos_501-legs-to-win" name="legs_to_win" type="number" min="1" max="15" step="1" inputmode="numeric" required /></label></div>
+          </fieldset>
+        </div>
         <div class="form-section-heading"><span>Participantes</span><small>Escolha quem participará deste encontro</small></div>
         <div id="encounterPlayerSelection" class="selection-grid"></div>
         <p id="encounterFormError" class="form-error" role="alert" hidden></p>
@@ -335,6 +373,163 @@
           <button class="button button--quiet" type="button" data-close-modal>Cancelar</button>
           <button id="roundSaveButton" class="button button--primary" type="submit">Salvar rodada</button>
         </div>
+      </form>
+    </dialog>
+
+    <dialog id="advancedScoreModal" class="modal modal--advanced-score" aria-labelledby="advancedScoreTitle" aria-describedby="advancedScoreHelp" hidden inert>
+      <form id="advancedScoreForm" class="modal-card advanced-score-card">
+        <button class="modal-close" type="button" data-close-modal aria-label="Fechar lançamento de resultado">×</button>
+        <p class="eyebrow">placar da modalidade</p>
+        <h2 id="advancedScoreTitle">Registrar resultado</h2>
+        <p id="advancedScoreHelp" class="modal-copy">Escolha a partida e informe o resultado conforme as regras do encontro.</p>
+
+        <fieldset id="advanced-entry-pebolim" data-advanced-entry-mode="pebolim" disabled hidden>
+          <legend>Pebolim · gols do set</legend>
+          <p class="advanced-help">Confirme apenas quando o alvo e a vantagem configurados forem atingidos.</p>
+          <div class="advanced-fields">
+            <label for="advanced-entry-pebolim-game">Partida<select id="advanced-entry-pebolim-game" name="p_game_id" required><option value="">Selecione a partida</option></select></label>
+            <label for="advanced-entry-pebolim-set">Número do set<input id="advanced-entry-pebolim-set" name="p_set_no" type="number" min="1" max="99" step="1" inputmode="numeric" required /></label>
+            <label for="advanced-entry-pebolim-player-a">Jogador A<select id="advanced-entry-pebolim-player-a" name="p_player_a_id" required><option value="">Selecione o jogador</option></select></label>
+            <label for="advanced-entry-pebolim-player-b">Jogador B<select id="advanced-entry-pebolim-player-b" name="p_player_b_id" required><option value="">Selecione o jogador</option></select></label>
+            <label for="advanced-entry-pebolim-score-a">Gols do jogador A<input id="advanced-entry-pebolim-score-a" name="p_score_a" type="number" min="0" max="1000000" step="1" inputmode="numeric" required /></label>
+            <label for="advanced-entry-pebolim-score-b">Gols do jogador B<input id="advanced-entry-pebolim-score-b" name="p_score_b" type="number" min="0" max="1000000" step="1" inputmode="numeric" required /></label>
+          </div>
+          <label class="advanced-check" for="advanced-entry-pebolim-confirmed"><input id="advanced-entry-pebolim-confirmed" name="p_confirmed" type="checkbox" /> Confirmar este set</label>
+          <input id="advanced-entry-pebolim-version" name="p_expected_version" type="hidden" />
+        </fieldset>
+
+        <fieldset id="advanced-entry-sinuca" data-advanced-entry-mode="sinuca" disabled hidden>
+          <legend>Sinuca · pontos do frame</legend>
+          <p class="advanced-help">Um set confirmado precisa ter vencedor, com placares diferentes.</p>
+          <div class="advanced-fields">
+            <label for="advanced-entry-sinuca-game">Partida<select id="advanced-entry-sinuca-game" name="p_game_id" required><option value="">Selecione a partida</option></select></label>
+            <label for="advanced-entry-sinuca-set">Número do set<input id="advanced-entry-sinuca-set" name="p_set_no" type="number" min="1" max="99" step="1" inputmode="numeric" required /></label>
+            <label for="advanced-entry-sinuca-player-a">Jogador A<select id="advanced-entry-sinuca-player-a" name="p_player_a_id" required><option value="">Selecione o jogador</option></select></label>
+            <label for="advanced-entry-sinuca-player-b">Jogador B<select id="advanced-entry-sinuca-player-b" name="p_player_b_id" required><option value="">Selecione o jogador</option></select></label>
+            <label for="advanced-entry-sinuca-score-a">Pontos do jogador A<input id="advanced-entry-sinuca-score-a" name="p_score_a" type="number" min="0" max="1000000" step="1" inputmode="numeric" required /></label>
+            <label for="advanced-entry-sinuca-score-b">Pontos do jogador B<input id="advanced-entry-sinuca-score-b" name="p_score_b" type="number" min="0" max="1000000" step="1" inputmode="numeric" required /></label>
+          </div>
+          <label class="advanced-check" for="advanced-entry-sinuca-confirmed"><input id="advanced-entry-sinuca-confirmed" name="p_confirmed" type="checkbox" /> Confirmar este set</label>
+          <input id="advanced-entry-sinuca-version" name="p_expected_version" type="hidden" />
+        </fieldset>
+
+        <fieldset id="advanced-entry-tenis_mesa" data-advanced-entry-mode="tenis_mesa" disabled hidden>
+          <legend>Tênis de mesa · pontos do set</legend>
+          <p class="advanced-help">Confirme apenas com o alvo e a vantagem configurados.</p>
+          <div class="advanced-fields">
+            <label for="advanced-entry-tenis_mesa-game">Partida<select id="advanced-entry-tenis_mesa-game" name="p_game_id" required><option value="">Selecione a partida</option></select></label>
+            <label for="advanced-entry-tenis_mesa-set">Número do set<input id="advanced-entry-tenis_mesa-set" name="p_set_no" type="number" min="1" max="99" step="1" inputmode="numeric" required /></label>
+            <label for="advanced-entry-tenis_mesa-player-a">Jogador A<select id="advanced-entry-tenis_mesa-player-a" name="p_player_a_id" required><option value="">Selecione o jogador</option></select></label>
+            <label for="advanced-entry-tenis_mesa-player-b">Jogador B<select id="advanced-entry-tenis_mesa-player-b" name="p_player_b_id" required><option value="">Selecione o jogador</option></select></label>
+            <label for="advanced-entry-tenis_mesa-score-a">Pontos do jogador A<input id="advanced-entry-tenis_mesa-score-a" name="p_score_a" type="number" min="0" max="1000000" step="1" inputmode="numeric" required /></label>
+            <label for="advanced-entry-tenis_mesa-score-b">Pontos do jogador B<input id="advanced-entry-tenis_mesa-score-b" name="p_score_b" type="number" min="0" max="1000000" step="1" inputmode="numeric" required /></label>
+          </div>
+          <label class="advanced-check" for="advanced-entry-tenis_mesa-confirmed"><input id="advanced-entry-tenis_mesa-confirmed" name="p_confirmed" type="checkbox" /> Confirmar este set</label>
+          <input id="advanced-entry-tenis_mesa-version" name="p_expected_version" type="hidden" />
+        </fieldset>
+
+        <fieldset id="advanced-entry-truco" data-advanced-entry-mode="truco" disabled hidden>
+          <legend>Truco · pontos do set</legend>
+          <p class="advanced-help">O alvo e a vantagem vêm das regras deste encontro.</p>
+          <div class="advanced-fields">
+            <label for="advanced-entry-truco-game">Partida<select id="advanced-entry-truco-game" name="p_game_id" required><option value="">Selecione a partida</option></select></label>
+            <label for="advanced-entry-truco-set">Número do set<input id="advanced-entry-truco-set" name="p_set_no" type="number" min="1" max="99" step="1" inputmode="numeric" required /></label>
+            <label for="advanced-entry-truco-player-a">Jogador A<select id="advanced-entry-truco-player-a" name="p_player_a_id" required><option value="">Selecione o jogador</option></select></label>
+            <label for="advanced-entry-truco-player-b">Jogador B<select id="advanced-entry-truco-player-b" name="p_player_b_id" required><option value="">Selecione o jogador</option></select></label>
+            <label for="advanced-entry-truco-score-a">Pontos do jogador A<input id="advanced-entry-truco-score-a" name="p_score_a" type="number" min="0" max="1000000" step="1" inputmode="numeric" required /></label>
+            <label for="advanced-entry-truco-score-b">Pontos do jogador B<input id="advanced-entry-truco-score-b" name="p_score_b" type="number" min="0" max="1000000" step="1" inputmode="numeric" required /></label>
+          </div>
+          <label class="advanced-check" for="advanced-entry-truco-confirmed"><input id="advanced-entry-truco-confirmed" name="p_confirmed" type="checkbox" /> Confirmar este set</label>
+          <input id="advanced-entry-truco-version" name="p_expected_version" type="hidden" />
+        </fieldset>
+
+        <fieldset id="advanced-entry-pinball" data-advanced-entry-mode="pinball" disabled hidden>
+          <legend>Pinball · pontuação individual</legend>
+          <p class="advanced-help">Use texto decimal exato para preservar pontuações muito altas.</p>
+          <div class="advanced-fields">
+            <label for="advanced-entry-pinball-game">Partida<select id="advanced-entry-pinball-game" name="p_game_id" required><option value="">Selecione a partida</option></select></label>
+            <label for="advanced-entry-pinball-player">Jogador<select id="advanced-entry-pinball-player" name="p_player_id" required><option value="">Selecione o jogador</option></select></label>
+            <label for="advanced-entry-pinball-value">Pontos brutos<input id="advanced-entry-pinball-value" name="p_value" type="text" inputmode="numeric" pattern="(0|[1-9][0-9]*)" maxlength="19" autocomplete="off" required /></label>
+            <label for="advanced-entry-pinball-status">Situação<select id="advanced-entry-pinball-status" name="p_status"><option value="active">Participando</option><option value="DNF">Não concluiu (DNF)</option><option value="DNS">Não iniciou (DNS)</option></select></label>
+          </div>
+          <label class="advanced-check" for="advanced-entry-pinball-finalized"><input id="advanced-entry-pinball-finalized" name="p_finalized" type="checkbox" /> Confirmar resultado</label>
+          <input id="advanced-entry-pinball-version" name="p_expected_version" type="hidden" />
+        </fieldset>
+
+        <fieldset id="advanced-entry-minigolfe" data-advanced-entry-mode="minigolfe" disabled hidden>
+          <legend>Minigolfe · tacadas por jogador</legend>
+          <p class="advanced-help">O menor total confirmado lidera.</p>
+          <div class="advanced-fields">
+            <label for="advanced-entry-minigolfe-game">Partida<select id="advanced-entry-minigolfe-game" name="p_game_id" required><option value="">Selecione a partida</option></select></label>
+            <label for="advanced-entry-minigolfe-player">Jogador<select id="advanced-entry-minigolfe-player" name="p_player_id" required><option value="">Selecione o jogador</option></select></label>
+            <label for="advanced-entry-minigolfe-value">Total de tacadas<input id="advanced-entry-minigolfe-value" name="p_value" type="text" inputmode="numeric" pattern="(0|[1-9][0-9]*)" maxlength="19" autocomplete="off" required /></label>
+            <label for="advanced-entry-minigolfe-status">Situação<select id="advanced-entry-minigolfe-status" name="p_status"><option value="active">Participando</option><option value="DNF">Não concluiu (DNF)</option><option value="DNS">Não iniciou (DNS)</option></select></label>
+          </div>
+          <label class="advanced-check" for="advanced-entry-minigolfe-finalized"><input id="advanced-entry-minigolfe-finalized" name="p_finalized" type="checkbox" /> Confirmar resultado</label>
+          <input id="advanced-entry-minigolfe-version" name="p_expected_version" type="hidden" />
+        </fieldset>
+
+        <fieldset id="advanced-entry-tempo" data-advanced-entry-mode="tempo" disabled hidden>
+          <legend>Tempo · resultado individual</legend>
+          <p class="advanced-help">Informe milissegundos inteiros decorridos; o menor tempo confirmado lidera.</p>
+          <div class="advanced-fields">
+            <label for="advanced-entry-tempo-game">Partida<select id="advanced-entry-tempo-game" name="p_game_id" required><option value="">Selecione a partida</option></select></label>
+            <label for="advanced-entry-tempo-player">Jogador<select id="advanced-entry-tempo-player" name="p_player_id" required><option value="">Selecione o jogador</option></select></label>
+            <label for="advanced-entry-tempo-value">Tempo em milissegundos<input id="advanced-entry-tempo-value" name="p_value" type="text" inputmode="numeric" pattern="(0|[1-9][0-9]*)" maxlength="19" autocomplete="off" required /></label>
+            <label for="advanced-entry-tempo-status">Situação<select id="advanced-entry-tempo-status" name="p_status"><option value="active">Participando</option><option value="DNF">Não concluiu (DNF)</option><option value="DNS">Não iniciou (DNS)</option></select></label>
+          </div>
+          <label class="advanced-check" for="advanced-entry-tempo-finalized"><input id="advanced-entry-tempo-finalized" name="p_finalized" type="checkbox" /> Confirmar resultado</label>
+          <input id="advanced-entry-tempo-version" name="p_expected_version" type="hidden" />
+        </fieldset>
+
+        <fieldset id="advanced-entry-dardos_501" data-advanced-entry-mode="dardos_501" disabled hidden>
+          <legend>Dardos 501 · turno</legend>
+          <p class="advanced-help">Informe até três dardos. Valores aceitos: 0, 1 a 20 ou 25 (bull). O checkout exige dupla.</p>
+          <div class="advanced-fields">
+            <label for="advanced-entry-dardos_501-game">Partida<select id="advanced-entry-dardos_501-game" name="p_game_id" required><option value="">Selecione a partida</option></select></label>
+            <label for="advanced-entry-dardos_501-leg">Número da perna<input id="advanced-entry-dardos_501-leg" name="p_leg_no" type="number" min="1" max="99" step="1" inputmode="numeric" required /></label>
+            <label for="advanced-entry-dardos_501-starter">Quem inicia a nova perna<select id="advanced-entry-dardos_501-starter" name="p_starter_player_id"><option value="">Perna já iniciada</option></select></label>
+            <label for="advanced-entry-dardos_501-turn">Número do turno<input id="advanced-entry-dardos_501-turn" name="p_turn_no" type="number" min="1" step="1" inputmode="numeric" required /></label>
+            <label for="advanced-entry-dardos_501-player">Jogador do turno<select id="advanced-entry-dardos_501-player" name="p_player_id" required><option value="">Selecione o jogador</option></select></label>
+          </div>
+          <div class="advanced-darts" role="group" aria-label="Dardos do turno">
+            <div class="advanced-dart"><strong>1º dardo</strong><label for="advanced-entry-dardos_501-dart-1-value">Valor<input id="advanced-entry-dardos_501-dart-1-value" name="dart_1_value" type="number" min="0" max="25" step="1" inputmode="numeric" required /></label><label for="advanced-entry-dardos_501-dart-1-multiplier">Multiplicador<select id="advanced-entry-dardos_501-dart-1-multiplier" name="dart_1_multiplier"><option value="1">Simples</option><option value="2">Duplo</option><option value="3">Triplo</option></select></label></div>
+            <div class="advanced-dart"><strong>2º dardo · opcional</strong><label for="advanced-entry-dardos_501-dart-2-value">Valor<input id="advanced-entry-dardos_501-dart-2-value" name="dart_2_value" type="number" min="0" max="25" step="1" inputmode="numeric" /></label><label for="advanced-entry-dardos_501-dart-2-multiplier">Multiplicador<select id="advanced-entry-dardos_501-dart-2-multiplier" name="dart_2_multiplier"><option value="1">Simples</option><option value="2">Duplo</option><option value="3">Triplo</option></select></label></div>
+            <div class="advanced-dart"><strong>3º dardo · opcional</strong><label for="advanced-entry-dardos_501-dart-3-value">Valor<input id="advanced-entry-dardos_501-dart-3-value" name="dart_3_value" type="number" min="0" max="25" step="1" inputmode="numeric" /></label><label for="advanced-entry-dardos_501-dart-3-multiplier">Multiplicador<select id="advanced-entry-dardos_501-dart-3-multiplier" name="dart_3_multiplier"><option value="1">Simples</option><option value="2">Duplo</option><option value="3">Triplo</option></select></label></div>
+          </div>
+        </fieldset>
+
+        <p id="advancedScoreError" class="form-error" role="alert" hidden></p>
+        <div class="modal-actions"><button class="button button--quiet" type="button" data-close-modal>Cancelar</button><button id="advancedScoreSaveButton" class="button button--primary" type="submit" disabled>Salvar resultado</button></div>
+      </form>
+    </dialog>
+
+    <dialog id="advancedStatusModal" class="modal modal--advanced-score" aria-labelledby="advancedStatusTitle" aria-describedby="advancedStatusHelp" hidden inert>
+      <form id="advancedStatusForm" class="modal-card advanced-score-card">
+        <button class="modal-close" type="button" data-close-modal aria-label="Fechar situação do participante">×</button>
+        <p class="eyebrow">situação no jogo</p>
+        <h2 id="advancedStatusTitle">Registrar não participação</h2>
+        <p id="advancedStatusHelp" class="modal-copy">Use DNF para quem não concluiu ou DNS para quem não iniciou.</p>
+        <fieldset id="advanced-status-match" data-advanced-status-kind="match" disabled hidden>
+          <legend>Situação no confronto</legend>
+          <div class="advanced-fields">
+            <label for="advanced-status-match-game">Partida<select id="advanced-status-match-game" name="p_game_id" required><option value="">Selecione a partida</option></select></label>
+            <label for="advanced-status-match-player">Jogador<select id="advanced-status-match-player" name="p_player_id" required><option value="">Selecione o jogador</option></select></label>
+            <label for="advanced-status-match-value">Situação<select id="advanced-status-match-value" name="p_status" required><option value="">Selecione a situação</option><option value="DNF">Não concluiu (DNF)</option><option value="DNS">Não iniciou (DNS)</option></select></label>
+          </div>
+          <input id="advanced-status-match-version" name="p_expected_version" type="hidden" />
+        </fieldset>
+        <fieldset id="advanced-status-darts" data-advanced-status-kind="darts" disabled hidden>
+          <legend>Situação na perna de dardos</legend>
+          <div class="advanced-fields">
+            <label for="advanced-status-darts-game">Partida<select id="advanced-status-darts-game" name="p_game_id" required><option value="">Selecione a partida</option></select></label>
+            <label for="advanced-status-darts-leg">Número da perna<input id="advanced-status-darts-leg" name="p_leg_no" type="number" min="1" max="99" step="1" inputmode="numeric" required /></label>
+            <label for="advanced-status-darts-player">Jogador<select id="advanced-status-darts-player" name="p_player_id" required><option value="">Selecione o jogador</option></select></label>
+            <label for="advanced-status-darts-value">Situação<select id="advanced-status-darts-value" name="p_status" required><option value="">Selecione a situação</option><option value="DNF">Não concluiu (DNF)</option><option value="DNS">Não iniciou (DNS)</option></select></label>
+          </div>
+        </fieldset>
+        <p id="advancedStatusError" class="form-error" role="alert" hidden></p>
+        <div class="modal-actions"><button class="button button--quiet" type="button" data-close-modal>Cancelar</button><button id="advancedStatusSaveButton" class="button button--primary" type="submit" disabled>Salvar situação</button></div>
       </form>
     </dialog>
 
