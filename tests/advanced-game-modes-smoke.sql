@@ -104,6 +104,19 @@ begin
   if (select multigame_ever_scored_at from public.encounters where id=e.id) is null then
     raise exception 'Marker imutável do encontro não foi gravado';
   end if;
+  -- A per-game marker must not block another head-to-head game in this group.
+  g := public.create_encounter_game(e.id, 'Smoke pebolim rodada 2', jsonb_build_array(
+    jsonb_build_object('player_id',p2,'pista','__mode_smoke__'),
+    jsonb_build_object('player_id',p3,'pista','__mode_smoke__')
+  ), '00000000-0000-4000-8000-000000000933');
+  if (select count(*) from public.scores where game_id=g.id) <> 2 then
+    raise exception 'Segundo confronto do grupo não foi criado após resultado do primeiro';
+  end if;
+  set_row := public.save_match_set(g.id,1,p2,p3,5,4,true,null);
+  if set_row.winner_player_id <> p2 or not set_row.confirmed
+     or (select status from public.games where id=g.id) <> 'final' then
+    raise exception 'Segundo confronto do grupo não aceitou pontuação após o primeiro resultado';
+  end if;
 
   -- A single DNF wins by forfeit. A second terminal status and later set are rejected.
   e := public.create_advanced_encounter(
@@ -289,6 +302,7 @@ declare
   encounter_ids uuid[];
   darts_game_id uuid;
   match_game_id uuid;
+  second_match_game_id uuid;
   target_id uuid;
   caught boolean;
 begin
@@ -299,7 +313,8 @@ begin
       '00000000-0000-4000-8000-000000000923'::uuid,
       '00000000-0000-4000-8000-000000000924'::uuid,
       '00000000-0000-4000-8000-000000000925'::uuid,
-      '00000000-0000-4000-8000-000000000926'::uuid
+      '00000000-0000-4000-8000-000000000926'::uuid,
+      '00000000-0000-4000-8000-000000000933'::uuid
     );
   select array_agg(e.id order by e.id) into encounter_ids
     from public.encounters e where e.request_id in (
@@ -310,7 +325,7 @@ begin
       '00000000-0000-4000-8000-000000000915'::uuid,
       '00000000-0000-4000-8000-000000000916'::uuid
     );
-  if cardinality(game_ids) <> 6 or cardinality(encounter_ids) <> 6 then
+  if cardinality(game_ids) <> 7 or cardinality(encounter_ids) <> 6 then
     raise exception 'Smoke não criou todos os jogos/encontros';
   end if;
 
@@ -327,6 +342,30 @@ begin
   -- Delete the confirmed-set winner through the authorized privacy RPC.
   select g.id into match_game_id from public.games g
    where g.request_id = '00000000-0000-4000-8000-000000000921'::uuid;
+  select g.id into second_match_game_id from public.games g
+   where g.request_id = '00000000-0000-4000-8000-000000000933'::uuid;
+  -- Delete game 1's result, then prove its per-game history still freezes roster
+  -- edits while game 2 in the same encounter completed its own confirmed set.
+  delete from public.match_sets where game_id = match_game_id;
+  update public.scores set pontos = 0, finalizado = false where game_id = match_game_id;
+  if not exists (select 1 from public.advanced_game_activity where game_id = match_game_id)
+     or not exists (select 1 from public.advanced_game_activity where game_id = second_match_game_id) then
+    raise exception 'Marker por partida não preservou os dois confrontos do grupo';
+  end if;
+  caught := false;
+  begin
+    perform public.edit_encounter_game(match_game_id, 'Smoke pebolim', jsonb_build_array(
+      jsonb_build_object('player_id','00000000-0000-4000-8000-000000000901'::uuid,'pista','__mode_smoke__'),
+      jsonb_build_object('player_id','00000000-0000-4000-8000-000000000903'::uuid,'pista','__mode_smoke__')
+    ));
+  exception when insufficient_privilege then caught := true;
+  end;
+  if not caught
+     or exists (select 1 from public.scores where game_id = match_game_id and player_id = '00000000-0000-4000-8000-000000000903'::uuid)
+     or not exists (select 1 from public.scores where game_id = second_match_game_id and player_id = '00000000-0000-4000-8000-000000000903'::uuid) then
+    raise exception 'Roster de jogo pontuado mudou ou o segundo jogo não persistiu';
+  end if;
+
   perform public.delete_player_cascade('00000000-0000-4000-8000-000000000901'::uuid);
   if exists (select 1 from public.players where id = '00000000-0000-4000-8000-000000000901'::uuid)
      or exists (select 1 from public.match_sets where game_id = match_game_id)
@@ -346,6 +385,9 @@ begin
      or (select count(*) from public.encounters
           where id = any(encounter_ids) and multigame_ever_scored_at is not null) <> 6 then
     raise exception 'Marker não sobreviveu à exclusão dos dados de resultado';
+  end if;
+  if exists (select 1 from public.advanced_game_activity where game_id = any(game_ids)) then
+    raise exception 'Marker por partida não foi removido com a exclusão da partida';
   end if;
 
   foreach target_id in array encounter_ids loop

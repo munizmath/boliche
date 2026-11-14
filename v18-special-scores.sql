@@ -38,6 +38,14 @@ create table if not exists public.mode_player_score_changes (
 create index if not exists mode_player_score_changes_latest_idx
   on public.mode_player_score_changes(game_id, player_id, id desc);
 
+insert into public.advanced_game_activity(game_id)
+select distinct m.game_id
+  from public.mode_player_scores m
+  join public.games g on g.id = m.game_id
+  join public.encounters e on e.id = g.encounter_id
+ where e.game_type in ('pinball', 'minigolfe', 'tempo')
+on conflict (game_id) do nothing;
+
 alter table public.mode_player_scores enable row level security;
 alter table public.mode_player_score_changes enable row level security;
 drop policy if exists mode_player_scores_public_read on public.mode_player_scores;

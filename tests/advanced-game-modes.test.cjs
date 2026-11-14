@@ -144,6 +144,9 @@ test('migrações são incrementais, transacionais, mantêm RLS e não alteram v
   assert.match(v17, /no máximo um participante pode ter DNF\/DNS/i);
   assert.match(v17, /O outro participante já tem status terminal/i);
   assert.match(v17, /advanced_mode_activity/);
+  assert.match(v17, /create table if not exists public\.advanced_game_activity[\s\S]{0,200}references public\.games\(id\) on delete cascade/i);
+  assert.match(v17, /insert into public\.advanced_game_activity\(game_id\)[\s\S]{0,120}values \(target_game_id\)/i);
+  assert.match(v17, /left join public\.advanced_game_activity a on a\.game_id = g\.id/i);
   assert.match(v17, /encounters_advanced_rules_immutable/);
   assert.match(v17, /after insert or update or delete on public\.match_sets/i);
   assert.match(v17, /scores_advanced_roster_guard[\s\S]{0,160}update of game_id, player_id/i);
@@ -171,6 +174,7 @@ test('migrações são incrementais, transacionais, mantêm RLS e não alteram v
   assert.match(v18, /after insert or update or delete on public\.mode_player_scores/i);
   assert.match(v18, /alter publication supabase_realtime add table public\.mode_player_scores/i);
   assert.match(v18, /pg_publication_tables[\s\S]{0,180}mode_player_scores/i);
+  assert.match(v18, /insert into public\.advanced_game_activity\(game_id\)[\s\S]{0,120}from public\.mode_player_scores/i);
   assert.match(v19, /Jogador fora da vez/);
   assert.match(v19, /balance_after/);
   assert.match(v19, /checkout/);
@@ -183,6 +187,7 @@ test('migrações são incrementais, transacionais, mantêm RLS e não alteram v
   assert.match(v19, /after insert or update or delete on public\.darts_turns/i);
   assert.match(v19, /create or replace function public\.start_darts_leg_and_save_turn/i);
   assert.match(v19, /p_turn_no is distinct from 1/);
+  assert.match(v19, /insert into public\.advanced_game_activity\(game_id\)[\s\S]{0,180}from public\.darts_legs/i);
   for (const table of ['darts_legs', 'darts_leg_players', 'darts_turns']) {
     assert.match(v19, new RegExp(`alter publication supabase_realtime add table public\\.${table}`, 'i'));
   }
@@ -199,6 +204,9 @@ test('migrações são incrementais, transacionais, mantêm RLS e não alteram v
   assert.match(editorSmoke, /array\[p1,p2,p3\][\s\S]{0,120}'pebolim'/i);
   assert.match(editorSmoke, /Partida de confronto aceitou três participantes/i);
   assert.match(editorSmoke, /Roster mudou depois do primeiro resultado/i);
+  assert.match(editorSmoke, /save_match_set\(g\.id,1,p2,p3,5,4,true,null\)/i);
+  assert.match(editorSmoke, /delete from public\.match_sets where game_id = match_game_id/i);
+  assert.match(editorSmoke, /advanced_game_activity where game_id = match_game_id/i);
   assert.doesNotMatch(fs.readFileSync(path.join(ROOT, 'v14-game-types.sql'), 'utf8'), /pebolim/);
   assert.doesNotMatch(fs.readFileSync(path.join(ROOT, 'v15-round-scores.sql'), 'utf8'), /pebolim/);
 });

@@ -65,6 +65,15 @@ create table if not exists public.darts_turns (
 create index if not exists darts_turns_player_idx
   on public.darts_turns(game_id, leg_no, player_id, turn_no);
 
+insert into public.advanced_game_activity(game_id)
+select distinct activity.game_id
+  from (
+    select game_id from public.darts_legs
+    union all select game_id from public.darts_leg_players
+    union all select game_id from public.darts_turns
+  ) activity
+on conflict (game_id) do nothing;
+
 drop trigger if exists darts_legs_mark_activity on public.darts_legs;
 create trigger darts_legs_mark_activity after insert or update or delete on public.darts_legs
   for each row execute function public.mark_multigame_ever_scored();

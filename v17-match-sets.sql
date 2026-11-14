@@ -276,19 +276,19 @@ set search_path = pg_catalog, public
 as $$
 declare
   target_game_type text;
-  target_marker timestamptz;
-  old_game_type text;
-  old_marker timestamptz;
+  target_game_marked boolean;
+  old_game_marked boolean;
 begin
   if tg_op = 'DELETE' then
     if pg_trigger_depth() > 1 then return old; end if;
-    select e.game_type, e.multigame_ever_scored_at
-      into target_game_type, target_marker
+    select e.game_type, a.game_id is not null
+      into target_game_type, target_game_marked
       from public.games g join public.encounters e on e.id = g.encounter_id
+      left join public.advanced_game_activity a on a.game_id = g.id
      where g.id = old.game_id;
     if target_game_type in (
       'pebolim', 'sinuca', 'tenis_mesa', 'truco', 'pinball', 'minigolfe', 'tempo', 'dardos_501'
-    ) and target_marker is not null then
+    ) and target_game_marked then
       if current_setting('app.advanced_mode_privacy_delete', true) = 'on' and public.is_admin() then
         return old;
       end if;
@@ -298,24 +298,26 @@ begin
     return old;
   end if;
 
-  select e.game_type, e.multigame_ever_scored_at
-    into target_game_type, target_marker
+  select e.game_type, a.game_id is not null
+    into target_game_type, target_game_marked
     from public.games g join public.encounters e on e.id = g.encounter_id
+    left join public.advanced_game_activity a on a.game_id = g.id
    where g.id = new.game_id;
   if target_game_type not in (
     'pebolim', 'sinuca', 'tenis_mesa', 'truco', 'pinball', 'minigolfe', 'tempo', 'dardos_501'
   ) then return new; end if;
 
   if tg_op = 'UPDATE' and (old.game_id is distinct from new.game_id or old.player_id is distinct from new.player_id) then
-    select e.game_type, e.multigame_ever_scored_at
-      into old_game_type, old_marker
+    select a.game_id is not null
+      into old_game_marked
       from public.games g join public.encounters e on e.id = g.encounter_id
+      left join public.advanced_game_activity a on a.game_id = g.id
      where g.id = old.game_id;
-    if old_marker is not null or target_marker is not null then
+    if old_game_marked or target_game_marked then
       raise exception 'Vínculo de participante não pode mudar depois do primeiro resultado avançado'
         using errcode = '42501';
     end if;
-  elsif tg_op = 'INSERT' and target_marker is not null then
+  elsif tg_op = 'INSERT' and target_game_marked then
     raise exception 'Participantes não podem ser adicionados depois do primeiro resultado avançado'
       using errcode = '42501';
   end if;
@@ -467,6 +469,28 @@ create table if not exists public.advanced_mode_activity (
 alter table public.advanced_mode_activity enable row level security;
 revoke all on public.advanced_mode_activity from public, anon, authenticated, service_role;
 
+-- Per-game evidence freezes only that game's roster, so a group encounter can
+-- continue with another match. It survives result deletion and cascades on game deletion.
+create table if not exists public.advanced_game_activity (
+  game_id uuid primary key references public.games(id) on delete cascade,
+  first_activity_at timestamptz not null default now()
+);
+alter table public.advanced_game_activity enable row level security;
+revoke all on public.advanced_game_activity from public, anon, authenticated, service_role;
+
+-- Backfill v16/v17 result evidence that is still present. v18 and v19 backfill
+-- their respective mode-specific tables after creating them.
+insert into public.advanced_game_activity(game_id)
+select distinct g.id
+  from public.games g join public.encounters e on e.id = g.encounter_id
+ where e.game_type in ('pebolim', 'sinuca', 'tenis_mesa', 'truco', 'pinball', 'minigolfe', 'tempo', 'dardos_501')
+   and (
+     exists (select 1 from public.match_sets ms where ms.game_id = g.id)
+     or exists (select 1 from public.match_player_status mps where mps.game_id = g.id)
+     or exists (select 1 from public.scores s where s.game_id = g.id and (s.pontos is not null or s.finalizado))
+   )
+on conflict (game_id) do nothing;
+
 -- Extends v16's canonical marker function; existing round_scores trigger remains intact.
 create or replace function public.mark_multigame_ever_scored()
 returns trigger
@@ -493,6 +517,8 @@ begin
   if game_found and target_game_type in (
     'pebolim', 'sinuca', 'tenis_mesa', 'truco', 'pinball', 'minigolfe', 'tempo', 'dardos_501'
   ) then
+    insert into public.advanced_game_activity(game_id)
+    values (target_game_id) on conflict (game_id) do nothing;
     insert into public.advanced_mode_activity(encounter_id)
     values (target_encounter_id) on conflict (encounter_id) do nothing;
   end if;
